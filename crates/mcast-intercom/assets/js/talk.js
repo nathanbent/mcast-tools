@@ -46,11 +46,20 @@ export async function start(id, name, latched = false) {
   current = t;
   tell();
   try {
+    // Made here, during the click: made later (after the permission prompt)
+    // a browser may keep it suspended, and no audio would flow.
+    t.ctx = new AudioContext();
+    const asked = performance.now();
     t.stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
     if (t.ended) return finish(t);
-    t.ctx = new AudioContext();
+    // Slow: the browser asked. Firefox asks every time unless told to remember.
+    if (performance.now() - asked > 1500 && !promptHinted) {
+      promptHinted = true;
+      toast("Tip: tick \"Remember this decision\" when the browser asks about the microphone, so it doesn't ask every time.", "info");
+    }
+    if (t.ctx.state !== "running") await t.ctx.resume();
     await t.ctx.audioWorklet.addModule("js/mic-worklet.js");
     if (t.ended) return finish(t);
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -68,8 +77,15 @@ export async function start(id, name, latched = false) {
         finish(t);
       }
     };
-    t.ws.onclose = () => finish(t);
-    t.ws.onerror = () => toast(`Couldn't open a live page for "${name}"`, "error");
+    t.ws.onclose = (e) => {
+      // Closed before it started: say so, rather than silently going idle.
+      if (t.phase === "starting" && !t.ended) {
+        console.error("push to talk: the panel closed the socket", e.code, e.reason);
+        toast(`Couldn't start "${name}": the panel closed the connection${e.reason ? ` (${e.reason})` : ""}. Is the panel's address the one in the browser, and the token right?`, "error");
+      }
+      finish(t);
+    };
+    t.ws.onerror = (e) => console.error("push to talk: WebSocket error", e);
     // Audio flows from the start; what comes during the chime plays after it.
     const src = t.ctx.createMediaStreamSource(t.stream);
     const node = new AudioWorkletNode(t.ctx, "mic-capture");
@@ -80,11 +96,18 @@ export async function start(id, name, latched = false) {
     };
     src.connect(node);
   } catch (e) {
-    const denied = e?.name === "NotAllowedError";
-    toast(denied ? "The browser wasn't allowed to use the microphone." : `Couldn't start talking: ${e.message}`, "error");
+    console.error("push to talk:", e);
+    const why = {
+      NotAllowedError: "The browser wasn't allowed to use the microphone (check the site's permissions).",
+      NotFoundError: "No microphone was found.",
+      NotReadableError: "The microphone is in use by another program, or couldn't be opened.",
+    }[e?.name] ?? `Couldn't start talking: ${e?.name ?? ""} ${e?.message ?? e}`;
+    toast(why, "error");
     finish(t);
   }
 }
+
+let promptHinted = false;
 
 // Stop talking: what's said so far plays out, then the end chime.
 export function stop() {
@@ -122,8 +145,10 @@ function released() {
   const { id, at } = press;
   press = null;
   if (current?.id !== id) return;
-  if (performance.now() - at < 350) {
-    current.latched = true; // a tap: talk hands-free until pressed again
+  // A tap, or let go while still starting (the permission prompt took the
+  // mouse): talk hands-free until pressed again.
+  if (performance.now() - at < 350 || current.phase === "starting") {
+    current.latched = true;
     tell();
   } else {
     stop(); // held: let go to end
