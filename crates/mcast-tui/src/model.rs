@@ -394,3 +394,20 @@ pub fn is_multicast(group: &str) -> bool {
         .parse::<std::net::SocketAddr>()
         .is_ok_and(|a| a.ip().is_multicast())
 }
+
+/// An alert about a probe (offline, multicast loss).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Alert {
+    pub id: u64,
+    pub kind: String,
+    pub probe: String,
+    pub message: String,
+    pub raised_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AlertList {
+    pub active: Vec<Alert>,
+}

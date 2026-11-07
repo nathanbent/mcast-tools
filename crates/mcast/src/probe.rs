@@ -5,7 +5,7 @@ use crate::SapListenArgs;
 use anyhow::{anyhow, bail, Result};
 use clap::{Args, Subcommand};
 use mcast_control::probes::{Comparison, Verdict};
-use mcast_control::{now_ms, ProbeConfig, ProbeInfo};
+use mcast_control::{now_ms, Alert, AlertRules, ProbeConfig, ProbeInfo};
 use mcast_core::Interface;
 use mcast_probe::client::Client;
 use std::net::{IpAddr, SocketAddr};
@@ -23,7 +23,9 @@ use std::sync::atomic::AtomicBool;
   # from anywhere with the admin token
   mcast probe list --url http://10.0.0.5:8650 --token ADMIN
   mcast probe config idf-3 --label \"3rd floor IDF\" --unicast --interval 5
-  mcast probe config --defaults --group 239.192.2.1:10000")]
+  mcast probe config --defaults --group 239.192.2.1:10000
+  mcast probe alerts                    # what's wrong right now (and --all: lately)
+  mcast probe alert-rules --loss-percent 0.5 --raise-after 3")]
 pub enum ProbeCommand {
     /// Be a probe: watch streams as the server asks and report to it
     Run(RunArgs),
@@ -50,6 +52,16 @@ pub enum ProbeCommand {
         #[arg(short, long, default_value = "any")]
         iface: Interface,
     },
+    /// Alerts: probes offline, multicast loss
+    Alerts {
+        /// Also list resolved ones
+        #[arg(short, long)]
+        all: bool,
+        #[command(flatten)]
+        server: ServerArgs,
+    },
+    /// Show or change when alerts are raised
+    AlertRules(AlertRulesArgs),
     /// Forget a probe
     #[command(visible_alias = "rm")]
     Remove {
@@ -116,6 +128,38 @@ pub struct ServerArgs {
 impl ServerArgs {
     fn client(&self) -> Client {
         Client::new(&self.url, self.token.clone())
+    }
+}
+
+#[derive(Args)]
+pub struct AlertRulesArgs {
+    /// Loss on a multicast stream, in percent of one report interval, that counts as bad
+    #[arg(long, value_name = "PERCENT")]
+    loss_percent: Option<f64>,
+    /// Bad intervals in a row before an alert is raised
+    #[arg(long, value_name = "N")]
+    raise_after: Option<u32>,
+    /// Clean intervals in a row before it's resolved
+    #[arg(long, value_name = "N")]
+    clear_after: Option<u32>,
+    /// Alert when a probe stops checking in: on or off
+    #[arg(long, value_name = "on|off", value_parser = on_off)]
+    offline: Option<bool>,
+    /// Alert on multicast loss: on or off
+    #[arg(long, value_name = "on|off", value_parser = on_off)]
+    multicast_loss: Option<bool>,
+    /// Alert when the unicast copy arrives but the multicast stream doesn't: on or off
+    #[arg(long, value_name = "on|off", value_parser = on_off)]
+    no_multicast: Option<bool>,
+    #[command(flatten)]
+    server: ServerArgs,
+}
+
+fn on_off(s: &str) -> Result<bool, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "on" | "yes" | "true" | "1" => Ok(true),
+        "off" | "no" | "false" | "0" => Ok(false),
+        _ => Err("use on or off".into()),
     }
 }
 
@@ -266,6 +310,60 @@ pub fn run(c: ProbeCommand, stop: &AtomicBool) -> Result<()> {
             }
             Ok(())
         }
+        ProbeCommand::Alerts { all, server } => {
+            let list = server.client().alerts()?;
+            if list.active.is_empty() {
+                println!("no active alerts");
+            }
+            for a in &list.active {
+                println!("{}", alert_line(a));
+            }
+            if all && !list.recent.is_empty() {
+                println!("\nresolved:");
+                for a in &list.recent {
+                    println!("{}", alert_line(a));
+                }
+            }
+            Ok(())
+        }
+        ProbeCommand::AlertRules(a) => {
+            let client = a.server.client();
+            let mut r: AlertRules = client.alert_rules()?;
+            let before = r.clone();
+            if let Some(v) = a.loss_percent {
+                r.loss_percent = v;
+            }
+            if let Some(v) = a.raise_after {
+                r.raise_after = v;
+            }
+            if let Some(v) = a.clear_after {
+                r.clear_after = v;
+            }
+            if let Some(v) = a.offline {
+                r.offline = v;
+            }
+            if let Some(v) = a.multicast_loss {
+                r.multicast_loss = v;
+            }
+            if let Some(v) = a.no_multicast {
+                r.no_multicast = v;
+            }
+            if r != before {
+                r = client.set_alert_rules(&r)?;
+            }
+            let onoff = |b: bool| if b { "on" } else { "off" };
+            println!(
+                "probe offline: {}\nmulticast loss: {} (at {}% or more)\nno multicast: {}\n\
+                 raised after {} bad intervals in a row, resolved after {} clean ones",
+                onoff(r.offline),
+                onoff(r.multicast_loss),
+                r.loss_percent,
+                onoff(r.no_multicast),
+                r.raise_after,
+                r.clear_after
+            );
+            Ok(())
+        }
         ProbeCommand::Remove { id, server } => {
             server.client().remove(&id)?;
             println!("forgot {id}");
@@ -337,6 +435,29 @@ fn ago(ms: u64) -> String {
         0..=89 => format!("{s} s ago"),
         90..=5399 => format!("{} min ago", s / 60),
         _ => format!("{} h ago", s / 3600),
+    }
+}
+
+fn clock(ms: u64) -> String {
+    // UTC, so it reads the same everywhere the server's alerts are seen.
+    let s = ms / 1000;
+    format!("{:02}:{:02}:{:02}Z", s / 3600 % 24, s / 60 % 60, s % 60)
+}
+
+fn alert_line(a: &Alert) -> String {
+    match a.resolved_ms {
+        None => format!(
+            "ACTIVE   since {} ({})  {}",
+            clock(a.raised_ms),
+            ago(a.raised_ms),
+            a.message
+        ),
+        Some(r) => format!(
+            "resolved {} - {}  {}",
+            clock(a.raised_ms),
+            clock(r),
+            a.message
+        ),
     }
 }
 

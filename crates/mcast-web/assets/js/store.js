@@ -11,6 +11,8 @@ export const state = {
   monitor: null,     // null: not loaded; false: monitor is off
   probes: new Map(), // id -> probe
   probeDefaults: null,
+  alerts: { active: [], recent: [] }, // recent: newest first
+  alertRules: null,
   texts: new Map(),  // text job id -> lines, oldest first
 };
 
@@ -57,12 +59,19 @@ export async function refresh(what) {
       state.probeDefaults = await api("GET", "/probe-defaults");
       what = "probes";
       break;
+    case "alerts":
+      state.alerts = await api("GET", "/alerts");
+      break;
+    case "alert-rules":
+      state.alertRules = await api("GET", "/alert-rules");
+      what = "alerts";
+      break;
   }
   changed(what);
 }
 
 export function refreshAll() {
-  return Promise.all(["jobs", "streams", "media", "devices", "monitor", "probes"].map(refresh));
+  return Promise.all(["jobs", "streams", "media", "devices", "monitor", "probes", "alerts"].map(refresh));
 }
 
 export function putJob(job) {
@@ -103,6 +112,15 @@ export function apply(event) {
     case "monitor":
       state.monitor = event.snapshot;
       changed("monitor");
+      break;
+    case "alert_raised":
+      state.alerts.active = state.alerts.active.filter((a) => a.id !== event.alert.id).concat(event.alert);
+      changed("alerts");
+      break;
+    case "alert_resolved":
+      state.alerts.active = state.alerts.active.filter((a) => a.id !== event.alert.id);
+      state.alerts.recent = [event.alert, ...state.alerts.recent].slice(0, 200);
+      changed("alerts");
       break;
     case "probe_updated":
       state.probes.set(event.probe.id, event.probe);

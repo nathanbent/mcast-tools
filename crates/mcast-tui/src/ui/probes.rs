@@ -89,17 +89,50 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         return empty(
             f,
             area,
-            "No probes yet. On each probe, run: mcast probe run --server URL --token TOKEN \
-             (or without --server, to find this server by its multicast beacon).",
+            "No probes yet. On each probe, run: mcast probe run --token TOKEN \
+             (it finds this server by its multicast beacon; add --server URL where \
+             multicast doesn't reach).",
         );
     }
+    // Active alerts first, then the list, then the selected probe.
+    let shown = app.alerts.len().min(5);
+    let alert_height = match app.alerts.len() {
+        0 => 0,
+        n => (shown + usize::from(n > shown) + 1) as u16,
+    };
     let list_height = (app.probes.len() as u16 + 1).clamp(2, (area.height * 2 / 5).max(3));
-    let [list, _, detail] = Layout::vertical([
+    let [alerts_area, list, _, detail] = Layout::vertical([
+        Constraint::Length(alert_height),
         Constraint::Length(list_height),
         Constraint::Length(1),
         Constraint::Min(3),
     ])
     .areas(area);
+    if !app.alerts.is_empty() {
+        let mut lines: Vec<Line> = app
+            .alerts
+            .iter()
+            .rev()
+            .take(shown)
+            .map(|a| {
+                Line::from(vec![
+                    Span::raw("▲ ").fg(Color::Red).bold(),
+                    Span::raw(a.message.clone()),
+                    Span::raw(format!("  since {}", ago(a.raised_ms))).dim(),
+                ])
+            })
+            .collect();
+        if app.alerts.len() > shown {
+            lines.push(
+                Line::from(format!(
+                    "  and {} more (mcast probe alerts)",
+                    app.alerts.len() - shown
+                ))
+                .dim(),
+            );
+        }
+        f.render_widget(Paragraph::new(lines), alerts_area);
+    }
 
     let rows = app.probes.iter().map(|p| {
         let h = p.health();

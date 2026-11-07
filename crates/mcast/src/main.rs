@@ -495,6 +495,10 @@ struct ServeArgs {
     /// TTL of the announcements: raise it for probes several routers away
     #[arg(long, default_value_t = 16)]
     beacon_ttl: u32,
+    /// POST alerts (a probe offline, multicast loss) to this URL as JSON with
+    /// a "text" field, which Slack and Mattermost incoming webhooks show
+    #[arg(long, env = "MCAST_ALERT_WEBHOOK", value_name = "URL")]
+    alert_webhook: Option<String>,
 }
 
 #[derive(Args)]
@@ -1002,6 +1006,7 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
                 ttl: a.beacon_ttl,
             },
         ),
+        alert_webhook: a.alert_webhook,
     };
     let web = if a.no_web {
         axum::Router::new()

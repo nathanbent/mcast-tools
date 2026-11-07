@@ -10,7 +10,6 @@ mod text;
 
 use crate::app::{App, Level, Mode, Tab};
 use crate::keys::HELP;
-use crate::model::Health;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -101,12 +100,8 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     ])
     .areas(top);
     f.render_widget(Paragraph::new(Span::raw(" mcast").bold()), name);
-    // Probes needing attention, beside the tab name.
-    let alerts = app
-        .probes
-        .iter()
-        .filter(|p| matches!(p.health(), Health::Problem | Health::Offline))
-        .count();
+    // Active alerts, beside the Probes tab's name.
+    let alerts = app.alerts.len();
     let titles = Tab::ALL.iter().enumerate().map(|(i, t)| {
         let mut l = Line::from(format!("{} {}", i + 1, t.title()));
         if *t == Tab::Probes && alerts > 0 {

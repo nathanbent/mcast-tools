@@ -27,6 +27,9 @@ MCAST_EXTRA_ARGS=""
 # A token that only lets probes check in, so the one copied onto every probe
 # can't be used to page. Leave empty to have one generated (printed at the end).
 MCAST_PROBE_TOKEN=""
+# Post probe alerts (a probe offline, multicast loss) to this URL, e.g. a Slack
+# or Mattermost incoming webhook. Empty: no webhook (alerts still show in the GUI).
+MCAST_ALERT_WEBHOOK=""
 
 # --- Probe -----------------------------------------------------------------
 # Run "mcast probe": watch the multicast streams here and report to an mcast

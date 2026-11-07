@@ -11,6 +11,7 @@ mod media;
 mod probes;
 mod routes;
 mod text;
+mod webhook;
 
 use events::events;
 use files::{start_file_receiver, start_file_sender};
@@ -62,6 +63,8 @@ pub struct ServerConfig {
     pub probe_state: Option<PathBuf>,
     /// Announce the server to probes by multicast; `None` doesn't.
     pub beacon: Option<BeaconConfig>,
+    /// POST alerts (probe offline, multicast loss) to this URL as JSON.
+    pub alert_webhook: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,9 +99,20 @@ impl AppState {
             .with_context(|| format!("creating media directory {}", cfg.media_dir.display()))?;
         let media_dir = cfg.media_dir.canonicalize()?;
         let (events, _) = broadcast::channel(1024);
+        let webhook = match cfg
+            .alert_webhook
+            .as_deref()
+            .filter(|u| !u.trim().is_empty())
+        {
+            Some(url) => Some(webhook::Webhook::start(url.trim().to_string())?),
+            None => None,
+        };
         let sink: EventSink = {
             let tx = events.clone();
             Arc::new(move |e| {
+                if let Some(w) = &webhook {
+                    w.offer(&e);
+                }
                 // No subscribers is fine.
                 let _ = tx.send(e);
             })
@@ -227,6 +241,8 @@ pub fn router(state: AppState) -> Router {
         .route("/file-receivers", post(start_file_receiver))
         .route("/events", get(events))
         .route("/probe-hello", get(probe_hello))
+        .route("/alerts", get(list_alerts))
+        .route("/alert-rules", get(alert_rules).put(set_alert_rules))
         .route("/probes", get(list_probes))
         .route("/probes/{id}", get(get_probe).delete(remove_probe))
         .route("/probes/{id}/checkin", post(probe_check_in))

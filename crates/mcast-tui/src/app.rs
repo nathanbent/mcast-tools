@@ -3,7 +3,9 @@
 
 use crate::api::{ApiError, Client, Feed};
 use crate::form::{FormKind, Forms};
-use crate::model::{Device, Job, MediaFile, Probe, Report, Snapshot, Stream, TextLine};
+use crate::model::{
+    Alert, AlertList, Device, Job, MediaFile, Probe, Report, Snapshot, Stream, TextLine,
+};
 pub use crate::probes::ProbeField;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -89,6 +91,7 @@ pub enum Msg {
     Devices(Result<Vec<Device>, ApiError>),
     Monitor(Result<Snapshot, ApiError>),
     Probes(Result<Vec<Probe>, ApiError>),
+    Alerts(Result<AlertList, ApiError>),
     /// A probe's stored reports, for its timeline.
     Reports(String, Result<Vec<Report>, ApiError>),
     /// A probe after a change to it.
@@ -119,6 +122,8 @@ pub struct App {
     pub channel: Option<u64>,
     /// Sorted by ID.
     pub probes: Vec<Probe>,
+    /// Active alerts, oldest first.
+    pub alerts: Vec<Alert>,
     /// The selected probe's reports (its ID, oldest first).
     pub reports: Option<(String, Vec<Report>)>,
     /// A probe whose reports are being fetched.
@@ -151,6 +156,7 @@ impl App {
             texts: HashMap::new(),
             channel: None,
             probes: Vec::new(),
+            alerts: Vec::new(),
             reports: None,
             reports_loading: None,
             selected: [0; 6],
@@ -291,7 +297,9 @@ impl App {
                 }
                 Err(e) => fail(self, e),
             },
-            m @ (Msg::Probes(_) | Msg::Reports(..) | Msg::ProbeChanged(..)) => self.probe_msg(m),
+            m @ (Msg::Probes(_) | Msg::Alerts(_) | Msg::Reports(..) | Msg::ProbeChanged(..)) => {
+                self.probe_msg(m)
+            }
             Msg::Monitor(r) => match r {
                 Ok(m) => self.monitor = Some(Some(m)),
                 Err(e) if e.status == 404 => self.monitor = Some(None),

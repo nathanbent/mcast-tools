@@ -17,6 +17,7 @@
 //! [`Probes`] is the server's side: the registry, what each probe has
 //! reported, and the configurations, optionally saved to a JSON file.
 
+use crate::alerts::{self, Alert, AlertRules, Alerts};
 use crate::watch::{StreamRow, WatchedGroup};
 use crate::{now_ms, Event, EventSink};
 use anyhow::{Context, Result};
@@ -430,8 +431,10 @@ impl Probe {
         }
     }
 
-    /// Store new reports; returns the highest seq held for this boot.
-    fn absorb(&mut self, boot: u32, reports: Vec<IntervalReport>) -> Option<u64> {
+    /// Store new reports; returns the highest seq held for this boot and
+    /// how many of `reports` were new (they're the last ones in `history`).
+    fn absorb(&mut self, boot: u32, reports: Vec<IntervalReport>) -> (Option<u64>, usize) {
+        let mut new = 0;
         if self.boot != Some(boot) {
             self.boot = Some(boot);
             self.last_seq = None;
@@ -441,6 +444,7 @@ impl Probe {
                 continue; // a retry of something we already have
             }
             self.last_seq = Some(r.seq);
+            new += 1;
             for row in &r.streams {
                 let key = (row.group, row.ssrc, row.source);
                 self.totals
@@ -467,7 +471,7 @@ impl Probe {
             }
             self.history.push_back(r);
         }
-        self.last_seq
+        (self.last_seq, new.min(HISTORY))
     }
 }
 
@@ -475,6 +479,8 @@ impl Probe {
 struct Saved {
     #[serde(default)]
     defaults: ProbeConfig,
+    #[serde(default)]
+    alert_rules: AlertRules,
     #[serde(default)]
     probes: BTreeMap<String, SavedProbe>,
 }
@@ -488,6 +494,16 @@ struct SavedProbe {
 struct State {
     defaults: ProbeConfig,
     probes: BTreeMap<String, Probe>,
+    rules: AlertRules,
+    alerts: Alerts,
+}
+
+/// Active alerts and recently resolved ones.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AlertList {
+    pub active: Vec<Alert>,
+    /// Newest first.
+    pub recent: Vec<Alert>,
 }
 
 /// The server's registry of probes.
@@ -547,6 +563,8 @@ impl Probes {
             state: Mutex::new(State {
                 defaults: saved.defaults,
                 probes,
+                rules: saved.alert_rules,
+                alerts: Alerts::default(),
             }),
             sink,
             mirror,
@@ -556,6 +574,42 @@ impl Probes {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Tell subscribers about raised and resolved alerts.
+    fn emit_alerts(&self, changes: Vec<alerts::Change>) {
+        for c in changes {
+            (self.sink)(match c {
+                alerts::Change::Raised(alert) => Event::AlertRaised { alert },
+                alerts::Change::Resolved(alert) => Event::AlertResolved { alert },
+            });
+        }
+    }
+
+    pub fn alerts(&self) -> AlertList {
+        let st = self.lock();
+        AlertList {
+            active: st.alerts.active(),
+            recent: st.alerts.recent(),
+        }
+    }
+
+    pub fn alert_rules(&self) -> AlertRules {
+        self.lock().rules.clone()
+    }
+
+    /// Change when alerts are raised; alerts of kinds turned off are resolved.
+    pub fn set_alert_rules(&self, rules: AlertRules) -> Result<AlertRules, ProbeError> {
+        rules.validate().map_err(ProbeError::Invalid)?;
+        let changes = {
+            let mut st = self.lock();
+            st.rules = rules.clone();
+            self.save(&st);
+            let st = &mut *st;
+            st.alerts.rules_changed(&st.rules, now_ms())
+        };
+        self.emit_alerts(changes);
+        Ok(rules)
     }
 
     pub fn list(&self) -> Vec<ProbeInfo> {
@@ -646,12 +700,14 @@ impl Probes {
 
     /// Forget a probe (it reappears with the defaults if it checks in again).
     pub fn remove(&self, id: &str) -> Result<(), ProbeError> {
-        {
+        let changes = {
             let mut st = self.lock();
             st.probes.remove(id).ok_or(ProbeError::NotFound)?;
             self.save(&st);
-        }
+            st.alerts.forget(id, now_ms())
+        };
         (self.sink)(Event::ProbeRemoved { id: id.to_string() });
+        self.emit_alerts(changes);
         self.refresh_mirror();
         Ok(())
     }
@@ -669,11 +725,12 @@ impl Probes {
             )));
         }
         let now = now_ms();
-        let (reply, info) = {
+        let (reply, info, changes) = {
             let mut st = self.lock();
             let st = &mut *st;
             let new = !st.probes.contains_key(id);
             let p = st.probes.entry(id.to_string()).or_default();
+            let was_offline = p.last_seen_ms.is_some() && !p.online;
             p.first_seen_ms.get_or_insert(now);
             p.last_seen_ms = Some(now);
             p.hostname = c.hostname;
@@ -684,7 +741,21 @@ impl Probes {
             p.queued = c.queued;
             p.dropped = c.dropped;
             p.online = true;
-            let acked_seq = p.absorb(c.boot, c.reports);
+            let (acked_seq, fresh) = p.absorb(c.boot, c.reports);
+            let label = p.effective(&st.defaults).label.clone();
+            let mut changes = Vec::new();
+            if was_offline {
+                changes.extend(
+                    st.alerts
+                        .presence(&st.rules, id, label.as_deref(), true, now, now),
+                );
+            }
+            for r in p.history.iter().skip(p.history.len() - fresh) {
+                changes.extend(
+                    st.alerts
+                        .report(&st.rules, id, label.as_deref(), r, &compare(r)),
+                );
+            }
             let reply = CheckInReply {
                 config: p.effective(&st.defaults).clone(),
                 acked_seq,
@@ -694,9 +765,10 @@ impl Probes {
             if new {
                 self.save(st);
             }
-            (reply, info)
+            (reply, info, changes)
         };
         (self.sink)(Event::ProbeUpdated { probe: info });
+        self.emit_alerts(changes);
         self.refresh_mirror();
         Ok(reply)
     }
@@ -704,20 +776,26 @@ impl Probes {
     /// Notice probes that stopped checking in. Call about once a second.
     pub fn tick(&self) {
         let now = now_ms();
-        let went_offline: Vec<ProbeInfo> = {
+        let (went_offline, changes) = {
             let mut st = self.lock();
             let st = &mut *st;
-            st.probes
+            let mut changes = Vec::new();
+            let went: Vec<ProbeInfo> = st
+                .probes
                 .iter_mut()
                 .filter_map(|(id, p)| {
                     if p.online && !p.is_online(&st.defaults, now) {
                         p.online = false;
+                        let label = p.effective(&st.defaults).label.as_deref();
+                        let seen = p.last_seen_ms.unwrap_or(now);
+                        changes.extend(st.alerts.presence(&st.rules, id, label, false, seen, now));
                         Some(p.info(id, &st.defaults, now))
                     } else {
                         None
                     }
                 })
-                .collect()
+                .collect();
+            (went, changes)
         };
         if went_offline.is_empty() {
             return;
@@ -725,6 +803,7 @@ impl Probes {
         for probe in went_offline {
             (self.sink)(Event::ProbeUpdated { probe });
         }
+        self.emit_alerts(changes);
         self.refresh_mirror();
     }
 
@@ -748,6 +827,7 @@ impl Probes {
         };
         let saved = Saved {
             defaults: st.defaults.clone(),
+            alert_rules: st.rules.clone(),
             probes: st
                 .probes
                 .iter()
@@ -958,6 +1038,71 @@ mod tests {
         probes.remove("pi-1").unwrap();
         assert!(mirror.targets().is_empty());
         assert!(probes.get("pi-1").is_none());
+    }
+
+    #[test]
+    fn check_ins_raise_and_resolve_alerts() {
+        let (sink, events) = sink();
+        let path = std::env::temp_dir().join(format!(
+            "mcast-alerts-test-{}/probes.json",
+            mcast_core::random_u32()
+        ));
+        let probes = Probes::new(sink.clone(), Mirror::new(), Some(path.clone())).unwrap();
+        let lossy = |seq| report(seq, vec![row("239.69.0.1:5004", 1, 90, 10)]);
+        let clean = |seq| report(seq, vec![row("239.69.0.1:5004", 1, 100, 0)]);
+        // Two lossy intervals in one check-in (a probe catching up) raise one alert.
+        probes
+            .check_in("pi-1", check_in(1, vec![lossy(1), lossy(2)]))
+            .unwrap();
+        let list = probes.alerts();
+        assert_eq!(list.active.len(), 1);
+        assert_eq!(list.active[0].kind, crate::AlertKind::MulticastLoss);
+        assert_eq!(
+            list.active[0].raised_ms,
+            lossy(2).end_ms,
+            "dated by the report"
+        );
+        assert!(events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, Event::AlertRaised { .. })));
+        probes
+            .check_in("pi-1", check_in(1, vec![clean(3), clean(4), clean(5)]))
+            .unwrap();
+        let list = probes.alerts();
+        assert!(list.active.is_empty());
+        assert_eq!(list.recent.len(), 1);
+
+        // Offline: tick notices once it's overdue, and checking in resolves it.
+        {
+            let mut st = probes.lock();
+            st.probes.get_mut("pi-1").unwrap().last_seen_ms = Some(1);
+        }
+        probes.tick();
+        assert_eq!(
+            probes.alerts().active[0].kind,
+            crate::AlertKind::ProbeOffline
+        );
+        probes.check_in("pi-1", check_in(1, vec![])).unwrap();
+        assert!(probes.alerts().active.is_empty());
+
+        // Rules are checked and kept.
+        assert!(probes
+            .set_alert_rules(AlertRules {
+                raise_after: 0,
+                ..AlertRules::default()
+            })
+            .is_err());
+        let rules = AlertRules {
+            loss_percent: 5.0,
+            ..AlertRules::default()
+        };
+        probes.set_alert_rules(rules.clone()).unwrap();
+        drop(probes);
+        let probes = Probes::new(sink, Mirror::new(), Some(path.clone())).unwrap();
+        assert_eq!(probes.alert_rules(), rules);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

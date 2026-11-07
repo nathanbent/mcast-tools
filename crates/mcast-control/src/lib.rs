@@ -2,6 +2,7 @@
 //! server share, and long-running services (jobs, SAP discovery, monitoring)
 //! that report what they're doing as [`Event`]s.
 
+pub mod alerts;
 pub mod announcements;
 pub mod describe;
 pub mod jobs;
@@ -9,6 +10,7 @@ pub mod probes;
 pub mod request;
 pub mod watch;
 
+pub use alerts::{Alert, AlertKind, AlertRules};
 pub use announcements::{Announced, Announcements};
 pub use jobs::{
     JobId, JobInfo, JobKind, JobState, Jobs, ReceivedFile, StartError, TextError, TextLine,
@@ -46,6 +48,14 @@ pub enum Event {
     },
     Monitor {
         snapshot: MonitorSnapshot,
+    },
+    /// An alert about a probe was raised (see [`alerts`]).
+    AlertRaised {
+        alert: Alert,
+    },
+    /// ...or resolved.
+    AlertResolved {
+        alert: Alert,
     },
     /// A probe checked in, went offline, or was reconfigured.
     ProbeUpdated {

@@ -33,6 +33,7 @@ fn harness_with(token: Option<&str>, probe_token: Option<&str>) -> Harness {
         probe_token: probe_token.map(Into::into),
         probe_state: None,
         beacon: None,
+        alert_webhook: None,
     };
     let (_tx, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
@@ -271,6 +272,7 @@ async fn refuses_to_listen_publicly_without_a_token() {
         probe_token: None,
         probe_state: None,
         beacon: None,
+        alert_webhook: None,
     };
     let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
     assert!(err.to_string().contains("without a token"));
@@ -683,4 +685,53 @@ async fn proves_it_knows_the_tokens_without_asking_for_one() {
     // The exemption is for that route only.
     let (status, _) = call(&h, "GET", "/api/v1/probes", None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lists_alerts_and_changes_their_rules() {
+    let h = harness(None);
+    let lossy = |seq: u64| {
+        json!({"seq": seq, "start_ms": seq * 10_000, "end_ms": seq * 10_000 + 10_000, "streams": [{
+            "group": "239.69.0.1:5004", "name": "Zone 1", "source": "10.0.0.5:40000", "ssrc": 7,
+            "payload_type": 0, "codec": null, "packets": 90, "bytes": 0, "packets_per_sec": 9.0,
+            "kbit_per_sec": 0.0, "lost": 10, "late": 0, "loss_percent": 10.0, "jitter_ms": null,
+            "max_gap_ms": 0.0, "ptime_ms": null, "ttl": null, "tos": null, "peak_dbfs": null,
+            "rms_dbfs": null, "idle_ms": 0.0}]})
+    };
+    let body = json!({"version": "t", "boot": 1, "reports": [lossy(1), lossy(2)]});
+    let (status, _) = call(&h, "POST", "/api/v1/probes/pi-1/checkin", Some(body), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, alerts) = call(&h, "GET", "/api/v1/alerts", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(alerts["active"][0]["kind"], "multicast_loss", "{alerts}");
+    assert_eq!(alerts["active"][0]["probe"], "pi-1");
+
+    let (status, rules) = call(&h, "GET", "/api/v1/alert-rules", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rules["loss_percent"], 1.0);
+    let (status, err) = call(
+        &h,
+        "PUT",
+        "/api/v1/alert-rules",
+        Some(json!({"loss_percent": 0})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    // Turning a kind off resolves its alerts.
+    let (status, _) = call(
+        &h,
+        "PUT",
+        "/api/v1/alert-rules",
+        Some(json!({"multicast_loss": false})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, alerts) = call(&h, "GET", "/api/v1/alerts", None, None).await;
+    assert_eq!(alerts["active"].as_array().unwrap().len(), 0);
+    assert!(alerts["recent"][0]["message"]
+        .as_str()
+        .unwrap()
+        .ends_with("(alert turned off)"));
 }

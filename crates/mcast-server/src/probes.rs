@@ -8,10 +8,11 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use mcast_control::probes::AlertList;
 use mcast_control::probes::{
     hello_proof, Beacon, CheckIn, CheckInReply, Hello, IntervalReport, ProbeError,
 };
-use mcast_control::{ProbeConfig, ProbeInfo};
+use mcast_control::{AlertRules, ProbeConfig, ProbeInfo};
 use mcast_core::Interface;
 use std::sync::Arc;
 use std::time::Duration;
@@ -184,4 +185,22 @@ pub(crate) async fn set_probe_defaults(
 ) -> ApiResult<Json<ProbeConfig>> {
     let Json(c) = body?;
     Ok(Json(s.0.probes.set_defaults(c)?))
+}
+
+// ---- alerts ----
+
+pub(crate) async fn list_alerts(State(s): State<AppState>) -> Json<AlertList> {
+    Json(s.0.probes.alerts())
+}
+
+pub(crate) async fn alert_rules(State(s): State<AppState>) -> Json<AlertRules> {
+    Json(s.0.probes.alert_rules())
+}
+
+pub(crate) async fn set_alert_rules(
+    State(s): State<AppState>,
+    body: Result<Json<AlertRules>, JsonRejection>,
+) -> ApiResult<Json<AlertRules>> {
+    let Json(r) = body?;
+    Ok(Json(s.0.probes.set_alert_rules(r)?))
 }

@@ -11,6 +11,7 @@ axum.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
 tokio.workspace = true
 mcast-core.workspace = true
 mcast-audio.workspace = true

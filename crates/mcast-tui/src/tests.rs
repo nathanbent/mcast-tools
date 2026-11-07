@@ -37,6 +37,7 @@ fn server(token: Option<&str>) -> Server {
         probe_token: None,
         probe_state: None,
         beacon: None,
+        alert_webhook: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -353,7 +354,7 @@ fn fake_probe(url: &str, id: &str) {
         .map(|seq| {
             serde_json::json!({
                 "seq": seq, "start_ms": seq * 10_000, "end_ms": seq * 10_000 + 10_000,
-                "streams": [row("239.255.77.62:5004", 495, if seq == 3 { 5 } else { 0 }),
+                "streams": [row("239.255.77.62:5004", 495, if seq >= 2 { 5 } else { 0 }),
                             row("0.0.0.0:5104", 500, 0)],
             })
         })
@@ -381,8 +382,13 @@ fn shows_and_configures_probes() {
         a.probe_reports().is_some_and(|r| r.len() == 3)
     });
     let s = screen(&app, 120, 30);
-    assert!(s.contains("idf-3") && s.contains("6 Probes 1"), "{s}");
-    assert!(s.contains("1 of 3 intervals with multicast loss"), "{s}");
+    assert!(s.contains("idf-3"), "{s}");
+    assert!(s.contains("2 of 3 intervals with multicast loss"), "{s}");
+    // Two lossy intervals in a row: an alert, listed and counted on the tab.
+    pump(&mut app, &rx, "the alert", |a| a.alerts.len() == 1);
+    let s = screen(&app, 120, 30);
+    assert!(s.contains("▲ idf-3: 1.0% multicast loss on Zone 1"), "{s}");
+    assert!(s.contains("6 Probes 1"), "{s}");
     assert!(s.contains("5 lost (1.00 %)"), "{s}");
 
     // Turn unicast copies on: the server compares, and says multicast is at fault.

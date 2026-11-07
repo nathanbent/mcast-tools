@@ -340,6 +340,15 @@ button.subtle.danger { color: var(--bad); }
 .totals > summary { margin-bottom: 0; }
 .totals[open] > summary { margin-bottom: 8px; }
 
+.alerts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; border-left: 4px solid var(--bad); }
+.alerts:not(:has(.alert-list > .alert:not(.resolved))) { border-left-color: var(--line); }
+.alert-list { display: flex; flex-direction: column; gap: 8px; }
+.alert { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; align-items: start; }
+.alert .badge { justify-self: start; }
+.alert.resolved { color: var(--muted); }
+.alerts details > summary { margin-bottom: 0; }
+.alerts details[open] > summary { margin-bottom: 8px; }
+
 .timeline { display: flex; flex-direction: column; gap: 4px; }
 .bars { display: flex; justify-content: flex-end; align-items: flex-end; gap: 1px; height: 40px; padding: 2px; background: var(--bg); border-radius: 4px; }
 .bars .bar { flex: 1; min-width: 1px; max-width: 12px; height: 100%; display: flex; align-items: flex-end; }
@@ -353,7 +362,7 @@ button.subtle.danger { color: var(--bad); }
 @media (max-width: 600px) {
   nav { margin-left: 0; }
   #version { display: none; }
-  .verdict { grid-template-columns: minmax(0, 1fr); }
+  .verdict, .alert { grid-template-columns: minmax(0, 1fr); }
   .probe-actions { width: 100%; margin-left: -12px; }
 }
 

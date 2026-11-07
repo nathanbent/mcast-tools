@@ -1,7 +1,8 @@
 //! Blocking client for the probe routes of the mcast API.
 
+use mcast_control::probes::AlertList;
 use mcast_control::probes::{CheckIn, CheckInReply, Hello, IntervalReport};
-use mcast_control::{ProbeConfig, ProbeInfo};
+use mcast_control::{AlertRules, ProbeConfig, ProbeInfo};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt;
@@ -143,5 +144,17 @@ impl Client {
 
     pub fn set_defaults(&self, c: &ProbeConfig) -> ClientResult<ProbeConfig> {
         self.send("PUT", "/probe-defaults", c)
+    }
+
+    pub fn alerts(&self) -> ClientResult<AlertList> {
+        self.get("/alerts")
+    }
+
+    pub fn alert_rules(&self) -> ClientResult<AlertRules> {
+        self.get("/alert-rules")
+    }
+
+    pub fn set_alert_rules(&self, r: &AlertRules) -> ClientResult<AlertRules> {
+        self.send("PUT", "/alert-rules", r)
     }
 }

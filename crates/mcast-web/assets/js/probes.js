@@ -25,6 +25,14 @@ const timelines = new Map();  // id -> { el, reports, loading }
 const totalsOpen = new Set();
 let addForm = null;
 let defaultsForm = null;
+let rulesForm = null;
+let recentOpen = false;
+
+const ALERT_KINDS = {
+  probe_offline: ["offline", "Offline"],
+  multicast_loss: ["bad", "Multicast loss"],
+  no_multicast: ["bad", "No multicast"],
+};
 
 const multicastRows = (report) => (report?.streams ?? []).filter((r) => !isUnicast(r.group));
 
@@ -303,7 +311,82 @@ function header() {
     counts.offline > 0 && h("span", { class: "badge offline" }, `${counts.offline} offline`),
     h("span", { class: "spacer" }),
     h("button", { disabled: !!addForm, onclick: openAdd }, "Add probe"),
-    h("button", { disabled: !!defaultsForm, onclick: openDefaults }, "Defaults"));
+    h("button", { disabled: !!defaultsForm, onclick: openDefaults }, "Defaults"),
+    h("button", { disabled: !!rulesForm, onclick: openRules }, "Alert rules"));
+}
+
+// ---- alerts ----
+
+function when(ms) {
+  const d = new Date(ms);
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? d.toLocaleTimeString() : d.toLocaleString();
+}
+
+function alertRow(a) {
+  const [cls, label] = ALERT_KINDS[a.kind] ?? ["idle", a.kind];
+  const resolved = a.resolved_ms != null;
+  return h("li", { class: `alert ${resolved ? "resolved" : cls}` },
+    h("span", { class: `badge ${resolved ? "idle" : cls}` }, label),
+    h("span", {}, a.message,
+      h("div", { class: "muted small" },
+        resolved ? `${when(a.raised_ms)} – ${when(a.resolved_ms)}` : `since ${when(a.raised_ms)} (${ago(a.raised_ms)})`)));
+}
+
+function alertsSection() {
+  const { active, recent } = state.alerts;
+  if (active.length === 0 && recent.length === 0) return null;
+  return h("section", { class: "alerts", "aria-label": "Alerts" },
+    h("h3", {}, active.length ? `Alerts (${active.length})` : "Alerts"),
+    active.length
+      ? h("ul", { class: "alert-list" }, active.map(alertRow))
+      : h("p", { class: "muted small" }, "Nothing wrong right now."),
+    recent.length > 0 && h("details", { open: recentOpen, ontoggle: (e) => { recentOpen = e.target.open; } },
+      h("summary", {}, `Resolved (${recent.length})`),
+      h("ul", { class: "alert-list" }, recent.slice(0, 50).map(alertRow))));
+}
+
+function openRules() {
+  const r = state.alertRules ?? { offline: true, multicast_loss: true, loss_percent: 1, no_multicast: true, raise_after: 2, clear_after: 3 };
+  const box = (checked) => h("input", { type: "checkbox", checked });
+  const num = (value, props) => h("input", { type: "number", value, ...props });
+  const els = {
+    offline: box(r.offline),
+    multicast_loss: box(r.multicast_loss),
+    loss_percent: num(r.loss_percent, { min: 0.01, max: 100, step: "any", required: true }),
+    no_multicast: box(r.no_multicast),
+    raise_after: num(r.raise_after, { min: 1, max: 100, step: 1, required: true }),
+    clear_after: num(r.clear_after, { min: 1, max: 100, step: 1, required: true }),
+  };
+  rulesForm = h("form", { class: "probe-form", onsubmit: async (e) => {
+      e.preventDefault();
+      try {
+        state.alertRules = await api("PUT", "/alert-rules", {
+          offline: els.offline.checked,
+          multicast_loss: els.multicast_loss.checked,
+          loss_percent: Number(els.loss_percent.value),
+          no_multicast: els.no_multicast.checked,
+          raise_after: Number(els.raise_after.value),
+          clear_after: Number(els.clear_after.value),
+        });
+        rulesForm = null;
+        rerender();
+        toast("Saved the alert rules.", "ok");
+      } catch (err) { toast(err.message, "error"); }
+    } },
+    h("label", { class: "check" }, els.offline, "A probe stops checking in"),
+    h("label", { class: "check" }, els.multicast_loss, "Multicast loss on a stream"),
+    h("div", { class: "row" },
+      h("label", { class: "field" }, h("span", {}, "Counts at (% lost in a report interval)"), els.loss_percent),
+      h("label", { class: "field" }, h("span", {}, "Raise after (bad intervals in a row)"), els.raise_after),
+      h("label", { class: "field" }, h("span", {}, "Resolve after (clean intervals in a row)"), els.clear_after)),
+    h("label", { class: "check" }, els.no_multicast, "A probe gets a stream's unicast copy but not the stream"),
+    h("p", { class: "muted small" },
+      "Alerts show here, in mcast tui and in mcast probe alerts, and are posted to the server's webhook if it has one (mcast serve --alert-webhook)."),
+    h("div", { class: "buttons" },
+      h("button", { type: "submit", class: "primary" }, "Save"),
+      h("button", { type: "button", class: "subtle", onclick: () => { rulesForm = null; rerender(); } }, "Cancel")));
+  rerender();
 }
 
 function openAdd() {
@@ -340,8 +423,10 @@ function empty() {
   return h("section", { class: "empty" },
     h("h3", {}, "No probes yet"),
     h("p", {}, "Probes are small receivers (a Raspberry Pi, say) that watch the multicast streams where they sit and report here. On each probe, run:"),
-    h("pre", { class: "mono" }, `mcast probe run --server ${location.origin} --token TOKEN --id NAME`),
+    h("pre", { class: "mono" }, "mcast probe run --token TOKEN"),
     h("p", { class: "muted small" },
+      "It finds this server by its multicast beacon; where multicast doesn't reach, add ",
+      h("code", {}, `--server ${location.origin}`), ". ",
       "Start the server with --probe-token to give probes a token that can only check in. ",
       "With “Send it unicast copies” on, each page also goes to the probe by unicast, so it can tell multicast trouble from network trouble."));
 }
@@ -357,6 +442,9 @@ function rerender() {
   const probes = [...state.probes.values()].sort((a, b) => a.id.localeCompare(b.id));
   replace(root,
     header(),
+    rulesForm && h("section", { class: "probe-edit" }, h("h3", {}, "Alert rules"),
+      h("p", { class: "muted small" }, "When to raise an alert, for every probe."), rulesForm),
+    alertsSection(),
     addForm && h("section", { class: "probe-edit" }, h("h3", {}, "Add a probe"),
       h("p", { class: "muted small" }, "Set it up before it's deployed; it gets this configuration when it first checks in."), addForm),
     defaultsForm && h("section", { class: "probe-edit" }, h("h3", {}, "Defaults"),
@@ -368,6 +456,7 @@ export function mount(el) {
   root = el;
   rerender();
   subscribe((what, id) => {
+    if (what === "alerts") return rerender();
     if (what !== "probes") return;
     // Keep open timelines up to date.
     if (id != null && timelines.has(id)) loadTimeline(id);
@@ -377,4 +466,5 @@ export function mount(el) {
   // "Last check-in 3 min ago" goes stale on its own.
   setInterval(rerender, 15000);
   refresh("probe-defaults").catch(() => {});
+  refresh("alert-rules").catch(() => {});
 }

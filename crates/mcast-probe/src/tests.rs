@@ -37,6 +37,7 @@ fn server_with(token: Option<&str>, probe_token: Option<&str>) -> Server {
         probe_token: probe_token.map(Into::into),
         probe_state: None,
         beacon: None,
+        alert_webhook: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);

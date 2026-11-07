@@ -32,12 +32,15 @@ impl App {
             }),
             "monitor" => self.spawn(|c| Msg::Monitor(c.get("/monitor"))),
             "probes" => self.spawn(|c| Msg::Probes(c.get("/probes"))),
+            "alerts" => self.spawn(|c| Msg::Alerts(c.get("/alerts"))),
             _ => {}
         }
     }
 
     pub fn refresh_all(&self) {
-        for w in ["jobs", "streams", "media", "devices", "monitor", "probes"] {
+        for w in [
+            "jobs", "streams", "media", "devices", "monitor", "probes", "alerts",
+        ] {
             self.refresh(w);
         }
     }

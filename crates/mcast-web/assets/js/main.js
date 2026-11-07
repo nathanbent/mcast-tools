@@ -60,12 +60,12 @@ function route() {
   document.title = view === "probes" ? "Probes · mcast" : "mcast";
 }
 
-// Probes needing attention, on the nav tab.
+// Active alerts, on the nav tab.
 function probeBadge() {
-  const n = [...state.probes.values()].filter((p) => ["bad", "offline"].includes(probes.health(p))).length;
+  const n = state.alerts.active.length;
   $("probe-alerts").hidden = n === 0;
   $("probe-alerts").textContent = n;
-  $("probe-alerts").title = `${n} probe${n === 1 ? "" : "s"} offline or with a problem`;
+  $("probe-alerts").title = `${n} active alert${n === 1 ? "" : "s"}`;
 }
 
 async function start() {
@@ -93,7 +93,7 @@ async function start() {
   monitor.mount($("monitor"));
   probes.mount($("probes"));
   probeBadge();
-  subscribe((what) => what === "probes" && probeBadge());
+  subscribe((what) => what === "alerts" && probeBadge());
 
   let first = true;
   follow(apply, (s) => {

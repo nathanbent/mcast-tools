@@ -3,7 +3,7 @@
 
 use crate::api::ApiError;
 use crate::app::{App, Level, Msg, Tab};
-use crate::model::{Probe, Report};
+use crate::model::{Alert, Probe, Report};
 use serde_json::{json, Value};
 
 /// Probe settings typed in a prompt.
@@ -29,6 +29,10 @@ impl App {
     pub(crate) fn probe_msg(&mut self, msg: Msg) {
         let fail = |app: &mut App, e: ApiError| app.say(e.message, Level::Error);
         match msg {
+            Msg::Alerts(r) => match r {
+                Ok(list) => self.alerts = list.active,
+                Err(e) => fail(self, e),
+            },
             Msg::Probes(r) => match r {
                 Ok(mut p) => {
                     p.sort_by(|a, b| a.id.cmp(&b.id));
@@ -85,6 +89,19 @@ impl App {
                     if self.selected_probe().is_some_and(|p| p.id == id) {
                         self.load_reports(id);
                     }
+                }
+            }
+            "alert_raised" => {
+                if let Ok(a) = serde_json::from_value::<Alert>(e["alert"].clone()) {
+                    self.alerts.retain(|x| x.id != a.id);
+                    self.say(format!("ALERT: {}", a.message), Level::Error);
+                    self.alerts.push(a);
+                }
+            }
+            "alert_resolved" => {
+                if let Ok(a) = serde_json::from_value::<Alert>(e["alert"].clone()) {
+                    self.alerts.retain(|x| x.id != a.id);
+                    self.say(format!("Resolved: {}", a.message), Level::Ok);
                 }
             }
             "probe_removed" => {
