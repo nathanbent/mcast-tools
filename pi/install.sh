@@ -244,7 +244,7 @@ install_intercom() {
             https=true
             INTERCOM_SCHEME=https
         else
-            note "Intercom panel over plain HTTP: $(/usr/local/bin/mcast --version) can't serve HTTPS yet (push to talk needs it). Run 'sudo mcast update', then re-run install.sh."
+            note "Intercom panel over plain HTTP: $(/usr/local/bin/mcast --version) can't serve HTTPS (it needs 0.5.0 or later; push to talk needs HTTPS). Run 'sudo mcast update', then re-run install.sh."
         fi
     fi
     umask 027
