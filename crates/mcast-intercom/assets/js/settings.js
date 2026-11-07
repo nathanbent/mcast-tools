@@ -9,6 +9,7 @@ import { state, subscribe } from "./store.js";
 import { field, select, numberInput, num } from "./editor.js";
 import { chimeField, chooserLink, openChooser } from "./chimes.js";
 import { MODES } from "./announcements.js";
+import { ENCODINGS, encodingValue } from "./zones.js";
 
 export async function putSettings(body, done) {
   try {
@@ -43,18 +44,21 @@ function defaults() {
     const mode = select([["", "Server default"], ...MODES], d.mode ?? "");
     const volume = numberInput(d.volume_db, { placeholder: "0" });
     const leadIn = numberInput(d.lead_in_ms, { min: 0, placeholder: "0" });
+    const encoding = select([["", "Server default (L16)"], ...ENCODINGS], encodingValue(d.encoding));
+    const groups = state.config.zones.flatMap((z) => z.targets);
+    const ownCodec = groups.filter((t) => t.encoding).length;
     const submit = async (e) => {
       e.preventDefault();
       const body = {
         chime: chime.value(), end_chime: endChime.value(), mode: mode.value || null,
-        volume_db: num(volume), lead_in_ms: num(leadIn),
+        volume_db: num(volume), lead_in_ms: num(leadIn), encoding: encoding.value || null,
       };
       for (const k of Object.keys(body)) if (body[k] == null) delete body[k];
       if (await putSettings({ defaults: body }, "Defaults saved")) dirty = false;
     };
     replace(el,
       h("p", { class: "muted" },
-        "Announcements use these unless they set their own. To have no chime on one announcement while a default chime is set, choose None in it."),
+        "Announcements (and zone groups, for the codec) use these unless they set their own. To have no chime on one announcement while a default chime is set, choose None in it."),
       h("form", { oninput: () => { dirty = true; }, onchange: () => { dirty = true; }, onsubmit: submit },
         h("fieldset", { class: "part" }, h("legend", {}, "Chimes"),
           h("div", { class: "row" }, chime.el, endChime.el),
@@ -64,6 +68,11 @@ function defaults() {
             field("Processing", mode, usage("mode")),
             field("Volume (dB)", volume, usage("volume_db")),
             field("Lead-in (ms)", leadIn, "Silence first, to wake amplifiers"))),
+        h("fieldset", { class: "part" }, h("legend", {}, "Codec"),
+          h("div", { class: "row" },
+            field("Codec", encoding, groups.length
+              ? `Used by ${groups.length - ownCodec} of ${groups.length} zone group${groups.length > 1 ? "s" : ""}; a group can choose its own in Zones`
+              : "For zone groups that don't choose their own"))),
         h("div", { class: "buttons" },
           h("button", { type: "submit", class: "primary" }, "Save defaults"),
           h("button", { type: "button", onclick: draw }, "Undo changes"))));

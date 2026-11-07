@@ -52,6 +52,14 @@ pub enum Event {
     TextLine {
         line: jobs::TextLine,
     },
+    /// A text sender's name arrived after lines from it went out labelled
+    /// with its address: those lines (`ssrc` on channel `job`, not our own)
+    /// are now `name`'s.
+    TextRenamed {
+        job: JobId,
+        ssrc: u32,
+        name: String,
+    },
     /// A file finished arriving and was saved.
     FileReceived {
         job: JobId,

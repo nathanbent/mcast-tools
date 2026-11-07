@@ -59,11 +59,37 @@ pub struct Defaults {
     pub volume_db: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_in_ms: Option<f64>,
+    /// Codec for zone groups that don't name their own. Unset: the mcast
+    /// server's (L16).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
 }
 
 impl Defaults {
     pub fn is_empty(&self) -> bool {
         *self == Defaults::default()
+    }
+
+    /// A zone's target with these defaults filled in.
+    pub fn target(&self, t: &Target) -> Target {
+        Target {
+            encoding: t.encoding.clone().or_else(|| self.encoding.clone()),
+            ..t.clone()
+        }
+    }
+}
+
+/// Codec names the mcast server takes.
+pub const ENCODINGS: [&str; 10] = [
+    "l16", "l24", "pcmu", "g711u", "ulaw", "pcma", "g711a", "alaw", "g722", "opus",
+];
+
+fn check_encoding(what: &str, e: &Option<String>) -> Result<()> {
+    match e {
+        Some(e) if !ENCODINGS.contains(&e.to_ascii_lowercase().as_str()) => bail!(
+            "{what}: unknown encoding \"{e}\" (use l16, l24, pcmu/g711u, pcma/g711a, g722 or opus)"
+        ),
+        _ => Ok(()),
     }
 }
 
@@ -448,6 +474,7 @@ impl Config {
                     bail!("zone \"{}\" has a target with no group", z.id);
                 }
                 check_number(&format!("zone \"{}\": volume_db", z.id), t.volume_db)?;
+                check_encoding(&format!("zone \"{}\": encoding", z.id), &t.encoding)?;
             }
         }
         let mut ids = HashSet::new();
@@ -491,6 +518,7 @@ impl Config {
         check_number("defaults: lead_in_ms", d.lead_in_ms)?;
         check_chime("defaults: chime", &d.chime)?;
         check_chime("defaults: end_chime", &d.end_chime)?;
+        check_encoding("defaults", &d.encoding)?;
         for off in &self.days_off {
             let what = match off.name.as_str() {
                 "" => format!("day off {}", off.from),

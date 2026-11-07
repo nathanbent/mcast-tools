@@ -18,7 +18,10 @@ impl App {
 
     pub fn refresh(&self, what: &str) {
         match what {
-            "jobs" => self.spawn(|c| Msg::Jobs(c.get("/jobs"))),
+            "jobs" => {
+                let asked = self.job_changes;
+                self.spawn(move |c| Msg::Jobs(asked, c.get("/jobs")))
+            }
             "streams" => self.spawn(|c| Msg::Streams(c.get("/streams"))),
             "media" => self.spawn(|c| Msg::Media(c.get("/media"))),
             "devices" => self.spawn(|c| {

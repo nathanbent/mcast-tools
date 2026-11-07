@@ -392,6 +392,47 @@ fn announcements_use_the_defaults_they_leave_out() {
 }
 
 #[test]
+fn zone_groups_use_the_default_codec_unless_they_choose_one() {
+    let mut cfg = config();
+    cfg.defaults.encoding = Some("g722".into());
+    cfg.validate().unwrap();
+    let (own, plain) = (&cfg.zones[0].targets[0], &cfg.zones[0].targets[1]);
+    assert_eq!(cfg.defaults.target(own).encoding.as_deref(), Some("g711u"));
+    assert_eq!(cfg.defaults.target(plain).encoding.as_deref(), Some("g722"));
+
+    // And the runner sends it.
+    let fake = Arc::new(Fake::default());
+    let r = runner(&fake);
+    r.play(&cfg, "lunch", Trigger::Manual).unwrap();
+    let mut codecs: Vec<_> = fake
+        .requests()
+        .iter()
+        .map(|q| {
+            (
+                q["group"].as_str().unwrap().to_string(),
+                q["encoding"].clone(),
+            )
+        })
+        .collect();
+    codecs.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        codecs,
+        [
+            ("239.1.1.1:5000".to_string(), json!("g711u")),
+            ("239.1.1.2:5000".to_string(), json!("g722")),
+        ]
+    );
+    fake.finish_all();
+
+    cfg.defaults.encoding = Some("mp3".into());
+    let e = cfg.validate().unwrap_err().to_string();
+    assert!(e.contains("unknown encoding \"mp3\""), "{e}");
+    cfg.defaults.encoding = None;
+    cfg.zones[0].targets[0].encoding = Some("G711U".into());
+    cfg.validate().unwrap();
+}
+
+#[test]
 fn validation_finds_mistakes() {
     let bad = |f: &dyn Fn(&mut Config), msg: &str| {
         let mut c = config();

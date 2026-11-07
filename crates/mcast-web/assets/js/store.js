@@ -115,6 +115,13 @@ export function apply(event) {
     case "text_line":
       addLine(event.line);
       break;
+    case "text_renamed":
+      // A sender's name arrived after its first lines: they had its address.
+      for (const l of state.texts.get(event.job) ?? []) {
+        if (!l.own && l.ssrc === event.ssrc) l.from = event.name;
+      }
+      changed("texts");
+      break;
     case "file_received":
       refresh("media");
       changed({ received: event.file });

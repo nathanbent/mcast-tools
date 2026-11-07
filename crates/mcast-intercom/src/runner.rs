@@ -408,7 +408,8 @@ impl Inner {
             if !seen.insert(key) {
                 continue;
             }
-            let request = address.as_deref().map(|g| a.send_request(t, g));
+            let target = cfg.defaults.target(t);
+            let request = address.as_deref().map(|g| a.send_request(&target, g));
             out.push(TargetRun {
                 group: t.group.clone(),
                 state: if request.is_some() {

@@ -40,6 +40,31 @@ fn rejects_a_second_page_to_the_same_group() {
 }
 
 #[test]
+fn stopping_cuts_a_chime_short() {
+    let (jobs, _) = jobs();
+    // A long lead-in, then a chime with nothing after it: all of it would
+    // play out before a stop took effect if stops waited for chimes.
+    let req = SendRequest {
+        source: SourceRequest::Chime,
+        chime: Some(crate::request::ChimeRequest::BuiltIn(
+            mcast_audio::chime::BuiltIn::Westminster,
+        )),
+        lead_in_ms: 1000.0,
+        ..tone("239.255.77.16:5004")
+    };
+    let job = jobs.start_sender(req).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let stopped = jobs.stop(job.id, Duration::from_secs(5)).unwrap();
+    assert_eq!(stopped.state, JobState::Stopped);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "took {:?} to stop",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn bad_requests_fail_up_front_and_leave_no_job() {
     let (jobs, _) = jobs();
     let req = SendRequest {
@@ -125,6 +150,59 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn a_name_that_comes_late_relabels_the_lines() {
+    use crate::request::TextRequest;
+    let (jobs, events) = jobs();
+    let group: SocketAddr = "239.255.77.17:5004".parse().unwrap();
+    let listener = jobs
+        .start_text(
+            TextRequest {
+                group: Some(group),
+                send: false,
+                ..TextRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    // A talker with no RTCP: its line arrives with only its address to go by.
+    let talker = jobs
+        .start_text(
+            TextRequest {
+                group: Some(group),
+                rtcp: false,
+                ..TextRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    jobs.send_text(talker.id, "hello\n").unwrap();
+    wait_for("the line", || {
+        !jobs.text_history(listener.id).unwrap().is_empty()
+    });
+    let heard = jobs.text_history(listener.id).unwrap();
+    let ssrc = heard[0].ssrc.unwrap();
+    assert_ne!(heard[0].from, "desk");
+
+    // Its name, late: the line already heard takes it.
+    let mut net = mcast_core::net::MulticastOptions::new(group).unwrap();
+    net.loopback = true;
+    let mut rtcp =
+        mcast_core::rtcp::SenderRtcp::open(&net, ssrc, 1000, Some("desk"), Duration::from_secs(5))
+            .unwrap();
+    rtcp.report_now(Duration::ZERO);
+    wait_for("the new name", || {
+        jobs.text_history(listener.id).unwrap()[0].from == "desk"
+    });
+    assert!(events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        Event::TextRenamed { job, ssrc: s, name } if *job == listener.id && *s == ssrc && name == "desk"
+    )));
+    drop(rtcp);
+    jobs.stop(talker.id, Duration::from_secs(5));
+    jobs.stop(listener.id, Duration::from_secs(5));
 }
 
 #[test]

@@ -555,6 +555,8 @@ impl Sender {
         let target = self.target.take().expect("run consumes the sender");
         let network = matches!(target, Target::Network(_));
         let mut out = Output {
+            stop,
+            hear_stop: true,
             // Lead-in and chime are always paced; live capture paces itself after that.
             paced: network,
             target,
@@ -599,6 +601,8 @@ impl Sender {
             .map(|d| out.sent() + (d.as_secs_f64() / self.ptime.as_secs_f64()).ceil() as u64);
 
         let mut stages = Stages::default();
+        // Stopped during the lead-in or chime: there's no page to close.
+        let stopped_early = stop.load(Ordering::Relaxed);
         if let Source::Capture { device } = &self.source {
             let dev = device::input_device(device.as_deref())?;
             // One second of headroom between the device callback and us.
@@ -623,9 +627,10 @@ impl Sender {
             }
             out.stats.capture_dropped = dropped.load(Ordering::Relaxed);
             drop(_stream);
-            if !self.end_chime.is_empty() && out.fatal.is_none() {
+            if !self.end_chime.is_empty() && out.fatal.is_none() && !stopped_early {
                 // Stopping is how a live page ends: close it with the chime,
                 // even past the duration limit, paced from now on.
+                out.hear_stop = false;
                 out.limit = None;
                 out.paced = network;
                 out.restart_pacing();
@@ -761,7 +766,13 @@ fn measure(
 
 /// Sends packets (paced in real time for file and tone sources), or decodes
 /// them into a WAV file when rendering.
-struct Output {
+struct Output<'a> {
+    /// Set to stop: checked before each packet, so a stop cuts a chime or
+    /// tail short instead of waiting for it.
+    stop: &'a AtomicBool,
+    /// False while closing a live page with its end chime, which stopping
+    /// is what starts.
+    hear_stop: bool,
     target: Target,
     paced: bool,
     start: Instant,
@@ -773,9 +784,11 @@ struct Output {
     rtcp: Option<SenderRtcp>,
 }
 
-impl Output {
+impl Output<'_> {
     fn done(&self) -> bool {
-        self.fatal.is_some() || self.limit.is_some_and(|l| self.sent() >= l)
+        self.fatal.is_some()
+            || self.limit.is_some_and(|l| self.sent() >= l)
+            || (self.hear_stop && self.stop.load(Ordering::Relaxed))
     }
 
     /// Pace the following packets from now, rather than from the start

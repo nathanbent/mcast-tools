@@ -162,6 +162,8 @@ pub struct FileStream {
 pub struct TextLine {
     pub job: u64,
     pub from: String,
+    /// The sender's RTP SSRC, for received lines.
+    pub ssrc: Option<u32>,
     pub text: String,
     pub own: bool,
     pub at_ms: u64,
