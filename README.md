@@ -71,17 +71,27 @@ it is.
 
 ### Making a release
 
-Set the version in the root `Cargo.toml` (`[workspace.package] version`),
-commit, and push a matching tag:
+Set the version in the root `Cargo.toml` (`[workspace.package] version`) and
+merge it to `main`. Then either push a matching tag:
 
 ```bash
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-The [Release workflow](.github/workflows/release.yml) builds every platform,
-checks the tag matches the version, and publishes the release with
-`SHA256SUMS`. It also runs as a build-only check on pull requests that change
-it, and can be started by hand from the Actions tab.
+or, without a local clone, open the [Release workflow](.github/workflows/release.yml)
+in the Actions tab, choose **Run workflow** on `main`, and enter the tag
+(`v0.2.0`); the workflow creates the tag on the commit it built. From the
+command line, the same is:
+
+```bash
+gh workflow run release.yml --ref main -f release=v0.2.0
+```
+
+Either way the workflow checks the tag matches the version (and, for a manual
+run, that it's on `main` and the tag isn't already used for another commit),
+builds every platform, and publishes the release with `SHA256SUMS` only if
+all of them built. Run it with no tag for a build-only check; it also runs
+that way on pull requests that change it.
 
 ## Audio
 
