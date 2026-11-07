@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+cpal = "0.15"
+ctrlc = "3"
+hound = "3.5"
+socket2 = { version = "0.5", features = ["all"] }
+mcast-core = { path = "crates/mcast-core" }
+mcast-audio = { path = "crates/mcast-audio" }

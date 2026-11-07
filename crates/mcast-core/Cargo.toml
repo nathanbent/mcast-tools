@@ -1,0 +1,9 @@
+[package]
+name = "mcast-core"
+description = "Multicast socket helpers and RTP primitives shared by mcast-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+socket2.workspace = true
