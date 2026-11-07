@@ -43,8 +43,13 @@ backup/restore are standard on these boxes and cheap on a Pi.
 
 ### 1. Scoped API tokens (foundation)
 
+Design agreed: see `intercom-tokens.md`. Fixed roles (`admin`, `operator`,
+`trigger`, `media`), hashed in `tokens.json`, with expiry, usage, CLI
+management and who-fired-it in history. Summary of the original sketch:
+
 - Named tokens, created and revoked in Settings, each with a scope:
-  - `play`: trigger and stop, optionally limited to listed announcements.
+  - `play`: trigger and stop, optionally limited to listed announcements
+    (became `trigger`, plus an `operator` role for wall tablets).
   - `media`: upload, list and delete sounds.
   - `admin`: everything.
 - Stored hashed in the panel's config; the secret is shown once at creation.
@@ -61,9 +66,8 @@ backup/restore are standard on these boxes and cheap on a Pi.
 - Outbound webhooks: POST JSON to configured URLs on `run_started`,
   `run_ended`, `run_failed`, `backend_down` and `schedule_missed`. Optionally
   signed with an HMAC header, with a short timeout and no retry storm.
-- Open: whether to allow a GET form with `?access_token=` for systems that
-  can't set headers. It's convenient, but the token ends up in logs. If it's
-  allowed, it should only work with `play`-scope tokens.
+- Decided: a GET form with `?access_token=` is allowed for `trigger` tokens
+  only, for systems that can't set headers.
 
 ### 3. Remote sounds
 
@@ -128,7 +132,7 @@ backup/restore are standard on these boxes and cheap on a Pi.
   an endpoint that stays silent.
 - This needs the optional core change from `intercom-plan.md`: a free-form
   `tag` on send requests, echoed in `JobInfo`, to match jobs reliably.
-- Open: confirm that "probes" means these receivers rather than separate
+- Decided: "probes" means these `mcast receive` endpoints, not separate
   listening devices.
 
 ### 10. Triggers from the room
@@ -149,11 +153,11 @@ backup/restore are standard on these boxes and cheap on a Pi.
 - Text to displays alongside an announcement, through `mcast text`. That
   would be unusual among these products.
 
-## Open questions
+## Decisions
 
-1. Probes: speakers running `mcast receive` (as in item 9), or something else?
-2. Webhooks: inbound triggers only, or outbound events too? Is a GET trigger
-   acceptable?
-3. Tags: kept in the panel (recommended, so the core stays independent) or
-   in the core so `mcast-web` sees them too?
-4. Should stats or the monitor page move earlier, into v0.5.5?
+1. Probes are `mcast receive` endpoints and their RTCP reports (item 9).
+2. Webhooks go both ways in v0.5.5: the trigger API in, events out (item 2).
+3. Sound tags live in the panel's `intercom.json`, not the core (item 4).
+4. Tokens: fixed roles, an optional announcement list on trigger tokens,
+   hashed in a separate `tokens.json`, a GET trigger for trigger tokens only
+   (`intercom-tokens.md`).
