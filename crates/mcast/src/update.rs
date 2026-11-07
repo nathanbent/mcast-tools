@@ -13,6 +13,9 @@ pub const BUILD_SHA: Option<&str> = option_env!("MCAST_GIT_SHA");
 
 #[derive(Args)]
 pub struct UpdateArgs {
+    /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Only report whether a newer commit is available (or whether this build
     /// is ahead of the branch); don't install
     #[arg(long)]

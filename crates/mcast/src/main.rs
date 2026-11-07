@@ -34,7 +34,7 @@ enum Command {
     Audio(AudioCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
-    /// Save options for `audio send`, `recv`, `discover` or `monitor` under a name; run with `mcast @NAME`
+    /// Save options for `audio send`, `recv`, `discover`, `monitor` or `update` under a name; run with `mcast @NAME`
     #[command(subcommand)]
     Preset(PresetCommand),
     /// Update mcast to the latest version (rebuilds it with cargo)
@@ -52,12 +52,14 @@ enum Command {
   mcast preset create zones --monitor 239.192.2.1:10000 239.192.2.2:10000 --sap
   mcast @zones --log                            # groups given here replace the preset's
   mcast preset create sap2 --discover --sap-group 239.195.255.255:9875 --sdp
+  mcast preset create dev --update -b dev --path ~/src/mcast-tools
 
 Presets are kept in ~/.config/mcast/presets.conf ($MCAST_PRESETS overrides),
 one option per line; the file can be edited by hand.")]
 enum PresetCommand {
     /// Create a preset for `audio send` (or `audio recv` with --recv, `audio
-    /// discover` with --discover, `monitor` with --monitor), with any options
+    /// discover` with --discover, `monitor` with --monitor, `update` with
+    /// --update), with any options
     Create {
         name: String,
         /// The preset is for `mcast audio recv` (put this before the options)
@@ -69,7 +71,10 @@ enum PresetCommand {
         /// The preset is for `mcast monitor` (put this before the options)
         #[arg(long, conflicts_with_all = ["recv", "discover"])]
         monitor: bool,
-        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor)
+        /// The preset is for `mcast update` (put this before the options)
+        #[arg(long, conflicts_with_all = ["recv", "discover", "monitor"])]
+        update: bool,
+        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor, update)
         #[arg(
             trailing_var_arg = true,
             allow_hyphen_values = true,
@@ -81,7 +86,7 @@ enum PresetCommand {
     /// the same option, or ones they conflict with, e.g. --file replaces --tone
     Set {
         name: String,
-        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor); see their --help
+        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor, update); see their --help
         #[arg(
             required = true,
             trailing_var_arg = true,
@@ -431,6 +436,7 @@ fn preset(c: PresetCommand) -> Result<()> {
             recv,
             discover,
             monitor,
+            update,
             options,
         } => {
             let kind = if recv {
@@ -439,6 +445,8 @@ fn preset(c: PresetCommand) -> Result<()> {
                 presets::Kind::Discover
             } else if monitor {
                 presets::Kind::Monitor
+            } else if update {
+                presets::Kind::Update
             } else {
                 presets::Kind::Send
             };
