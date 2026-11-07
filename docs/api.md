@@ -87,6 +87,24 @@ Every field is optional; the defaults match `mcast audio send`.
 File and chime paths are names of uploaded media files. `render` exists in
 the request type but is only available from the CLI.
 
+A page from an uploaded file, with a chime and voice processing for phones:
+
+```bash
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"group": "239.192.2.1:10000", "encoding": "g711u", "mode": "voice", "chime": "default",
+       "lead_in_ms": 800, "tos": 184, "source": {"type": "file", "path": "page.mp3"}}' \
+  http://127.0.0.1:8650/api/v1/senders
+```
+
+The chord pad for 30 seconds, to check speakers and levels on another zone:
+
+```bash
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"group": "239.192.2.2:10000", "encoding": "g722", "mode": "music",
+       "source": {"type": "pad", "level_dbfs": -18}, "duration_s": 30}' \
+  http://127.0.0.1:8650/api/v1/senders
+```
+
 **Overlapping pages:** a send request to a group (address *and* port) that
 another job of this server is sending to gets `409`. Stop that job first.
 Senders elsewhere on the network aren't checked.
