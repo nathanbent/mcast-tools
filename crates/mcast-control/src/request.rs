@@ -351,6 +351,7 @@ impl SendRequest {
             render: self.render.clone(),
             announce,
             rtcp,
+            mirror: None,
         })
     }
 

@@ -1161,10 +1161,12 @@ dependencies = [
  "mcast-core",
  "mcast-file",
  "mcast-monitor",
+ "mcast-probe",
  "mcast-server",
  "mcast-text",
  "mcast-tui",
  "mcast-web",
+ "serde_json",
  "tokio",
 ]
 
@@ -1221,6 +1223,22 @@ dependencies = [
  "mcast-core",
  "mcast-file",
  "mcast-text",
+]
+
+[[package]]
+name = "mcast-probe"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "mcast-control",
+ "mcast-core",
+ "mcast-monitor",
+ "mcast-server",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ureq",
 ]
 
 [[package]]

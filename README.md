@@ -621,6 +621,28 @@ Tabs for what's playing, announced streams, the monitor and media; `p` opens
 the page form, `?` lists the keys. Like the web GUI, it's a client of the
 API: it needs `mcast serve` running, and every client sees the same jobs.
 
+## Probes
+
+Put a probe (a Raspberry Pi, say) wherever you want to know how multicast is
+doing, and have it report to `mcast serve`. Probes watch the streams, keep
+loss/jitter/gap statistics, check in every 10 s (that's the heartbeat), and
+take their configuration from the server. With `--unicast` the server also
+sends each probe a unicast copy of every page, and says per stream whether
+loss is on multicast only (look at IGMP snooping, the querier, PIM, Wi-Fi)
+or on both paths (the network itself):
+
+```bash
+mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES      # server
+mcast probe run --server http://10.0.0.5:8650 --token PROBES        # each probe
+MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN mcast probe config idf-3 --unicast --label "IDF 3"
+MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN mcast probe list
+```
+
+Probes connect out to the server, so they need no open port except UDP 5104
+for the unicast copies. Reports that can't be delivered are queued and sent
+when the server is back. See [docs/probes.md](docs/probes.md) for the design,
+verdicts and roadmap, and [docs/api.md](docs/api.md#probes) for the routes.
+
 ## Layout
 
 | Crate | Purpose |
@@ -630,8 +652,9 @@ API: it needs `mcast serve` running, and every client sees the same jobs.
 | `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, SDP |
 | `crates/mcast-file` | Files over multicast: RaptorQ encoding, packet format, receiver/assembler, terminal picture preview |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
-| `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
+| `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list, monitor and the probe registry as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
+| `crates/mcast-probe` | Probe agent (`mcast probe run`) and a client for the probe routes |
 | `crates/mcast-tui` | Terminal front end (`mcast tui`), an API client built on ratatui |
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |

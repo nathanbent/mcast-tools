@@ -204,14 +204,38 @@ impl Monitor {
     fn add_group(&mut self, target: Target, from_sap: bool) -> io::Result<()> {
         let index = self.groups.len();
         let stop = Arc::new(AtomicBool::new(false));
-        let mut opts = MulticastOptions::new(target.group)?;
-        opts.interface = self.interface;
-        if let Some(group) = rtcp_addr(target.group) {
-            let mut rtcp = opts.clone();
-            rtcp.group = group;
-            listen(rtcp, index, true, self.tx.clone(), stop.clone());
+        if target.group.ip().is_multicast() {
+            let mut opts = MulticastOptions::new(target.group)?;
+            opts.interface = self.interface;
+            if let Some(group) = rtcp_addr(target.group) {
+                let mut rtcp = opts.clone();
+                rtcp.group = group;
+                listen(
+                    Bind::Group(rtcp),
+                    index,
+                    true,
+                    self.tx.clone(),
+                    stop.clone(),
+                );
+            }
+            listen(
+                Bind::Group(opts),
+                index,
+                false,
+                self.tx.clone(),
+                stop.clone(),
+            );
+        } else {
+            // A unicast port (e.g. 0.0.0.0:5104): copies of multicast
+            // streams sent straight to us, for comparison.
+            listen(
+                Bind::Unicast(target.group),
+                index,
+                false,
+                self.tx.clone(),
+                stop.clone(),
+            );
         }
-        listen(opts, index, false, self.tx.clone(), stop.clone());
         self.groups.push(Group {
             target,
             from_sap,
@@ -456,15 +480,18 @@ fn packet_ssrc(p: &Packet) -> Option<u32> {
 
 /// Receive on a group in a background thread, until `stop`. RTP-port
 /// errors are reported; the RTCP port is best effort.
-fn listen(
-    opts: MulticastOptions,
-    group: usize,
-    rtcp: bool,
-    tx: Sender<Event>,
-    stop: Arc<AtomicBool>,
-) {
+enum Bind {
+    Group(MulticastOptions),
+    Unicast(SocketAddr),
+}
+
+fn listen(bind: Bind, group: usize, rtcp: bool, tx: Sender<Event>, stop: Arc<AtomicBool>) {
     thread::spawn(move || {
-        let socket = match open_receiver(&opts).and_then(|s| {
+        let opened = match &bind {
+            Bind::Group(opts) => open_receiver(opts),
+            Bind::Unicast(addr) => mcast_core::open_unicast_receiver(*addr),
+        };
+        let socket = match opened.and_then(|s| {
             enable_packet_info(&s)?;
             s.set_read_timeout(Some(Duration::from_millis(200)))?;
             Ok(s)

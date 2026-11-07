@@ -15,6 +15,7 @@ use crate::packetizer::Packetizer;
 use crate::pad::Pad;
 use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
 use anyhow::{anyhow, bail, Context, Result};
+use mcast_core::mirror::{Mirror, MirrorSocket};
 use mcast_core::net::{open_sender, MulticastOptions};
 use mcast_core::random_u32;
 use mcast_core::rtcp::{RtcpConfig, SenderRtcp};
@@ -76,6 +77,9 @@ pub struct SenderConfig {
     pub announce: Option<Announce>,
     /// Send RTCP sender reports (and BYE at the end) on the RTP port + 1.
     pub rtcp: Option<RtcpConfig>,
+    /// Also send a copy of every RTP packet to these unicast destinations
+    /// (probes comparing the multicast and unicast paths).
+    pub mirror: Option<Arc<Mirror>>,
 }
 
 #[derive(Debug, Clone)]
@@ -282,6 +286,7 @@ pub struct Sender {
     sdp: SessionDescription,
     announce: Option<(MulticastOptions, Duration)>,
     rtcp: Option<SenderRtcp>,
+    mirror: Option<MirrorSocket>,
 }
 
 impl Sender {
@@ -450,6 +455,10 @@ impl Sender {
             sdp,
             announce,
             rtcp,
+            mirror: cfg
+                .mirror
+                .filter(|_| cfg.render.is_none())
+                .map(|m| MirrorSocket::new(m, cfg.net.tos)),
         })
     }
 
@@ -539,6 +548,7 @@ impl Sender {
             progress,
             fatal: None,
             rtcp: self.rtcp.take(),
+            mirror: self.mirror.take(),
         };
         let (rate, src_channels) = self.source_format;
         let spec = self.spec;
@@ -717,6 +727,7 @@ struct Output {
     progress: Arc<Progress>,
     fatal: Option<anyhow::Error>,
     rtcp: Option<SenderRtcp>,
+    mirror: Option<MirrorSocket>,
 }
 
 impl Output {
@@ -745,6 +756,9 @@ impl Output {
                     self.progress.packets.store(self.stats.packets, Ordering::Relaxed);
                     if let Some(r) = &mut self.rtcp {
                         r.sent(pkt, Instant::now());
+                    }
+                    if let Some(m) = &mut self.mirror {
+                        m.send(pkt);
                     }
                 }
                 // Transient conditions (full buffers, no route yet) shouldn't kill a stream.

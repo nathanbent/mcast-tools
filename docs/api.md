@@ -7,6 +7,7 @@ HTTP/JSON. Every route is under `/api/v1`.
 mcast serve [--listen 127.0.0.1:8650] [--token TOKEN] [--media-dir DIR]
             [--max-upload-mb 200] [--iface IFACE] [--sap-group ADDR:PORT]...
             [--watch ADDR:PORT]... [--no-monitor]
+            [--probe-token TOKEN] [--probe-state FILE]
 ```
 
 Ctrl-C or SIGTERM stops every job (withdrawing their SAP announcements) before exiting.
@@ -16,7 +17,9 @@ Ctrl-C or SIGTERM stops every job (withdrawing their SAP announcements) before e
 With `--token` (or `MCAST_TOKEN`), every request needs
 `Authorization: Bearer TOKEN`. Browsers' `EventSource` can't set headers, so
 `?access_token=TOKEN` is accepted too. The server won't start on a
-non-loopback address without a token. It speaks plain HTTP: beyond a trusted
+non-loopback address without a token. `--probe-token` (or
+`MCAST_PROBE_TOKEN`) is a second token that only opens
+`POST /probes/{id}/checkin`, for the probes. It speaks plain HTTP: beyond a trusted
 LAN, put it behind a TLS reverse proxy.
 
 ## Errors
@@ -49,6 +52,14 @@ Errors are JSON: `{"error": "message"}`.
 | PUT | `/media/{name}` | Upload a file (raw body). Replaces any file of that name |
 | DELETE | `/media/{name}` | Delete a file |
 | GET | `/events` | Server-sent events (below) |
+| GET | `/probes` | Probes (below) |
+| GET | `/probes/{id}` | One probe |
+| DELETE | `/probes/{id}` | Forget a probe |
+| PUT | `/probes/{id}/config` | Give a probe its own configuration (body: probe config); creates it if unknown |
+| DELETE | `/probes/{id}/config` | Back to the defaults |
+| GET | `/probes/{id}/reports` | Its last 360 reports, oldest first; `?after_ms=T` for those ending after `T` |
+| POST | `/probes/{id}/checkin` | A probe's heartbeat and reports (below); the only route `--probe-token` opens |
+| GET, PUT | `/probe-defaults` | The configuration of probes without their own |
 
 `POST /senders` returns once the sender is ready: files are decoded and
 loudness-measured first, so a bad file fails the request instead of the job.
@@ -155,6 +166,60 @@ when both clocks are synced). The sender's RTCP name and BYE appear in
 `jitter_ms`, `max_gap_ms`, `ptime_ms`, `ttl`, `tos`, `peak_dbfs`, `rms_dbfs`
 (`null` when silent), `idle_ms`. Rates and levels cover the last second.
 
+## Probes
+
+See [probes.md](probes.md) for what probes are for. A probe config:
+
+| Field | Default | |
+|---|---|---|
+| `label` | | Shown in listings |
+| `sap` | `true` | Watch every SAP-announced stream |
+| `groups` | `[]` | Also watch these multicast groups |
+| `report_interval_s` | `10` | Seconds per report and check-in (1 to 3600) |
+| `unicast` | `false` | Send this probe a unicast copy of every sender job's packets |
+
+A probe (`GET /probes/{id}`): `id`, `online`, `config` (the one it should
+run), `custom_config` (its own rather than the defaults), `config_applied`
+(its last check-in said it runs `config`), `hostname`, `version`,
+`unicast_addr`, `first_seen_ms`, `last_seen_ms`, `uptime_s`, `queued`
+(reports still waiting on the probe), `dropped` (reports it discarded while
+the server was unreachable), `latest` (its last report), `comparisons` and
+`totals`.
+
+A report: `seq`, `start_ms`, `end_ms`, `streams` (monitor rows, as below,
+covering the interval; the unicast port shows as a group like
+`0.0.0.0:5104`) and `groups`.
+
+A comparison, from the latest report, for each unicast copy: `ssrc`, `name`,
+`group` (the multicast group, if seen), `multicast` and `unicast`
+(`{"packets", "lost", "loss_percent", "jitter_ms", "max_gap_ms"}`;
+`multicast` is `null` if it wasn't seen) and `verdict`: `ok`,
+`multicast_loss`, `unicast_loss`, `both_loss`, `no_multicast` or `idle`.
+
+A total, per stream since the probe was first seen: `group`, `unicast`,
+`name`, `ssrc`, `packets`, `lost`, `late`, `loss_percent`, `intervals`,
+`lossy_intervals`, `max_gap_ms`, `worst_jitter_ms`, `last_seen_ms`.
+
+### Check-in
+
+`POST /probes/{id}/checkin`, from `mcast probe run`. IDs are 1-64 letters,
+digits, `.`, `_` or `-`.
+
+```json
+{"version": "0.1.1", "hostname": "pi-idf3", "boot": 3735928559, "uptime_s": 120.5,
+ "config": {...}, "unicast_addr": "10.0.3.17:5104",
+ "reports": [{"seq": 12, "start_ms": ..., "end_ms": ..., "streams": [...]}],
+ "queued": 0, "dropped": 0}
+```
+
+`boot` is random for each run of the probe and `seq` counts its reports from
+1; reports the server already has are ignored, so retries are safe.
+`config` is what the probe runs (`null` before its first reply). The reply:
+
+```json
+{"config": {...}, "acked_seq": 12, "server_time_ms": 1794026269854}
+```
+
 ## Events
 
 `GET /events` is a `text/event-stream`. Each event's name is its `type`, and
@@ -168,6 +233,8 @@ its data is JSON with that `type` too:
 | `stream_added`, `stream_changed` | `{"stream": STREAM}` |
 | `stream_removed` | `{"stream": STREAM, "reason": "deleted"\|"expired"}` |
 | `monitor` | `{"snapshot": SNAPSHOT}`, every second |
+| `probe_updated` | `{"probe": PROBE}`: it checked in, went offline, or was reconfigured |
+| `probe_removed` | `{"id": "..."}` |
 | `lagged` | `{"missed": N}`: the client fell behind; refetch the lists |
 
 Fetch the lists first, then apply events. For example:

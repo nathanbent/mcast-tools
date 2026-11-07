@@ -6,6 +6,7 @@ use crate::request::{RecvRequest, Resolved, SendRequest};
 use crate::{now_ms, Event, EventSink};
 use mcast_audio::sender::{Progress, Sender};
 use mcast_audio::{receiver, StreamInfo};
+use mcast_core::mirror::Mirror;
 use mcast_core::Interface;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -191,6 +192,8 @@ struct Shared {
     sink: EventSink,
     default_iface: Interface,
     closing: AtomicBool,
+    /// Unicast copies of every sender's packets (for probes).
+    mirror: Arc<Mirror>,
 }
 
 impl Shared {
@@ -277,6 +280,7 @@ impl Jobs {
             sink,
             default_iface,
             closing: AtomicBool::new(false),
+            mirror: Mirror::new(),
         });
         let weak = Arc::downgrade(&shared);
         let ticker = std::thread::Builder::new()
@@ -287,6 +291,12 @@ impl Jobs {
             shared,
             ticker: Mutex::new(Some(ticker)),
         }
+    }
+
+    /// Unicast destinations that every sender started from here copies its
+    /// packets to; [`crate::Probes`] keeps it up to date.
+    pub fn mirror(&self) -> Arc<Mirror> {
+        self.shared.mirror.clone()
     }
 
     pub fn list(&self) -> Vec<JobInfo> {
@@ -350,8 +360,11 @@ impl Jobs {
         req: SendRequest,
         shown: SendRequest,
     ) -> Result<JobInfo, StartError> {
-        let cfg = req.to_config(self.shared.default_iface).map_err(invalid)?;
+        let mut cfg = req.to_config(self.shared.default_iface).map_err(invalid)?;
         let sends = cfg.render.is_none();
+        if sends {
+            cfg.mirror = Some(self.shared.mirror.clone());
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let id = {
             let mut st = self.shared.lock();

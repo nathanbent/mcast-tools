@@ -1,0 +1,361 @@
+//! `mcast probe`: run a probe that reports to an `mcast serve` server, and
+//! look after the server's probes.
+
+use crate::SapListenArgs;
+use anyhow::{anyhow, bail, Result};
+use clap::{Args, Subcommand};
+use mcast_control::probes::{Comparison, Verdict};
+use mcast_control::{now_ms, ProbeConfig, ProbeInfo};
+use mcast_core::Interface;
+use mcast_probe::client::Client;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::AtomicBool;
+
+#[derive(Subcommand)]
+#[command(after_help = "Examples:
+  # on the server
+  mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES
+  # on each Pi
+  mcast probe run --server http://10.0.0.5:8650 --token PROBES --id idf-3
+  # from anywhere with the admin token
+  mcast probe list --url http://10.0.0.5:8650 --token ADMIN
+  mcast probe config idf-3 --label \"3rd floor IDF\" --unicast --interval 5
+  mcast probe config --defaults --group 239.192.2.1:10000")]
+pub enum ProbeCommand {
+    /// Be a probe: watch streams as the server asks and report to it
+    Run(RunArgs),
+    /// List the server's probes, with multicast vs. unicast comparisons
+    #[command(visible_alias = "ls")]
+    List(ServerArgs),
+    /// Show one probe in detail
+    Show {
+        id: String,
+        #[command(flatten)]
+        server: ServerArgs,
+    },
+    /// Change a probe's configuration (or the defaults, with --defaults)
+    Config(ConfigArgs),
+    /// Forget a probe
+    #[command(visible_alias = "rm")]
+    Remove {
+        id: String,
+        #[command(flatten)]
+        server: ServerArgs,
+    },
+}
+
+#[derive(Args)]
+pub struct RunArgs {
+    /// The `mcast serve` server to report to
+    #[arg(short, long, env = "MCAST_URL")]
+    server: String,
+    /// Its probe token (or its admin token)
+    #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// This probe's name on the server [default: the hostname]
+    #[arg(long)]
+    id: Option<String>,
+    /// Interface to join groups on: IPv4 address or interface index
+    #[arg(short, long, default_value = "any")]
+    iface: Interface,
+    #[command(flatten)]
+    sap: SapListenArgs,
+    /// UDP port for the server's unicast copies
+    #[arg(long, default_value_t = mcast_probe::DEFAULT_UNICAST_PORT)]
+    unicast_port: u16,
+    /// Address the server should send unicast copies to [default: the one this host reaches it from]
+    #[arg(long, value_name = "IP")]
+    advertise: Option<IpAddr>,
+    /// Reports to keep while the server is unreachable
+    #[arg(long, default_value_t = 2000)]
+    max_queue: usize,
+    /// Print each stream's stats every report
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+#[derive(Args)]
+pub struct ServerArgs {
+    /// The server
+    #[arg(
+        short,
+        long,
+        default_value = "http://127.0.0.1:8650",
+        env = "MCAST_URL"
+    )]
+    url: String,
+    /// Its admin token
+    #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+}
+
+impl ServerArgs {
+    fn client(&self) -> Client {
+        Client::new(&self.url, self.token.clone())
+    }
+}
+
+#[derive(Args)]
+pub struct ConfigArgs {
+    /// The probe (it needn't have checked in yet)
+    #[arg(required_unless_present = "defaults")]
+    id: Option<String>,
+    /// Change the defaults, used by every probe without its own configuration
+    #[arg(long, conflicts_with_all = ["id", "reset"])]
+    defaults: bool,
+    /// Go back to the defaults
+    #[arg(long, conflicts_with_all = ["label", "no_label", "sap", "no_sap", "group", "no_groups", "interval", "unicast", "no_unicast"])]
+    reset: bool,
+    /// Label shown in listings
+    #[arg(long)]
+    label: Option<String>,
+    #[arg(long, conflicts_with = "label")]
+    no_label: bool,
+    /// Watch streams announced with SAP
+    #[arg(long)]
+    sap: bool,
+    #[arg(long, conflicts_with = "sap")]
+    no_sap: bool,
+    /// Watch this group (replaces the list; repeat for more)
+    #[arg(short, long, value_name = "ADDR:PORT")]
+    group: Vec<SocketAddr>,
+    /// Watch no groups besides announced ones
+    #[arg(long, conflicts_with = "group")]
+    no_groups: bool,
+    /// Seconds per report (and check-in)
+    #[arg(long, value_name = "SECONDS")]
+    interval: Option<f64>,
+    /// Have the server send unicast copies of its pages, to compare
+    #[arg(long)]
+    unicast: bool,
+    #[arg(long, conflicts_with = "unicast")]
+    no_unicast: bool,
+    #[command(flatten)]
+    server: ServerArgs,
+}
+
+pub fn run(c: ProbeCommand, stop: &AtomicBool) -> Result<()> {
+    match c {
+        ProbeCommand::Run(a) => {
+            let id = a.id.unwrap_or_else(|| {
+                // Hostnames can have characters IDs can't.
+                mcast_control::request::hostname()
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                            c
+                        } else {
+                            '-'
+                        }
+                    })
+                    .take(64)
+                    .collect()
+            });
+            if !mcast_control::probes::valid_id(&id) {
+                bail!("--id must be 1-64 letters, digits, '.', '_' or '-'");
+            }
+            let sap_groups = if a.sap.sap_groups.is_empty() {
+                mcast_core::sap::default_listen_groups()
+            } else {
+                a.sap.sap_groups
+            };
+            mcast_probe::run(
+                mcast_probe::AgentConfig {
+                    server: a.server,
+                    token: a.token,
+                    id,
+                    interface: a.iface,
+                    sap_groups,
+                    unicast_port: a.unicast_port,
+                    advertise: a.advertise,
+                    max_queue: a.max_queue,
+                    verbose: a.verbose,
+                },
+                stop,
+            )
+        }
+        ProbeCommand::List(s) => {
+            let probes = s.client().probes()?;
+            if probes.is_empty() {
+                println!(
+                    "no probes yet (start one with: mcast probe run --server {})",
+                    s.url
+                );
+            }
+            for p in &probes {
+                print!("{}", summary(p));
+            }
+            Ok(())
+        }
+        ProbeCommand::Show { id, server } => {
+            let p = server.client().probe(&id)?;
+            print!("{}", summary(&p));
+            println!("  config: {}", serde_json::to_string(&p.config)?);
+            if !p.totals.is_empty() {
+                println!("  since first seen:");
+                for t in &p.totals {
+                    println!(
+                        "    {:<9} {:<22} {:<20} {:>9} pkts {:>6} lost ({:.3}%) {}/{} intervals lossy, max gap {:.0} ms, worst jitter {}",
+                        if t.unicast { "unicast" } else { "multicast" },
+                        t.group.to_string(),
+                        t.name.as_deref().unwrap_or("-"),
+                        t.packets,
+                        t.lost,
+                        t.loss_percent,
+                        t.lossy_intervals,
+                        t.intervals,
+                        t.max_gap_ms,
+                        t.worst_jitter_ms.map_or("-".into(), |j| format!("{j:.2} ms")),
+                    );
+                }
+            }
+            Ok(())
+        }
+        ProbeCommand::Config(a) => config(a),
+        ProbeCommand::Remove { id, server } => {
+            server.client().remove(&id)?;
+            println!("forgot {id}");
+            Ok(())
+        }
+    }
+}
+
+fn config(a: ConfigArgs) -> Result<()> {
+    let client = a.server.client();
+    if a.reset {
+        let id = a.id.as_deref().ok_or_else(|| anyhow!("which probe?"))?;
+        let p = client.reset_config(id)?;
+        print!("{}", summary(&p));
+        return Ok(());
+    }
+    let mut c: ProbeConfig = match &a.id {
+        _ if a.defaults => client.defaults()?,
+        Some(id) => match client.probe(id) {
+            Ok(p) => p.config,
+            Err(e) if e.status == 404 => client.defaults()?,
+            Err(e) => return Err(e.into()),
+        },
+        None => unreachable!("clap requires an id without --defaults"),
+    };
+    if let Some(l) = a.label {
+        c.label = Some(l);
+    }
+    if a.no_label {
+        c.label = None;
+    }
+    if a.sap {
+        c.sap = true;
+    }
+    if a.no_sap {
+        c.sap = false;
+    }
+    if !a.group.is_empty() {
+        c.groups = a.group;
+    }
+    if a.no_groups {
+        c.groups.clear();
+    }
+    if let Some(i) = a.interval {
+        c.report_interval_s = i;
+    }
+    if a.unicast {
+        c.unicast = true;
+    }
+    if a.no_unicast {
+        c.unicast = false;
+    }
+    if a.defaults {
+        let c = client.set_defaults(&c)?;
+        println!("defaults: {}", serde_json::to_string(&c)?);
+    } else {
+        let p = client.set_config(a.id.as_deref().expect("checked above"), &c)?;
+        print!("{}", summary(&p));
+        if !p.online {
+            println!("  (it gets this the next time it checks in)");
+        }
+    }
+    Ok(())
+}
+
+fn ago(ms: u64) -> String {
+    let s = now_ms().saturating_sub(ms) / 1000;
+    match s {
+        0..=89 => format!("{s} s ago"),
+        90..=5399 => format!("{} min ago", s / 60),
+        _ => format!("{} h ago", s / 3600),
+    }
+}
+
+/// A few lines about a probe: who, where, how its streams did last interval.
+fn summary(p: &ProbeInfo) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    let state = match (p.online, p.last_seen_ms) {
+        (true, _) => "online".to_string(),
+        (false, Some(t)) => format!("OFFLINE (last seen {})", ago(t)),
+        (false, None) => "never seen".to_string(),
+    };
+    let _ = write!(s, "{}", p.id);
+    if let Some(l) = &p.config.label {
+        let _ = write!(s, " [{l}]");
+    }
+    let _ = write!(s, "  {state}");
+    if let Some(h) = &p.hostname {
+        let _ = write!(s, "  host {h}");
+    }
+    if let Some(v) = &p.version {
+        let _ = write!(s, "  v{v}");
+    }
+    if !p.config_applied && p.last_seen_ms.is_some() {
+        let _ = write!(s, "  (config not applied yet)");
+    }
+    if p.queued > 0 {
+        let _ = write!(s, "  catching up: {} reports queued", p.queued);
+    }
+    if p.dropped > 0 {
+        let _ = write!(s, "  {} reports lost while unreachable", p.dropped);
+    }
+    let _ = writeln!(s);
+    if let Some(r) = &p.latest {
+        for row in r.streams.iter().filter(|r| r.group.ip().is_multicast()) {
+            let _ = writeln!(
+                s,
+                "  {:<22} {:<20} {:>7.1} pkt/s {:>5} lost ({:.2}%) jitter {} max gap {:.0} ms",
+                row.group.to_string(),
+                row.name.as_deref().unwrap_or("-"),
+                row.packets_per_sec,
+                row.lost,
+                row.loss_percent,
+                row.jitter_ms.map_or("-".into(), |j| format!("{j:.2} ms")),
+                row.max_gap_ms,
+            );
+        }
+        for c in &p.comparisons {
+            let _ = writeln!(s, "  {}", comparison(c));
+        }
+    }
+    s
+}
+
+fn comparison(c: &Comparison) -> String {
+    let path =
+        |packets: u64, lost: u64, pct: f64| format!("{packets} pkts, {lost} lost ({pct:.2}%)");
+    let m = c.multicast.as_ref().map_or("nothing".into(), |m| {
+        path(m.packets, m.lost, m.loss_percent)
+    });
+    let u = path(c.unicast.packets, c.unicast.lost, c.unicast.loss_percent);
+    let verdict = match c.verdict {
+        Verdict::Ok => "ok",
+        Verdict::MulticastLoss => "LOSS ON MULTICAST ONLY: check the multicast path (IGMP snooping/querier, PIM, Wi-Fi multicast rate)",
+        Verdict::UnicastLoss => "loss on the unicast copy only",
+        Verdict::BothLoss => "LOSS ON BOTH: the network or the sender, not multicast as such",
+        Verdict::NoMulticast => "NO MULTICAST: the unicast copy arrives but the group doesn't (not joined? IGMP, routing, TTL)",
+        Verdict::Idle => "idle",
+    };
+    let what = match (&c.name, c.group) {
+        (Some(n), _) => n.clone(),
+        (None, Some(g)) => g.to_string(),
+        (None, None) => format!("SSRC {:08x}", c.ssrc),
+    };
+    format!("  {what} vs. its unicast copy: multicast {m} | unicast {u} -> {verdict}")
+}

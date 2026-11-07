@@ -5,11 +5,13 @@
 pub mod announcements;
 pub mod describe;
 pub mod jobs;
+pub mod probes;
 pub mod request;
 pub mod watch;
 
 pub use announcements::{Announced, Announcements};
 pub use jobs::{JobId, JobInfo, JobState, Jobs, StartError};
+pub use probes::{ProbeConfig, ProbeInfo, Probes};
 pub use request::{RecvRequest, SendRequest};
 pub use watch::{MonitorSnapshot, Watch};
 
@@ -42,6 +44,13 @@ pub enum Event {
     },
     Monitor {
         snapshot: MonitorSnapshot,
+    },
+    /// A probe checked in, went offline, or was reconfigured.
+    ProbeUpdated {
+        probe: ProbeInfo,
+    },
+    ProbeRemoved {
+        id: String,
     },
 }
 

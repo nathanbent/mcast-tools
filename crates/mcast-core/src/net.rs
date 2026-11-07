@@ -229,6 +229,26 @@ pub fn open_receiver_groups(
     Ok(socket.into())
 }
 
+/// Open a UDP socket bound to `addr` for unicast datagrams (no group to
+/// join), e.g. `0.0.0.0:5104`. `SO_REUSEADDR` is set so a restart can rebind
+/// at once.
+pub fn open_unicast_receiver(addr: SocketAddr) -> io::Result<UdpSocket> {
+    if addr.ip().is_multicast() {
+        return Err(invalid(&format!(
+            "{} is a multicast address; use open_receiver",
+            addr.ip()
+        )));
+    }
+    let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    if addr.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+    let _ = socket.set_recv_buffer_size(1 << 20);
+    socket.bind(&addr.into())?;
+    Ok(socket.into())
+}
+
 /// A received datagram with the IP header details a monitor cares about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Received {

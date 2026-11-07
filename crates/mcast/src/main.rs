@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 mod file;
 mod presets;
+mod probe;
 mod text;
 mod update;
 
@@ -51,6 +52,9 @@ enum Command {
     Serve(ServeArgs),
     /// Terminal front end for a running `mcast serve` (works over SSH)
     Tui(TuiArgs),
+    /// Probes: watch streams around the network and report to `mcast serve`
+    #[command(subcommand)]
+    Probe(probe::ProbeCommand),
 }
 
 #[derive(Subcommand)]
@@ -472,6 +476,13 @@ struct ServeArgs {
     /// (for working on crates/mcast-web/assets)
     #[arg(long, value_name = "DIR", conflicts_with = "no_web")]
     web_dir: Option<PathBuf>,
+    /// A token that only lets probes check in (`mcast probe run --token`),
+    /// so the one copied onto every probe can't page. Probes may use --token too
+    #[arg(long, env = "MCAST_PROBE_TOKEN", hide_env_values = true)]
+    probe_token: Option<String>,
+    /// File keeping known probes and their configurations [default: ~/.local/share/mcast/probes.json]
+    #[arg(long, value_name = "FILE")]
+    probe_state: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -507,6 +518,7 @@ fn main() -> Result<()> {
         Command::Update(a) => update::run(a),
         Command::Serve(a) => serve(a, stop),
         Command::Tui(a) => mcast_tui::run(&a.url, a.token),
+        Command::Probe(c) => probe::run(c, &stop),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");
@@ -946,14 +958,16 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
 }
 
 fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
-    let media_dir = a.media_dir.unwrap_or_else(|| {
-        std::env::var_os("XDG_DATA_HOME")
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("mcast/media")
-    });
+    let data_dir = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("mcast");
+    let media_dir = a.media_dir.unwrap_or_else(|| data_dir.join("media"));
+    let probe_state = a
+        .probe_state
+        .unwrap_or_else(|| data_dir.join("probes.json"));
     let cfg = mcast_server::ServerConfig {
         listen: a.listen,
         token: a.token,
@@ -966,6 +980,8 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
         },
         monitor: (!a.no_monitor).then_some(a.watch),
         max_upload: a.max_upload_mb.saturating_mul(1 << 20),
+        probe_token: a.probe_token,
+        probe_state: Some(probe_state),
     };
     let web = if a.no_web {
         axum::Router::new()

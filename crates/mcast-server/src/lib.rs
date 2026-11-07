@@ -7,7 +7,7 @@
 use anyhow::{bail, Context, Result};
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -15,9 +15,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
+use mcast_control::probes::{CheckIn, CheckInReply, IntervalReport, ProbeError};
 use mcast_control::request::{ChimeRequest, SinkRequest, SourceRequest};
 use mcast_control::{
-    Announcements, Event, EventSink, JobId, Jobs, RecvRequest, SendRequest, StartError, Watch,
+    Announcements, Event, EventSink, JobId, Jobs, ProbeConfig, ProbeInfo, Probes, RecvRequest,
+    SendRequest, StartError, Watch,
 };
 use mcast_core::Interface;
 use mcast_monitor::{MonitorConfig, Target};
@@ -50,14 +52,22 @@ pub struct ServerConfig {
     pub monitor: Option<Vec<SocketAddr>>,
     /// Largest upload accepted, in bytes.
     pub max_upload: u64,
+    /// A second token that only lets probes check in (so a token copied
+    /// onto many Pis can't be used to page). Probes may use `token` too.
+    pub probe_token: Option<String>,
+    /// Where to keep the known probes and their configurations; `None`
+    /// keeps them in memory only.
+    pub probe_state: Option<PathBuf>,
 }
 
 struct Inner {
     jobs: Jobs,
+    probes: Probes,
     announcements: Announcements,
     watch: Option<Watch>,
     events: broadcast::Sender<Event>,
     token: Option<String>,
+    probe_token: Option<String>,
     media_dir: PathBuf,
     max_upload: u64,
     closing: watch::Receiver<bool>,
@@ -99,12 +109,16 @@ impl AppState {
             ),
             None => None,
         };
+        let jobs = Jobs::new(cfg.interface, sink.clone());
+        let probes = Probes::new(sink, jobs.mirror(), cfg.probe_state.clone())?;
         Ok(Self(Arc::new(Inner {
-            jobs: Jobs::new(cfg.interface, sink),
+            jobs,
+            probes,
             announcements,
             watch,
             events,
             token: cfg.token.clone().filter(|t| !t.is_empty()),
+            probe_token: cfg.probe_token.clone().filter(|t| !t.is_empty()),
             media_dir,
             max_upload: cfg.max_upload,
             closing,
@@ -150,6 +164,17 @@ pub async fn serve(
         }
     );
     let app = router(state.clone()).merge(extra);
+    {
+        // Notice probes that stop checking in.
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                t.tick().await;
+                state.0.probes.tick();
+            }
+        });
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown.await;
@@ -174,6 +199,18 @@ pub fn router(state: AppState) -> Router {
         .route("/media", get(list_media))
         .route("/media/{name}", put(upload_media).delete(delete_media))
         .route("/events", get(events))
+        .route("/probes", get(list_probes))
+        .route("/probes/{id}", get(get_probe).delete(remove_probe))
+        .route("/probes/{id}/checkin", post(probe_check_in))
+        .route("/probes/{id}/reports", get(probe_reports))
+        .route(
+            "/probes/{id}/config",
+            put(set_probe_config).delete(reset_probe_config),
+        )
+        .route(
+            "/probe-defaults",
+            get(probe_defaults).put(set_probe_defaults),
+        )
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state);
@@ -252,10 +289,23 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The one route the probe token opens: `POST /probes/{id}/checkin`.
+fn is_check_in(req: &Request) -> bool {
+    // The path is relative to /api/v1 here, but allow for it being whole.
+    let parts: Vec<&str> = req
+        .uri()
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .collect();
+    req.method() == axum::http::Method::POST
+        && matches!(parts.as_slice(), [.., "probes", _, "checkin"])
+}
+
 async fn auth(State(s): State<AppState>, req: Request, next: Next) -> Response {
-    let Some(token) = &s.0.token else {
+    if s.0.token.is_none() {
         return next.run(req).await;
-    };
+    }
     let bearer = req
         .headers()
         .get(header::AUTHORIZATION)
@@ -266,10 +316,14 @@ async fn auth(State(s): State<AppState>, req: Request, next: Next) -> Response {
         .uri()
         .query()
         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("access_token=")));
-    if bearer
-        .or(query)
-        .is_some_and(|t| same(t.as_bytes(), token.as_bytes()))
-    {
+    let given = bearer.or(query);
+    let matches = |t: &Option<String>| {
+        t.as_ref()
+            .zip(given)
+            .is_some_and(|(want, got)| same(got.as_bytes(), want.as_bytes()))
+    };
+    let allowed = matches(&s.0.token) || (is_check_in(&req) && matches(&s.0.probe_token));
+    if allowed {
         next.run(req).await
     } else {
         let mut r =
@@ -386,6 +440,94 @@ async fn start_receiver(
     })
     .await??;
     Ok((StatusCode::CREATED, Json(info)))
+}
+
+// ---- probes ----
+
+impl From<ProbeError> for ApiError {
+    fn from(e: ProbeError) -> Self {
+        match e {
+            ProbeError::NotFound => ApiError::new(StatusCode::NOT_FOUND, "no such probe"),
+            ProbeError::Invalid(m) => ApiError::bad(m),
+        }
+    }
+}
+
+fn no_probe(id: &str) -> ApiError {
+    ApiError::new(StatusCode::NOT_FOUND, format!("no probe \"{id}\""))
+}
+
+async fn list_probes(State(s): State<AppState>) -> Json<Vec<ProbeInfo>> {
+    Json(s.0.probes.list())
+}
+
+async fn get_probe(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ProbeInfo>> {
+    s.0.probes.get(&id).map(Json).ok_or_else(|| no_probe(&id))
+}
+
+async fn remove_probe(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    s.0.probes.remove(&id).map_err(|_| no_probe(&id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn probe_check_in(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<CheckIn>, JsonRejection>,
+) -> ApiResult<Json<CheckInReply>> {
+    let Json(c) = body?;
+    Ok(Json(s.0.probes.check_in(&id, c)?))
+}
+
+#[derive(serde::Deserialize)]
+struct ReportsQuery {
+    /// Only reports that ended after this time (ms since the epoch).
+    after_ms: Option<u64>,
+}
+
+async fn probe_reports(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Query(q): Query<ReportsQuery>,
+) -> ApiResult<Json<Vec<IntervalReport>>> {
+    s.0.probes
+        .reports(&id, q.after_ms)
+        .map(Json)
+        .ok_or_else(|| no_probe(&id))
+}
+
+async fn set_probe_config(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<ProbeConfig>, JsonRejection>,
+) -> ApiResult<Json<ProbeInfo>> {
+    let Json(c) = body?;
+    Ok(Json(s.0.probes.set_config(&id, Some(c))?))
+}
+
+async fn reset_probe_config(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<ProbeInfo>> {
+    if s.0.probes.get(&id).is_none() {
+        return Err(no_probe(&id));
+    }
+    Ok(Json(s.0.probes.set_config(&id, None)?))
+}
+
+async fn probe_defaults(State(s): State<AppState>) -> Json<ProbeConfig> {
+    Json(s.0.probes.defaults())
+}
+
+async fn set_probe_defaults(
+    State(s): State<AppState>,
+    body: Result<Json<ProbeConfig>, JsonRejection>,
+) -> ApiResult<Json<ProbeConfig>> {
+    let Json(c) = body?;
+    Ok(Json(s.0.probes.set_defaults(c)?))
 }
 
 // ---- media ----

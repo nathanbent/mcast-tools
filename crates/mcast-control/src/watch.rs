@@ -2,20 +2,20 @@
 
 use crate::{Event, EventSink};
 use mcast_monitor::{GroupStatus, Monitor, MonitorConfig, StreamReport};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MonitorSnapshot {
     pub groups: Vec<WatchedGroup>,
     pub streams: Vec<StreamRow>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WatchedGroup {
     pub group: SocketAddr,
     pub name: Option<String>,
@@ -37,7 +37,7 @@ impl From<GroupStatus> for WatchedGroup {
 }
 
 /// One sender on one group, over the last interval.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamRow {
     pub group: SocketAddr,
     pub name: Option<String>,

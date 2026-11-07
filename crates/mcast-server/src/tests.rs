@@ -16,6 +16,10 @@ impl Drop for Harness {
 }
 
 fn harness(token: Option<&str>) -> Harness {
+    harness_with(token, None)
+}
+
+fn harness_with(token: Option<&str>, probe_token: Option<&str>) -> Harness {
     let dir = std::env::temp_dir().join(format!("mcast-server-test-{}", mcast_core::random_u32()));
     let cfg = ServerConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
@@ -25,6 +29,8 @@ fn harness(token: Option<&str>) -> Harness {
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor: None,
         max_upload: 1 << 20,
+        probe_token: probe_token.map(Into::into),
+        probe_state: None,
     };
     let (_tx, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
@@ -260,7 +266,141 @@ async fn refuses_to_listen_publicly_without_a_token() {
         sap_groups: Vec::new(),
         monitor: None,
         max_upload: 0,
+        probe_token: None,
+        probe_state: None,
     };
     let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
     assert!(err.to_string().contains("without a token"));
+}
+
+fn check_in(unicast_addr: Option<std::net::SocketAddr>, seq: u64) -> serde_json::Value {
+    json!({
+        "version": "test",
+        "hostname": "pi-1",
+        "boot": 42,
+        "uptime_s": 3.0,
+        "unicast_addr": unicast_addr,
+        "reports": [{
+            "seq": seq,
+            "start_ms": 1000,
+            "end_ms": 11000,
+            "streams": [],
+        }],
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_probe_token_only_checks_in() {
+    let h = harness_with(Some("admin"), Some("probe"));
+    let (status, reply) = call(
+        &h,
+        "POST",
+        "/api/v1/probes/pi-1/checkin",
+        Some(check_in(None, 1)),
+        Some("probe"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["acked_seq"], 1);
+    assert_eq!(reply["config"]["report_interval_s"], 10.0);
+    for (method, path) in [
+        ("GET", "/api/v1/probes"),
+        ("GET", "/api/v1/jobs"),
+        ("POST", "/api/v1/senders"),
+        ("GET", "/api/v1/probes/pi-1/checkin"),
+    ] {
+        assert_eq!(
+            call(&h, method, path, None, Some("probe")).await.0,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}"
+        );
+    }
+    // The admin token works for check-ins too.
+    let (status, _) = call(
+        &h,
+        "POST",
+        "/api/v1/probes/pi-2/checkin",
+        Some(check_in(None, 1)),
+        Some("admin"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, list) = call(&h, "GET", "/api/v1/probes", None, Some("admin")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    assert_eq!(list[0]["online"], true);
+    assert_eq!(list[0]["hostname"], "pi-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configures_probes_and_mirrors_senders_to_them() {
+    let h = harness(None);
+    let (status, err) = call(
+        &h,
+        "PUT",
+        "/api/v1/probes/pi-1/config",
+        Some(json!({"report_interval_s": 0})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+
+    // Configured before it ever checks in.
+    let (status, info) = call(
+        &h,
+        "PUT",
+        "/api/v1/probes/pi-1/config",
+        Some(json!({"label": "IDF 3", "unicast": true, "report_interval_s": 5})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{info}");
+    assert_eq!(info["online"], false);
+    assert_eq!(info["custom_config"], true);
+
+    let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    probe
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let (status, reply) = call(
+        &h,
+        "POST",
+        "/api/v1/probes/pi-1/checkin",
+        Some(check_in(Some(probe.local_addr().unwrap()), 1)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reply["config"]["label"], "IDF 3");
+    assert_eq!(reply["config"]["unicast"], true);
+
+    let page = json!({"group": "239.255.77.23:5004", "sap": false, "encoding": "g711u"});
+    let (status, job) = call(&h, "POST", "/api/v1/senders", Some(page), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{job}");
+    let mut buf = [0u8; 1500];
+    let n = probe.recv(&mut buf).expect("a unicast copy of the page");
+    let rtp = mcast_core::rtp::parse(&buf[..n]).unwrap();
+    assert_eq!(rtp.header.payload_type, 0, "PCMU");
+    let id = job["id"].as_u64().unwrap();
+    call(&h, "DELETE", &format!("/api/v1/jobs/{id}"), None, None).await;
+
+    let (status, reports) = call(&h, "GET", "/api/v1/probes/pi-1/reports", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reports.as_array().unwrap().len(), 1);
+
+    let (status, info) = call(&h, "DELETE", "/api/v1/probes/pi-1/config", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["custom_config"], false);
+    assert_eq!(info["config"]["unicast"], false);
+
+    assert_eq!(
+        call(&h, "DELETE", "/api/v1/probes/pi-1", None, None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(&h, "GET", "/api/v1/probes/pi-1", None, None).await.0,
+        StatusCode::NOT_FOUND
+    );
 }

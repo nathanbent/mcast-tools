@@ -33,6 +33,8 @@ fn server(token: Option<&str>) -> Server {
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor: None,
         max_upload: 1 << 20,
+        probe_token: None,
+        probe_state: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);

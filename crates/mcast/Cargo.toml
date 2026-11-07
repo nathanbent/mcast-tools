@@ -24,6 +24,8 @@ mcast-tui.workspace = true
 tokio.workspace = true
 mcast-text.workspace = true
 mcast-file.workspace = true
+mcast-probe.workspace = true
+serde_json.workspace = true
 image.workspace = true
 
 [target.'cfg(unix)'.dependencies]

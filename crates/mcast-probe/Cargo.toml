@@ -1,0 +1,20 @@
+[package]
+name = "mcast-probe"
+description = "Probe agent: watch multicast streams, compare them with unicast copies, and report to an mcast server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
+mcast-core.workspace = true
+mcast-control.workspace = true
+mcast-monitor.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+mcast-server.workspace = true
