@@ -59,3 +59,32 @@ pub fn save(path: &Path, cfg: &Config) -> Result<()> {
     };
     write().with_context(|| format!("writing {}", path.display()))
 }
+
+/// Write a JSON file in one step, readable by its owner only (it holds
+/// secrets, or their hashes).
+pub fn save_private<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let write = || -> std::io::Result<()> {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        let mut f = opts.open(&tmp)?;
+        serde_json::to_writer_pretty(&mut f, value)?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    write().with_context(|| format!("writing {}", path.display()))
+}
+
+/// The modified time and length of a file, to notice when it changes.
+pub(crate) fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}

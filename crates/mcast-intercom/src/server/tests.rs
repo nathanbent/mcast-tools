@@ -885,6 +885,17 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/tokens"),
     ("PUT", "/tokens/{id}"),
     ("DELETE", "/tokens/{id}"),
+    ("GET", "/trigger/{which}"),
+    ("POST", "/trigger/{which}"),
+    ("GET", "/trigger/{which}/stop"),
+    ("POST", "/trigger/{which}/stop"),
+    ("GET", "/stop-all"),
+    ("POST", "/stop-all"),
+    ("GET", "/webhooks"),
+    ("POST", "/webhooks"),
+    ("PUT", "/webhooks/{id}"),
+    ("DELETE", "/webhooks/{id}"),
+    ("POST", "/webhooks/{id}/test"),
 ];
 
 #[test]
@@ -899,6 +910,8 @@ fn every_route_has_an_access_rule() {
         let changes_setup = m != Method::GET
             && !path.starts_with("/media")
             && !path.starts_with("/runs")
+            && !path.starts_with("/trigger")
+            && *path != "/stop-all"
             && !path.ends_with("/play");
         if changes_setup || path.starts_with("/tokens") {
             for r in [Role::Operator, Role::Trigger, Role::Media] {
@@ -1323,4 +1336,365 @@ async fn listens_on_the_network_with_an_admin_token_from_the_file() {
         .await
         .unwrap();
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---- the trigger API ----
+
+impl Panel {
+    /// Zones Hall and Yard; Bell (to both), Gate (to Yard) and Talk (live, to Hall).
+    async fn set_up_two(&self, admin: Option<&str>) {
+        for (name, zone) in [("Hall", "zone-1"), ("Yard", "239.1.1.2:5000")] {
+            let body = json!({"name": name, "targets": [{"group": zone}]});
+            let (s, v) = self
+                .call_with(Method::POST, "/zones", Some(body), admin)
+                .await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+        }
+        for (name, audio, zones) in [
+            ("Bell", json!("chime_only"), json!(["hall", "yard"])),
+            ("Gate", json!("chime_only"), json!(["yard"])),
+            ("Talk", json!("live"), json!(["hall"])),
+        ] {
+            let body = json!({"name": name, "audio": audio, "zones": zones});
+            let (s, v) = self
+                .call_with(Method::POST, "/announcements", Some(body), admin)
+                .await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_trigger_api_plays_by_name_and_stops() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    p.set_up_two(admin).await;
+    let doorbell = p
+        .token(
+            admin,
+            json!({"name": "Doorbell", "role": "trigger", "announcements": ["bell"]}),
+        )
+        .await;
+    let bell = Some(doorbell.as_str());
+
+    // By name, any case, with a POST and no body.
+    let (s, run) = p.call_with(Method::POST, "/trigger/BELL", None, bell).await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    assert_eq!(run["trigger"], json!({"type": "api", "by": "Doorbell"}));
+    assert_eq!(run["targets"].as_array().unwrap().len(), 2);
+
+    // Stop it by name.
+    let (s, v) = p
+        .call_with(Method::POST, "/trigger/Bell/stop", None, bell)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v[0]["state"], "stopped");
+    let (_, v) = p
+        .call_with(Method::POST, "/trigger/Bell/stop", None, bell)
+        .await;
+    assert_eq!(v, json!([]), "nothing left to stop");
+
+    // GET with the token in the URL, only to the yard, twice over.
+    let (s, run) = p
+        .call(
+            Method::GET,
+            &format!("/trigger/bell?access_token={doorbell}&zones=Yard&repeat=2"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    assert_eq!(run["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(run["rounds"], 2);
+    // ...and stop everything it may stop, also by GET.
+    let (s, v) = p
+        .call(
+            Method::GET,
+            &format!("/stop-all?access_token={doorbell}"),
+            None,
+        )
+        .await;
+    assert_eq!((s, v.as_array().unwrap().len()), (StatusCode::OK, 1));
+
+    // Not its announcement, a zone the announcement doesn't use, a bad repeat,
+    // a live one, an unknown one.
+    let (s, _) = p.call_with(Method::POST, "/trigger/gate", None, bell).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = p
+        .call_with(
+            Method::POST,
+            "/trigger/gate",
+            Some(json!({"zones": ["hall"]})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("isn't one of"), "{v}");
+    let (s, _) = p
+        .call_with(
+            Method::POST,
+            "/trigger/gate",
+            Some(json!({"repeat": 0})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = p
+        .call_with(Method::POST, "/trigger/talk", None, admin)
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = p
+        .call_with(Method::POST, "/trigger/nope", None, admin)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // A link preview's HEAD, or a PUT, pages nobody.
+    assert_eq!(
+        p.status(
+            Method::HEAD,
+            &format!("/trigger/bell?access_token={doorbell}"),
+            None
+        )
+        .await,
+        StatusCode::METHOD_NOT_ALLOWED
+    );
+    let (s, _) = p.call_with(Method::PUT, "/trigger/bell", None, bell).await;
+    assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+    let (_, runs) = p.call_with(Method::GET, "/runs", None, admin).await;
+    assert_eq!(runs.as_array().unwrap().len(), 2);
+
+    // Other roles use a header; operator and admin may trigger, media may not.
+    let desk = p
+        .token(admin, json!({"name": "Desk", "role": "operator"}))
+        .await;
+    let (s, run) = p
+        .call_with(Method::POST, "/trigger/gate", None, Some(&desk))
+        .await;
+    assert_eq!(
+        (s, run["trigger"].clone()),
+        (StatusCode::CREATED, json!({"type": "api", "by": "Desk"}))
+    );
+    let (s, _) = p
+        .call(
+            Method::GET,
+            &format!("/trigger/gate?access_token={desk}"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let rec = p
+        .token(admin, json!({"name": "Recorder", "role": "media"}))
+        .await;
+    let (s, _) = p
+        .call_with(Method::POST, "/trigger/gate", None, Some(&rec))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = p.call_with(Method::POST, "/stop-all", None, admin).await;
+    assert_eq!((s, v.as_array().unwrap().len()), (StatusCode::OK, 1));
+}
+
+// ---- webhooks ----
+
+/// The secret receivers check signatures with (one test signs).
+static HOOK_SECRET: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// A receiver that keeps what it's sent: (headers, body), answering `status`.
+async fn receiver(
+    status: u16,
+) -> (
+    String,
+    Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, Value)>>>,
+) {
+    let got: Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, Value)>>> = Arc::default();
+    let keep = got.clone();
+    let app = Router::new().route(
+        "/hook",
+        post(
+            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let keep = keep.clone();
+                async move {
+                    let v: Value = serde_json::from_slice(&body).unwrap();
+                    // The signature is over the raw body, as sent.
+                    if let (Some(sig), Some(ts)) = (
+                        headers.get("x-mcast-signature"),
+                        headers.get("x-mcast-timestamp"),
+                    ) {
+                        let ts: u64 = ts.to_str().unwrap().parse().unwrap();
+                        let secret = HOOK_SECRET.lock().unwrap().clone();
+                        let ok =
+                            crate::webhooks::signature(&secret, ts, &body) == sig.to_str().unwrap();
+                        let mut v = v;
+                        v["signature_ok"] = ok.into();
+                        keep.lock().unwrap().push((headers, v));
+                    } else {
+                        keep.lock().unwrap().push((headers, v));
+                    }
+                    StatusCode::from_u16(status).unwrap()
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, got)
+}
+
+async fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(t) = f() {
+            return t;
+        }
+        assert!(Instant::now() < until, "timed out");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn webhooks_hear_runs_signed_and_filtered() {
+    let p = panel(None);
+    p.set_up_two(None).await;
+    let (url, got) = receiver(204).await;
+    let (other_url, other) = receiver(204).await;
+
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Logger", "url": url})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let secret = v["secret"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("whsec_"));
+    let id = v["webhook"]["id"].as_str().unwrap().to_string();
+    // Receivers check signatures with this secret.
+    *HOOK_SECRET.lock().unwrap() = secret.clone();
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Failures only", "url": other_url, "events": ["run_failed"], "sign": false})),
+        )
+        .await;
+    assert_eq!((s, v["secret"].clone()), (StatusCode::CREATED, Value::Null));
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Bad", "url": "ftp://x"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // The secret isn't listed or readable by others; it's in the file, owner-only.
+    let (_, list) = p.call(Method::GET, "/webhooks", None).await;
+    assert_eq!(list[0]["signed"], true);
+    assert!(!list.to_string().contains(&secret));
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert!(!cfg.to_string().contains(&secret));
+
+    let (_, run) = p.call(Method::POST, "/trigger/bell", None).await;
+    let started = wait_for(|| got.lock().unwrap().first().cloned()).await;
+    assert_eq!(started.1["event"], "run_started");
+    assert_eq!(started.1["run"]["id"], run["id"]);
+    assert_eq!(started.1["signature_ok"], true, "{}", started.1);
+    assert_eq!(started.0["x-mcast-event"], "run_started");
+    assert!(started.0["user-agent"]
+        .to_str()
+        .unwrap()
+        .starts_with("mcast-intercom/"));
+
+    p.call(Method::DELETE, &format!("/runs/{}", run["id"]), None)
+        .await;
+    let ended = wait_for(|| got.lock().unwrap().get(1).cloned()).await;
+    assert_eq!(ended.1["event"], "run_ended");
+    assert_eq!(ended.1["run"]["state"], "stopped");
+
+    // A busy group fails the second play: only that goes to "Failures only".
+    p.call(Method::POST, "/trigger/gate", None).await;
+    let (_, failed) = p.call(Method::POST, "/trigger/gate", None).await;
+    assert_eq!(failed["state"], "failed", "{failed}");
+    let f = wait_for(|| other.lock().unwrap().first().cloned()).await;
+    assert_eq!(f.1["event"], "run_failed");
+    assert!(f.0.get("x-mcast-signature").is_none());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(other.lock().unwrap().len(), 1);
+
+    // Switched off: nothing more.
+    let before = got.lock().unwrap().len();
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            &format!("/webhooks/{id}"),
+            Some(json!({"enabled": false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    p.call(Method::POST, "/stop-all", None).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(got.lock().unwrap().len(), before);
+
+    // How the last delivery went shows in the list.
+    let (_, list) = p.call(Method::GET, "/webhooks", None).await;
+    assert_eq!(list[1]["last_delivery"]["ok"], true, "{list}");
+    assert_eq!(list[1]["last_delivery"]["status"], 204);
+
+    let (s, _) = p
+        .call(Method::DELETE, &format!("/webhooks/{id}"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = p
+        .call(Method::DELETE, &format!("/webhooks/{id}"), None)
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn webhook_tests_say_how_it_went() {
+    let p = panel(None);
+    let (url, got) = receiver(404).await;
+    let (_, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Gone", "url": url, "sign": false})),
+        )
+        .await;
+    let id = v["webhook"]["id"].as_str().unwrap().to_string();
+    let (s, d) = p
+        .call(Method::POST, &format!("/webhooks/{id}/test"), None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    // A 4xx isn't retried.
+    assert_eq!(
+        (d["ok"].clone(), d["status"].clone(), d["attempts"].clone()),
+        (json!(false), json!(404), json!(1))
+    );
+    assert_eq!(got.lock().unwrap()[0].1["event"], "test");
+
+    // Nobody listening: tried twice, then given up.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/hook", l.local_addr().unwrap())
+    };
+    let (_, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Dead", "url": dead})),
+        )
+        .await;
+    let id = v["webhook"]["id"].as_str().unwrap().to_string();
+    let (_, d) = p
+        .call(Method::POST, &format!("/webhooks/{id}/test"), None)
+        .await;
+    assert_eq!(
+        (d["ok"].clone(), d["attempts"].clone()),
+        (json!(false), json!(2)),
+        "{d}"
+    );
+    assert!(d["error"].as_str().is_some());
+    let (s, _) = p.call(Method::POST, "/webhooks/w_nope/test", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

@@ -59,7 +59,8 @@ Browsers can't set headers on EventSource, media links or WebSockets, so
   the page needs.
 - **trigger**: only on the `GET` form of the trigger API (roadmap item 2),
   for devices that can only fetch a URL. At worst, a token leaked through a
-  log can fire its allowed announcements. Until that's built, nowhere.
+  log can fire its allowed announcements. (Built: `/trigger/...` and
+  `/stop-all`, see `intercom-triggers.md`.)
 
 A token in the URL where it isn't allowed gets `403`.
 

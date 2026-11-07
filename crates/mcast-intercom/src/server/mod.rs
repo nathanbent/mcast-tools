@@ -5,10 +5,12 @@
 //! server only through a [`Backend`].
 
 mod auth;
+mod hooks;
 mod library;
 mod live;
 mod routes;
 pub mod tls;
+mod trigger;
 mod web;
 
 use crate::backend::Backend;
@@ -81,6 +83,8 @@ pub(crate) struct Inner {
     pub(crate) scheduler: Scheduler,
     pub(crate) auth: AuthConfig,
     pub(crate) tokens: Arc<TokenStore>,
+    /// Outbound webhooks, in `webhooks.json` beside the config.
+    pub(crate) webhooks: Arc<crate::webhooks::Webhooks>,
     closing: watch::Receiver<bool>,
 }
 
@@ -116,9 +120,14 @@ impl AppState {
         closing: watch::Receiver<bool>,
     ) -> Self {
         let (events, _) = broadcast::channel(256);
+        let webhooks = Arc::new(crate::webhooks::Webhooks::open(
+            crate::webhooks::default_path(&config),
+        ));
         let runner = {
             let tx = events.clone();
+            let hooks = webhooks.clone();
             Runner::new(backend.clone(), move |c| {
+                hooks.observe(&c);
                 // No subscribers is fine.
                 let _ = tx.send(match c {
                     Change::Run(run) => Event::Run { run: run.clone() },
@@ -137,6 +146,7 @@ impl AppState {
             events,
             auth,
             tokens,
+            webhooks,
             closing,
         }))
     }
@@ -186,6 +196,8 @@ pub async fn serve(
     // Refuse to start with a config that doesn't load, rather than serve errors.
     let path = cfg.config.clone();
     let loaded = tokio::task::spawn_blocking(move || store::load(&path)).await??;
+    let hooks_path = crate::webhooks::default_path(&cfg.config);
+    tokio::task::spawn_blocking(move || crate::webhooks::load(&hooks_path)).await??;
     let (close_tx, close_rx) = watch::channel(false);
     let state = {
         let (backend, config, tokens) = (backend.clone(), cfg.config.clone(), tokens.clone());
@@ -333,6 +345,18 @@ pub fn router(state: AppState) -> Router {
             "/tokens/{id}",
             axum::routing::put(auth::put_token).delete(auth::delete_token),
         )
+        .route("/trigger/{which}", axum::routing::any(trigger::trigger))
+        .route(
+            "/trigger/{which}/stop",
+            axum::routing::any(trigger::trigger_stop),
+        )
+        .route("/stop-all", axum::routing::any(trigger::stop_all))
+        .route("/webhooks", get(hooks::list).post(hooks::create))
+        .route(
+            "/webhooks/{id}",
+            axum::routing::put(hooks::put).delete(hooks::delete),
+        )
+        .route("/webhooks/{id}/test", post(hooks::test))
         // Once the route is known: may this caller use it?
         .route_layer(middleware::from_fn(auth::authorize))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })

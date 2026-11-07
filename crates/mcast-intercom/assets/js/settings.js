@@ -11,6 +11,7 @@ import { chimeField, chooserLink, openChooser } from "./chimes.js";
 import { MODES } from "./announcements.js";
 import { ENCODINGS, encodingValue } from "./zones.js";
 import * as tokens from "./tokens.js";
+import * as webhooks from "./webhooks.js";
 
 export async function putSettings(body, done) {
   try {
@@ -202,5 +203,6 @@ export function mount(el) {
     card("Sites", sitesEditor()),
     card("Chime lists", chimes()),
     card("Access tokens", tokens.mount()),
+    card("Other systems", webhooks.mount()),
     card("Connection", connection()));
 }

@@ -11,11 +11,11 @@
 //! request.
 
 use crate::model::Config;
+use crate::store::stamp;
 use anyhow::{bail, Context, Result};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
@@ -342,24 +342,7 @@ pub fn load(path: &Path) -> Result<TokenFile> {
 /// Write the file in one step, readable by its owner only.
 pub fn save(path: &Path, f: &TokenFile) -> Result<()> {
     f.validate()?;
-    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    let write = || -> std::io::Result<()> {
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-        let mut f_out = opts.open(&tmp)?;
-        serde_json::to_writer_pretty(&mut f_out, f)?;
-        f_out.write_all(b"\n")?;
-        f_out.sync_all()?;
-        std::fs::rename(&tmp, path)
-    };
-    write().with_context(|| format!("writing {}", path.display()))
+    crate::store::save_private(path, f)
 }
 
 /// What a secret turned out to be.
@@ -384,11 +367,6 @@ struct StoreState {
     stamp: Option<(SystemTime, u64)>,
     /// Uses not yet written: id → (last used, how many).
     usage: HashMap<String, (u64, u64)>,
-}
-
-fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.modified().ok()?, m.len()))
 }
 
 impl TokenStore {

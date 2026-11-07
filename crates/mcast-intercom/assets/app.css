@@ -402,3 +402,5 @@ pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg)
 .inline-form > input.mono { flex: 1; min-width: 220px; }
 #whoami { white-space: nowrap; }
 div.inline-form { display: flex; gap: 8px; margin-bottom: 10px; }
+.checks.column { flex-direction: column; gap: 6px; }
+section h3 { font-size: 14px; margin: 18px 0 6px; }

@@ -34,8 +34,11 @@ pub enum Trigger {
         #[serde(skip_serializing_if = "Option::is_none")]
         by: Option<String>,
     },
-    /// Another system, with a trigger token.
-    Api { by: String },
+    /// The trigger API (`/trigger/...`); `by` names the token used, if any.
+    Api {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
     /// A schedule, for the time it was due.
     Schedule { id: String, at_ms: u64 },
 }
@@ -125,6 +128,28 @@ pub struct Run {
     pub targets: Vec<TargetRun>,
     #[serde(skip)]
     gap: Duration,
+}
+
+#[cfg(test)]
+impl Run {
+    /// A bare run, for tests elsewhere.
+    pub(crate) fn for_tests(id: RunId) -> Self {
+        Run {
+            id,
+            announcement: "a".into(),
+            name: "A".into(),
+            priority: Default::default(),
+            trigger: Trigger::Manual { by: None },
+            state: RunState::Playing,
+            round: 1,
+            rounds: 1,
+            started_ms: 0,
+            ended_ms: None,
+            error: None,
+            targets: Vec::new(),
+            gap: Duration::ZERO,
+        }
+    }
 }
 
 struct State {

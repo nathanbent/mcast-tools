@@ -42,7 +42,7 @@ A page with a tab for each part:
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
 | **Sounds** | The mcast server's sound files, in folders: upload (or drop files on it), listen, rename or move, hide from the lists, delete. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, and the connection to the mcast server |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server |
 
 Sound files and phonebook names come from the mcast server, so its own web
 page and TUI see the same files and folders.
@@ -90,14 +90,39 @@ day, in the panel's time zone. The panel notices changes to the file while it
 runs, so a token revoked from the command line stops working at once. Each
 play records which token started it, and the History tab shows it.
 
-To play an announcement from another system with a trigger token:
-
-```bash
-curl -X POST -H "Authorization: Bearer mci_..." https://HOST:8651/api/intercom/v1/announcements/doorbell/play
-```
 
 On loopback with no startup token the panel is open, as before: requests
 without a token act as admin. A known access token still gets its own role.
+
+### From other systems
+
+**Trigger API.** Other systems play announcements by id or name with a
+trigger token (or an operator or admin one):
+
+```bash
+curl -X POST -H "Authorization: Bearer mci_..." https://HOST:8651/api/intercom/v1/trigger/doorbell
+curl -X POST -H "Authorization: Bearer mci_..." https://HOST:8651/api/intercom/v1/trigger/doorbell/stop
+```
+
+A device that can only fetch a URL can use a GET with the token in it
+(trigger tokens only):
+`https://HOST:8651/api/intercom/v1/trigger/doorbell?access_token=mci_...`.
+`zones=reception` plays to only some of the announcement's zones, and
+`repeat=3` changes how often it plays, for that play only. These go in the
+URL, or in a JSON body (`{"zones": ["reception"], "repeat": 3}`).
+`/stop-all` stops everything the token may stop. Settings → Other systems
+shows the URLs for each announcement.
+
+**Webhooks.** The panel POSTs JSON to other systems when an announcement
+starts, ends or fails, when a schedule is missed, and when the mcast server
+goes away or comes back. Add them in Settings → Other systems, choose the
+events each one gets, and use *Test* to check one. Each delivery is signed
+(`X-Mcast-Signature`, an HMAC-SHA256 with the hook's secret, shown once)
+unless you turn that off. Hooks are kept in `webhooks.json` beside
+`intercom.json`, readable by its owner only.
+
+The payloads, signature check, and Home Assistant and Node-RED examples are
+in [docs/intercom-triggers.md](../../docs/intercom-triggers.md).
 
 ### Push to talk
 
@@ -337,6 +362,11 @@ only their runs.
 | `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |
 | `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
 | `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed` (also when tokens change), `backend` (`{"status"}`), `media_changed`, `lagged` |
+| `GET`, `POST /trigger/{id or name}` | Play it now (`201`, the run), as another system. Overrides for this play: `zones` (some of its zones) and `repeat`, in the query or a JSON body. `GET` takes a trigger token in the URL; `HEAD` and other methods get `405`. Not for live announcements (`422`) |
+| `GET`, `POST /trigger/{id or name}/stop` | Stop it wherever it's playing; the runs stopped |
+| `GET`, `POST /stop-all` | Stop everything the token may stop; the runs stopped |
+| `GET`, `POST /webhooks` | Outbound webhooks (admin): list them (`[{"id", "name", "url", "events", "enabled", "signed", "created_ms", "last_delivery"}]`), or add one (`{"name", "url", "events", "enabled", "sign"}`; returns `{"webhook", "secret"}`, the only time the secret is shown) |
+| `PUT`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` | Change one (`{"name", "url", "events", "enabled"}`), delete it, or send it a `test` event and get how it went: `{"event", "at_ms", "ok", "status", "error", "attempts", "took_ms"}` |
 | `GET /tokens` | Access tokens (admin): `[{"id", "name", "role", "announcements", "created_ms", "expires", "expires_ms", "expired", "last_used_ms", "uses"}]`, never their secrets |
 | `POST /tokens` | `{"name", "role", "announcements", "expires"}` (`announcements`, ids or names, for trigger tokens only; `expires` a date like `2027-06-30`): make one. Returns `{"token", "secret"}` (`201`), the only time the secret is shown |
 | `PUT /tokens/{id}` | `{"name", "announcements", "expires"}`: change those given (`"expires": null` clears it). The role can't change |
@@ -353,8 +383,8 @@ A run:
 ```
 
 A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
-button, push to talk or the command line, `{"type": "api", "by"}` for a trigger
-token, and `{"type": "schedule", "id", "at_ms"}` for a schedule, with the time
+button, push to talk or the command line, `{"type": "api", "by"}` for the
+trigger API (or a trigger token on the play route), and `{"type": "schedule", "id", "at_ms"}` for a schedule, with the time
 it was due. `by` is the token's name (`"startup token"` for the startup
 token), or missing without one. Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
 `stopped`, `failed` or `missed`. A target's is `starting`, `playing`, `done`, `busy`,

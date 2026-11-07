@@ -1,0 +1,142 @@
+//! `/webhooks` (admin): manage outbound webhooks and send test events.
+
+use super::{ApiError, ApiResult, AppState, Event};
+use crate::now_ms;
+use crate::webhooks::{Delivery, HookChange, Webhook};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::Json;
+use serde_json::{json, Value};
+
+/// A hook for the API: never its secret.
+fn view(w: &Webhook, last: Option<&Delivery>) -> Value {
+    json!({
+        "id": w.id,
+        "name": w.name,
+        "url": w.url,
+        "events": w.events,
+        "enabled": w.enabled,
+        "signed": w.secret.is_some(),
+        "created_ms": w.created_ms,
+        "last_delivery": last,
+    })
+}
+
+fn bad(e: anyhow::Error) -> ApiError {
+    let m = format!("{e:#}");
+    if m.starts_with("no webhook") {
+        ApiError::new(StatusCode::NOT_FOUND, m)
+    } else if m.contains("already") {
+        ApiError::new(StatusCode::CONFLICT, m)
+    } else {
+        ApiError::bad(m)
+    }
+}
+
+fn change(v: &Value) -> ApiResult<HookChange> {
+    if !v.is_object() {
+        return Err(ApiError::bad("expected a JSON object"));
+    }
+    let string = |k: &str| match v.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(ApiError::bad(format!("{k}: expected a string"))),
+    };
+    let events = match v.get("events") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(
+            a.iter()
+                .map(|e| {
+                    e.as_str()
+                        .map(String::from)
+                        .ok_or_else(|| ApiError::bad("events: expected a list of names"))
+                })
+                .collect::<ApiResult<Vec<_>>>()?,
+        ),
+        Some(_) => return Err(ApiError::bad("events: expected a list of names")),
+    };
+    let enabled = match v.get("enabled") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err(ApiError::bad("enabled: expected true or false")),
+    };
+    Ok(HookChange {
+        name: string("name")?,
+        url: string("url")?,
+        events,
+        enabled,
+    })
+}
+
+pub(super) async fn list(State(s): State<AppState>) -> ApiResult<Json<Vec<Value>>> {
+    let hooks = s.0.webhooks.clone();
+    let list = tokio::task::spawn_blocking(move || hooks.list()).await?;
+    Ok(Json(
+        list.iter().map(|(w, d)| view(w, d.as_ref())).collect(),
+    ))
+}
+
+/// `{name, url, events?, enabled?, sign?}` → `{webhook, secret}`; the only
+/// time the signing secret is shown (`null` with `"sign": false`).
+pub(super) async fn create(
+    State(s): State<AppState>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let Json(v) = body?;
+    let c = change(&v)?;
+    let sign = match v.get("sign") {
+        None | Some(Value::Null) => true,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(ApiError::bad("sign: expected true or false")),
+    };
+    let hooks = s.0.webhooks.clone();
+    let w = tokio::task::spawn_blocking(move || hooks.modify(|f| f.add(c, sign, now_ms())))
+        .await?
+        .map_err(bad)?;
+    let _ = s.0.events.send(Event::ConfigChanged);
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "webhook": view(&w, None), "secret": w.secret })),
+    ))
+}
+
+/// `{name?, url?, events?, enabled?}`: change those given.
+pub(super) async fn put(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    let Json(v) = body?;
+    let c = change(&v)?;
+    let hooks = s.0.webhooks.clone();
+    let w = tokio::task::spawn_blocking(move || hooks.modify(|f| f.change(&id, c)))
+        .await?
+        .map_err(bad)?;
+    let _ = s.0.events.send(Event::ConfigChanged);
+    Ok(Json(view(&w, None)))
+}
+
+pub(super) async fn delete(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let hooks = s.0.webhooks.clone();
+    let w = tokio::task::spawn_blocking(move || hooks.modify(|f| f.remove(&id)))
+        .await?
+        .map_err(bad)?;
+    let _ = s.0.events.send(Event::ConfigChanged);
+    Ok(Json(view(&w, None)))
+}
+
+/// Send a `test` event now and say how it went.
+pub(super) async fn test(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Delivery>> {
+    let hooks = s.0.webhooks.clone();
+    tokio::task::spawn_blocking(move || hooks.test(&id))
+        .await?
+        .map(Json)
+        .map_err(bad)
+}

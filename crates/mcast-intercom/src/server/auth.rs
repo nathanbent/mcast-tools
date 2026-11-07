@@ -66,8 +66,17 @@ impl Caller {
     /// What runs it starts record.
     pub fn trigger(&self) -> Trigger {
         match (&self.name, self.role) {
-            (Some(n), Role::Trigger) => Trigger::Api { by: n.clone() },
+            (Some(n), Role::Trigger) => Trigger::Api {
+                by: Some(n.clone()),
+            },
             (by, _) => Trigger::Manual { by: by.clone() },
+        }
+    }
+
+    /// What runs started through the trigger API record.
+    pub fn api_trigger(&self) -> Trigger {
+        Trigger::Api {
+            by: self.name.clone(),
         }
     }
 
@@ -301,19 +310,31 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         }
         "/media-folders" | "/media-folders/{*name}" | "/media-move" | "/media-hidden" => MediaWrite,
         "/tokens" | "/tokens/{id}" => Admin,
+        // Any method: the handlers take GET and POST, and refuse the rest.
+        "/trigger/{which}" | "/trigger/{which}/stop" | "/stop-all" => Play,
+        "/webhooks" | "/webhooks/{id}" | "/webhooks/{id}/test" => Admin,
         _ => return None,
     })
 }
 
-/// Routes where a token may come in the URL, because browsers can't send a
-/// header there: events, sound files and chime previews for `<audio>`, and
-/// push to talk's WebSocket.
-pub fn url_token_ok(method: &Method, path: &str) -> bool {
-    *method == Method::GET
-        && matches!(
-            path,
-            "/events" | "/media/{*name}" | "/chimes/{name}/preview" | "/live/{id}"
-        )
+/// Routes where a token may come in the URL. For the page, where browsers
+/// can't send a header: events, sound files and chime previews for
+/// `<audio>`, and push to talk's WebSocket. For trigger tokens, the trigger
+/// API's GET form, for devices that can only fetch a URL; nothing else.
+pub fn url_token_ok(method: &Method, path: &str, role: Role) -> bool {
+    // HEAD reads as GET would (and the trigger API refuses it outright).
+    (*method == Method::GET || *method == Method::HEAD)
+        && if role == Role::Trigger {
+            matches!(
+                path,
+                "/trigger/{which}" | "/trigger/{which}/stop" | "/stop-all"
+            )
+        } else {
+            matches!(
+                path,
+                "/events" | "/media/{*name}" | "/chimes/{name}/preview" | "/live/{id}"
+            )
+        }
 }
 
 pub(super) async fn authorize(req: Request, next: Next) -> Response {
@@ -334,9 +355,8 @@ pub(super) async fn authorize(req: Request, next: Next) -> Response {
         )
         .into_response();
     };
-    // A token in the URL only where a browser can't send a header (trigger
-    // tokens have none of those).
-    if caller.in_url && (caller.role == Role::Trigger || !url_token_ok(method, path)) {
+    // A token in the URL only where it can't be sent in a header.
+    if caller.in_url && !url_token_ok(method, path, caller.role) {
         return ApiError::new(
             StatusCode::FORBIDDEN,
             "send the token in an Authorization: Bearer header here, not in the URL",

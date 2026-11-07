@@ -109,13 +109,14 @@ function showSecret(t, secret) {
     }
   };
   const example = t.announcements[0] ?? state.config.announcements[0]?.id ?? "ANNOUNCEMENT";
-  const curl = `curl -X POST -H "Authorization: Bearer ${secret}" ${location.origin}/api/intercom/v1/announcements/${encodeURIComponent(example)}/play`;
+  const base = `${location.origin}/api/intercom/v1/trigger/${encodeURIComponent(example)}`;
+  const curl = `curl -X POST -H "Authorization: Bearer ${secret}" ${base}\n\nOr, from a device that can only fetch a URL:\n${base}?access_token=${secret}`;
   replace(d, h("div", {},
     h("div", { class: "dialog-head" }, h("h2", {}, `"${t.name}" is ready`), closeOnly(d)),
     h("p", {}, h("strong", {}, "Copy the secret now: "), "it's only shown this once. If it's lost, revoke the token and make a new one."),
     h("div", { class: "inline-form" }, input, h("button", { type: "button", class: "primary", onclick: copy }, "Copy")),
     t.role === "trigger" && [
-      h("p", { class: "muted small" }, "For example, to play an announcement:"),
+      h("p", { class: "muted small" }, "For example, to play an announcement (Settings → Other systems has more):"),
       h("pre", { class: "mono small wrap" }, curl),
     ],
     t.role !== "trigger" && h("p", { class: "muted small" }, "Sign in to this page with it, or send it as ", h("code", {}, "Authorization: Bearer …"), "."),

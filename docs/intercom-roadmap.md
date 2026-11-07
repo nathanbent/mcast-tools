@@ -58,6 +58,13 @@ management and who-fired-it in history. Summary of the original sketch:
 
 ### 2. Trigger API and webhooks
 
+**Built**: see `intercom-triggers.md`. `GET`/`POST /trigger/{name}`, `/stop`
+and `/stop-all`; zone overrides are limited to the announcement's own zones.
+Signed webhooks for runs, missed schedules and the mcast server's
+connection, kept in `webhooks.json`, managed in Settings → Other systems.
+The examples went in `intercom-triggers.md` rather than `docs/api.md`, which
+covers `mcast serve`. The original sketch:
+
 - `POST /api/intercom/v1/trigger/{name-or-id}`, so callers can use the
   announcement's name. The optional body overrides `zones` and `repeat`.
 - `POST /trigger/{name-or-id}/stop` and stop-all, under the same `play` scope.

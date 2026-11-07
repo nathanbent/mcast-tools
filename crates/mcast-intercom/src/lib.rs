@@ -16,6 +16,7 @@ pub mod scheduler;
 pub mod server;
 pub mod store;
 pub mod tokens;
+pub mod webhooks;
 
 pub use backend::{Backend, BackendError, HttpBackend};
 pub use model::{Announcement, Audio, Config, Day, Priority, Schedule, Target, When, Zone};
