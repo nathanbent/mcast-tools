@@ -1,5 +1,5 @@
-//! Named presets: saved options for `mcast audio send`, `mcast audio recv`
-//! and `mcast monitor`.
+//! Named presets: saved options for `mcast audio send`, `mcast audio recv`,
+//! `mcast audio discover` and `mcast monitor`.
 //!
 //! A preset is stored as the options it adds, one per line, in a small text
 //! file (`~/.config/mcast/presets.conf`, or `$MCAST_PRESETS`):
@@ -17,7 +17,7 @@
 //! first, minus any that the command line sets again or conflicts with, so
 //! options typed on the command line always win.
 
-use crate::{MonitorArgs, RecvArgs, SendArgs};
+use crate::{DiscoverArgs, MonitorArgs, RecvArgs, SendArgs};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::parser::ValueSource;
 use clap::{Arg, Args, Command};
@@ -30,6 +30,7 @@ use std::path::PathBuf;
 pub enum Kind {
     Send,
     Recv,
+    Discover,
     Monitor,
 }
 
@@ -39,6 +40,7 @@ impl Kind {
         match self {
             Kind::Send => &["audio", "send"],
             Kind::Recv => &["audio", "recv"],
+            Kind::Discover => &["audio", "discover"],
             Kind::Monitor => &["monitor"],
         }
     }
@@ -47,6 +49,7 @@ impl Kind {
         match s.split_whitespace().collect::<Vec<_>>()[..] {
             ["audio", "send"] | ["send"] => Some(Kind::Send),
             ["audio", "recv"] | ["recv"] => Some(Kind::Recv),
+            ["audio", "discover"] | ["discover"] => Some(Kind::Discover),
             ["monitor"] => Some(Kind::Monitor),
             _ => None,
         }
@@ -57,12 +60,14 @@ impl Kind {
         let name = match self {
             Kind::Send => "mcast audio send",
             Kind::Recv => "mcast audio recv",
+            Kind::Discover => "mcast audio discover",
             Kind::Monitor => "mcast monitor",
         };
         let c = Command::new(name).no_binary_name(true);
         let mut c = match self {
             Kind::Send => SendArgs::augment_args(c),
             Kind::Recv => RecvArgs::augment_args(c),
+            Kind::Discover => DiscoverArgs::augment_args(c),
             Kind::Monitor => MonitorArgs::augment_args(c),
         };
         c.build();
@@ -308,7 +313,7 @@ fn scan(cmd: &Command, tokens: &[OsString]) -> (Vec<String>, Vec<String>) {
 
 /// Rewrite the command line if it uses presets: `mcast @NAME ...`,
 /// `mcast preset run NAME ...`, or `--preset NAME` on `mcast audio send`,
-/// `mcast audio recv` or `mcast monitor`.
+/// `mcast audio recv`, `mcast audio discover` or `mcast monitor`.
 /// Other command lines are returned unchanged.
 pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
     let word = |i: usize| argv.get(i).and_then(|a| a.to_str());
@@ -323,6 +328,7 @@ pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
         match word(2) {
             Some("send") => (None, Some(Kind::Send), 3),
             Some("recv") => (None, Some(Kind::Recv), 3),
+            Some("discover") => (None, Some(Kind::Discover), 3),
             _ => return Ok(argv),
         }
     } else if word(1) == Some("monitor") {
@@ -454,7 +460,7 @@ fn parse_file(text: &str) -> Result<Vec<Preset>> {
             p.options.push(line.to_string());
         } else {
             bail!(
-                "line {}: expected \"audio send\", \"audio recv\", \"monitor\" or an option, got \"{line}\"",
+                "line {}: expected \"audio send\", \"audio recv\", \"audio discover\", \"monitor\" or an option, got \"{line}\"",
                 n + 1
             );
         }
@@ -737,6 +743,12 @@ mod tests {
             &os(&["239.192.2.1:10000", "239.192.2.2:10000", "--sap"]),
         )
         .unwrap();
+        s.create(
+            "sap2",
+            Kind::Discover,
+            &os(&["--sap-group", "239.195.255.255:9875", "--sdp"]),
+        )
+        .unwrap();
         s.save().unwrap();
 
         let run = |args: &[&str]| -> Vec<String> {
@@ -798,6 +810,33 @@ mod tests {
             ]
         );
         assert!(expand(os(&["mcast", "monitor", "-P", "page"])).is_err());
+        assert_eq!(
+            run(&["audio", "discover", "-P", "sap2", "-d", "10"]),
+            [
+                "mcast",
+                "audio",
+                "discover",
+                "--sap-group=239.195.255.255:9875",
+                "--sdp",
+                "-P",
+                "sap2",
+                "-d",
+                "10"
+            ]
+        );
+        // --sap-group given here replaces the preset's (all of them).
+        assert_eq!(
+            run(&["@sap2", "--sap-group", "224.2.127.254:9875"]),
+            [
+                "mcast",
+                "audio",
+                "discover",
+                "--sdp",
+                "--sap-group",
+                "224.2.127.254:9875"
+            ]
+        );
+        assert!(expand(os(&["mcast", "audio", "discover", "-P", "lobby"])).is_err());
         assert!(expand(os(&["mcast", "audio", "recv", "-P", "page"])).is_err());
         assert!(expand(os(&["mcast", "@missing"])).is_err());
 
