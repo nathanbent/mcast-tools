@@ -1,0 +1,19 @@
+[package]
+name = "mcast-tui"
+description = "Terminal front end for the mcast API: page, stop, listen and monitor from a terminal or over SSH"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ratatui = "0.29"
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+mcast-core.workspace = true
+mcast-server.workspace = true

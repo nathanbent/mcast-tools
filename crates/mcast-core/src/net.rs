@@ -28,7 +28,8 @@ impl FromStr for Interface {
         if let Ok(a) = s.parse::<Ipv4Addr>() {
             return Ok(Interface::V4(a));
         }
-        if let Ok(i) = s.parse::<u32>() {
+        // "#3" is how an index is displayed.
+        if let Ok(i) = s.strip_prefix('#').unwrap_or(s).parse::<u32>() {
             return Ok(Interface::Index(i));
         }
         Err(format!(
@@ -352,6 +353,7 @@ mod tests {
             Interface::V4(Ipv4Addr::new(10, 0, 0, 5))
         );
         assert_eq!("3".parse::<Interface>().unwrap(), Interface::Index(3));
+        assert_eq!("#3".parse::<Interface>().unwrap(), Interface::Index(3));
         assert!("eth0".parse::<Interface>().is_err());
     }
 

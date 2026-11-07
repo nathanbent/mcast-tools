@@ -10,33 +10,49 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::Thread;
 
-/// Human-readable list of input and output devices on the default host.
-pub fn list() -> Result<Vec<String>> {
+/// An audio device on the default host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub name: String,
+    /// Input (capture) rather than output (playback).
+    pub input: bool,
+    pub default: bool,
+}
+
+/// The default host's name and its input and output devices.
+pub fn devices() -> Result<(String, Vec<DeviceInfo>)> {
     let host = cpal::default_host();
     let default_in = host.default_input_device().and_then(|d| d.name().ok());
     let default_out = host.default_output_device().and_then(|d| d.name().ok());
-    let mut lines = vec![format!("host: {}", host.id().name())];
-    for (kind, devices, default) in [
+    let mut out = Vec::new();
+    for (input, devices, default) in [
+        (true, host.input_devices()?.collect::<Vec<_>>(), &default_in),
         (
-            "input ",
-            host.input_devices()?.collect::<Vec<_>>(),
-            &default_in,
-        ),
-        (
-            "output",
+            false,
             host.output_devices()?.collect::<Vec<_>>(),
             &default_out,
         ),
     ] {
         for d in devices {
             let name = d.name().unwrap_or_else(|_| "<unknown>".into());
-            let mark = if Some(&name) == default.as_ref() {
-                " (default)"
-            } else {
-                ""
-            };
-            lines.push(format!("  {kind}  {name}{mark}"));
+            out.push(DeviceInfo {
+                default: Some(&name) == default.as_ref(),
+                name,
+                input,
+            });
         }
+    }
+    Ok((host.id().name().to_string(), out))
+}
+
+/// Human-readable list of input and output devices on the default host.
+pub fn list() -> Result<Vec<String>> {
+    let (host, devices) = devices()?;
+    let mut lines = vec![format!("host: {host}")];
+    for d in devices {
+        let kind = if d.input { "input " } else { "output" };
+        let mark = if d.default { " (default)" } else { "" };
+        lines.push(format!("  {kind}  {}{mark}", d.name));
     }
     Ok(lines)
 }
