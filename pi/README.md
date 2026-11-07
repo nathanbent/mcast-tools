@@ -78,9 +78,8 @@ history. Logs: `journalctl -u mcast-intercom -f`.
 Setting `ENABLE_INTERCOM=no` again stops and removes the service, but keeps
 `intercom.json` and the token.
 
-The intercom is newer than release 0.3.1. With an older binary, `install.sh`
-skips it and says so: once a release includes it, run `sudo mcast update`, then
-re-run `install.sh`.
+The intercom needs mcast 0.4.0 or later. With an older binary, `install.sh`
+skips it and says so: run `sudo mcast update`, then re-run `install.sh`.
 
 The release binaries are 64-bit only, so the 32-bit OS isn't supported.
 

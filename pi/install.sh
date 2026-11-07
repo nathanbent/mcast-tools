@@ -224,7 +224,7 @@ install_intercom() {
         exit 1
     fi
     if ! /usr/local/bin/mcast intercom --help >/dev/null 2>&1; then
-        note "Intercom panel NOT installed: $(/usr/local/bin/mcast --version) is too old. Run 'sudo mcast update' once a release has it (or 'sudo mcast update --source'), then re-run install.sh."
+        note "Intercom panel NOT installed: $(/usr/local/bin/mcast --version) is too old (it needs 0.4.0 or later). Run 'sudo mcast update', then re-run install.sh."
         return 0
     fi
 
