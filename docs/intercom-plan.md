@@ -1,6 +1,6 @@
 # Intercom control panel: plan
 
-Status: proposal, nothing built yet.
+Status: agreed, nothing built yet.
 
 A small control panel on top of `mcast serve`: you define **zones** (sets of
 speakers), **announcements** (audio + chimes + where it goes), and
@@ -77,7 +77,6 @@ workspace), `ureq` (already used by the TUI, run in `spawn_blocking`), and
     "id": "s_lunch", "announcement": "a_lunch", "enabled": true,
     "when": { "weekly": { "days": ["mon","tue","wed","thu","fri"], "times": ["12:00"] } }
     // or { "once": "2026-12-24T16:30" }
-    // later: "skip_dates": [...], or a cron string
   }],
   "time_zone": "Europe/London"
 }
@@ -159,8 +158,10 @@ but its own copy so it can leave with the crate:
    testing. Tests against an in-process `mcast-server`.
 2. **Panel:** its HTTP API + web UI (panel grid, editors, history).
 3. **Scheduler:** weekly + one-shot, time zone, grace, upcoming.
-4. **Polish:** Pi systemd unit and install.sh option, skip dates / holidays,
-   queue-when-busy, maybe TUI tab.
+4. **Polish:** Pi systemd unit and install.sh option.
+
+Not planned for now (possible later): live talk, queue-when-busy, skip dates
+/ holidays / richer schedule rules, a TUI tab.
 
 ## Optional core change
 
@@ -168,14 +169,12 @@ but its own copy so it can leave with the crate:
   find its own jobs again after it restarts (today it would match on
   `name`). Small and useful to any client, so not panel-specific.
 
-## Open questions
+## Decisions
 
-1. Separate process (recommended, cleanest split), or mount inside `mcast serve`
-   via its `extra` router to keep one service?
-2. Is "intercom" only pre-recorded announcements, or also **live talk**
-   (mic → zones)? Live from the server's own input is just a `capture`
-   source and fits this design. Talking from the browser's mic would need new
-   core work (WebRTC/WebSocket audio in) and is a separate project.
-3. Priority behaviour: is "skip busy zones, pre-empt for high/emergency" right?
-4. Does any schedule need more than weekly + one-off (e.g. term dates,
-   "first Monday of the month")?
+1. **Separate process**, with its own port and token, talking to `mcast serve` over HTTP.
+2. **Pre-recorded only** (media files and chimes). Live talk may come later:
+   live audio from the server's own input fits this design as a `capture` source.
+   Talking from a browser's mic would need new core work.
+3. **Conflicts:** `normal` skips busy groups; `high`/`emergency` take over
+   from whatever is playing there, as described under Triggering.
+4. **Schedules stay simple:** weekly (days + times) and one-off only.
