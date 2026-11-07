@@ -418,7 +418,8 @@ description = Ground floor paging speakers (G.711)
 
 `mcast serve` shares it: the web GUI has a Phonebook panel for adding,
 editing and removing entries, suggests the names in every group field, and
-shows them next to addresses; API requests accept a name for `group` too.
+shows them next to addresses; `mcast tui` has a Phonebook tab, and ←→ on a
+form's Group field picks a name; API requests accept a name for `group` too.
 
 ### Discovery details
 
@@ -694,10 +695,12 @@ ssh pager mcast tui                                  # the server on that box
 MCAST_TOKEN=change-me mcast tui --url http://pager:8650
 ```
 
-Tabs for what's playing, text chat, announced streams, the monitor and
-media (send and receive files there too); `p` opens the page form, `?`
-lists the keys. Like the web GUI, it's a client of the
-API: it needs `mcast serve` running, and every client sees the same jobs.
+Tabs for what's playing, text chat, announced streams, the monitor,
+media (send and receive files there too) and the phonebook (add, edit and
+remove entries; Enter pages one); `p` opens the page form, `?` lists the
+keys. In any form, ←→ on the Group field steps through phonebook names.
+Like the web GUI, it's a client of the API: it needs `mcast serve` running,
+and every client sees the same jobs.
 
 ## Layout
 

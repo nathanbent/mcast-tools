@@ -215,6 +215,15 @@ pub struct MonitorRow {
     pub idle_ms: f64,
 }
 
+/// A phonebook entry: a group saved under a name.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct BookEntry {
+    pub name: String,
+    pub group: String,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct MediaFile {

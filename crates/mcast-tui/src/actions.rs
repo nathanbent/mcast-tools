@@ -31,12 +31,20 @@ impl App {
                 }))
             }),
             "monitor" => self.spawn(|c| Msg::Monitor(c.get("/monitor"))),
+            "phonebook" => self.spawn(|c| Msg::Phonebook(c.get("/phonebook"))),
             _ => {}
         }
     }
 
     pub fn refresh_all(&self) {
-        for w in ["jobs", "streams", "media", "devices", "monitor"] {
+        for w in [
+            "jobs",
+            "streams",
+            "media",
+            "devices",
+            "monitor",
+            "phonebook",
+        ] {
             self.refresh(w);
         }
     }
@@ -45,13 +53,17 @@ impl App {
         self.spawn(move |c| Msg::TextHistory(id, c.get(&format!("/jobs/{id}/text"))));
     }
 
-    /// Start whatever the form describes.
+    /// Start whatever the form describes (or save the phonebook entry).
     pub fn submit(&mut self, kind: FormKind) {
+        if kind == FormKind::Book {
+            return self.save_entry();
+        }
         let path = match kind {
             FormKind::Page => "/senders",
             FormKind::Text => "/texts",
             FormKind::SendFiles => "/file-senders",
             FormKind::ReceiveFiles => "/file-receivers",
+            FormKind::Book => unreachable!("saved above"),
         };
         match self.forms.get(kind).request() {
             Ok(body) => self.start(kind, path, body),
@@ -158,6 +170,48 @@ impl App {
             Msg::Done(
                 c.upload(&name, &path).map(|_| format!("Uploaded {name}")),
                 Some("media"),
+            )
+        });
+    }
+
+    /// Open the phonebook form: empty to add an entry, or filled from
+    /// `entry` to edit it.
+    pub fn edit_entry(&mut self, entry: Option<crate::model::BookEntry>) {
+        let f = &mut self.forms.book;
+        let e = entry.clone().unwrap_or_default();
+        f.set("name", &e.name);
+        f.set("group", &e.group);
+        f.set("description", &e.description);
+        f.selected = 0;
+        self.editing = entry.map(|e| e.name);
+        self.mode = crate::app::Mode::Form(FormKind::Book);
+    }
+
+    fn save_entry(&mut self) {
+        let body = match self.forms.book.request() {
+            Ok(b) => b,
+            Err(e) => return self.say(e, Level::Error),
+        };
+        let name = body["name"].as_str().unwrap_or_default().to_string();
+        let path = format!(
+            "/phonebook/{}",
+            encode(self.editing.as_deref().unwrap_or(&name))
+        );
+        let verb = if self.editing.is_some() {
+            "Saved"
+        } else {
+            "Added"
+        };
+        self.busy = true;
+        self.spawn(move |c| Msg::Saved(c.put(&path, &body).map(|_| format!("{verb} \"{name}\""))));
+    }
+
+    pub fn remove_entry(&mut self, name: String) {
+        self.spawn(move |c| {
+            let path = format!("/phonebook/{}", encode(&name));
+            Msg::Done(
+                c.delete(&path).map(|_| format!("Removed \"{name}\"")),
+                Some("phonebook"),
             )
         });
     }

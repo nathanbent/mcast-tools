@@ -149,6 +149,8 @@ fn draws_every_screen_at_any_size() {
         Mode::Help,
         Mode::Upload("/tmp/x".into()),
         Mode::ConfirmDelete("a.wav".into()),
+        Mode::Form(FormKind::Book),
+        Mode::ConfirmRemove("zone-1".into()),
     ] {
         app.mode = mode;
         for tab in Tab::ALL {
@@ -327,4 +329,79 @@ fn help_fits_a_normal_terminal() {
     let s = screen(&app, 140, 24);
     // Both ends of the list are on screen.
     assert!(s.contains("switch tab") && s.contains("Esc closes"), "{s}");
+}
+
+#[test]
+fn keeps_the_phonebook_and_pages_by_name() {
+    let srv = server(None);
+    let (mut app, rx) = app(&srv.url);
+    pump(&mut app, &rx, "the event stream", |a| a.connection.is_ok());
+    key(&mut app, KeyCode::Char('6'));
+    assert_eq!(app.tab, Tab::Book);
+    let s = screen(&app, 80, 10);
+    assert!(
+        s.contains("No saved groups") && s.contains("6 Phonebook"),
+        "{s}"
+    );
+
+    // Add one from the form.
+    key(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.mode, Mode::Form(FormKind::Book));
+    type_text(&mut app, "zone 1");
+    key(&mut app, KeyCode::Down);
+    type_text(&mut app, "239.255.77.71:5004");
+    key(&mut app, KeyCode::Down);
+    type_text(&mut app, "Ground floor");
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the entry", |a| a.phonebook.len() == 1);
+    assert_eq!(app.mode, Mode::Normal, "{:?}", app.status);
+    let s = screen(&app, 100, 10);
+    assert!(
+        s.contains("zone 1") && s.contains("239.255.77.71:5004") && s.contains("Ground floor"),
+        "{s}"
+    );
+
+    // A bad group keeps the form open with the server's reason.
+    key(&mut app, KeyCode::Char('a'));
+    type_text(&mut app, "bad");
+    key(&mut app, KeyCode::Down);
+    type_text(&mut app, "nowhere");
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the refusal", |a| !a.busy);
+    assert_eq!(app.mode, Mode::Form(FormKind::Book));
+    key(&mut app, KeyCode::Esc);
+
+    // Edit: rename it.
+    key(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.forms.book.get("group"), "239.255.77.71:5004");
+    app.forms.book.set("name", "Zone-1");
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the rename", |a| {
+        a.phonebook.first().is_some_and(|e| e.name == "Zone-1")
+    });
+    assert_eq!(app.phonebook.len(), 1);
+
+    // Enter pages it by name; ←→ on Group picks names too.
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Form(FormKind::Page));
+    assert_eq!(app.forms.page.get("group"), "Zone-1");
+    app.forms.page.set("group", "239.1.1.1:5");
+    app.forms.page.selected = 0;
+    key(&mut app, KeyCode::Right);
+    assert_eq!(app.forms.page.get("group"), "Zone-1");
+    assert!(screen(&app, 100, 30).contains("→ 239.255.77.71:5004"));
+    app.forms.page.set("source", "tone");
+    app.forms.page.set("chime", "none");
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the page", |a| !a.busy);
+    let job = app.jobs.values().next().expect("a job").clone();
+    assert_eq!(job.group.as_deref(), Some("239.255.77.71:5004"));
+    app.stop(job.id);
+
+    // Remove it, after a y.
+    app.tab = Tab::Book;
+    key(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.mode, Mode::ConfirmRemove("Zone-1".into()));
+    key(&mut app, KeyCode::Char('y'));
+    pump(&mut app, &rx, "the removal", |a| a.phonebook.is_empty());
 }
