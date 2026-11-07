@@ -43,7 +43,7 @@ backup/restore are standard on these boxes and cheap on a Pi.
 
 ### 1. Scoped API tokens (foundation)
 
-Design agreed: see `intercom-tokens.md`. Fixed roles (`admin`, `operator`,
+**Built**: see `intercom-tokens.md`. Fixed roles (`admin`, `operator`,
 `trigger`, `media`), hashed in `tokens.json`, with expiry, usage, CLI
 management and who-fired-it in history. Summary of the original sketch:
 

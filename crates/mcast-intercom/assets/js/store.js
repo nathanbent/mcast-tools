@@ -4,6 +4,9 @@
 import { api } from "./api.js";
 
 export const state = {
+  // Who's signed in, from /health: { name, role, announcements }. No token
+  // on an open panel: admin, with no name.
+  me: { name: null, role: "admin", announcements: [] },
   config: { zones: [], announcements: [] },
   configError: null,
   runs: new Map(),
@@ -18,6 +21,21 @@ export const state = {
   // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
   upcoming: { time_zone: null, fires: [] },
   siteUpcoming: {},
+};
+
+// What the signed-in token may do (the server checks too).
+export const can = {
+  edit: () => state.me.role === "admin",
+  operate: () => ["admin", "operator"].includes(state.me.role),
+  changeSounds: () => ["admin", "media"].includes(state.me.role),
+};
+
+// The tabs each role sees.
+export const TABS = {
+  admin: ["panel", "history", "schedules", "announcements", "sounds", "zones", "settings"],
+  operator: ["panel", "history", "sounds"],
+  media: ["sounds"],
+  trigger: [],
 };
 
 const listeners = [];
@@ -99,6 +117,8 @@ export function isHidden(name) {
 }
 
 export function refreshAll() {
+  // A media token sees only the Sounds tab.
+  if (!can.operate()) return refreshLibrary();
   // What's coming up depends on the sites in the config.
   return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary()]);
 }
@@ -118,12 +138,13 @@ export function apply(ev) {
       break;
     }
     case "config_changed":
+      if (!can.operate()) { refreshLibrary(); break; }
       refreshConfig().then(refreshUpcoming);
       // Hidden files, and which announcements use which.
       refreshLibrary();
       break;
     case "media_changed":
-      refreshServer();
+      if (can.operate()) refreshServer();
       refreshLibrary();
       break;
     case "backend": {
@@ -131,7 +152,7 @@ export function apply(ev) {
       state.backend = { ...state.backend, ...ev.status };
       changed("server");
       // Back again: its media and phonebook may have changed meanwhile.
-      if (ev.status.connected && !wasUp) { refreshServer(); refreshLibrary(); }
+      if (ev.status.connected && !wasUp) { if (can.operate()) refreshServer(); refreshLibrary(); }
       break;
     }
     case "lagged":

@@ -656,7 +656,8 @@ mod tests {
         // A site's schedule plays only to that site's zones.
         let fake = std::sync::Arc::new(Fake::default());
         let r = Runner::new(fake.clone(), |_| {});
-        r.play_at(&cfg, "a", Trigger::Manual, Some("nyc")).unwrap();
+        r.play_at(&cfg, "a", Trigger::Manual { by: None }, Some("nyc"))
+            .unwrap();
         let groups: Vec<_> = fake.requests().iter().map(|q| q["group"].clone()).collect();
         assert_eq!(groups, [serde_json::json!("239.1.1.2:5000")]);
         fake.finish_all();

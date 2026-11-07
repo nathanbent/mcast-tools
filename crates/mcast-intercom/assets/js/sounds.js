@@ -5,7 +5,7 @@
 
 import { api, mediaUrl, upload } from "./api.js";
 import { h, replace, toast, bytes, saved } from "./dom.js";
-import { state, subscribe, refreshLibrary } from "./store.js";
+import { state, subscribe, refreshLibrary, can } from "./store.js";
 import { field, select } from "./editor.js";
 
 let folder = saved.get("sounds.folder", ""); // the folder being shown; "" is the top
@@ -138,7 +138,7 @@ function row({ name, isFolder, hidden, size, used, count }) {
       hidden && h("span", { class: "badge" }, "hidden")),
     h("td", { class: "wide muted small" }, isFolder ? `${count} item${count === 1 ? "" : "s"}` : bytes(size)),
     h("td", { class: "wide small" }, used?.length ? used.join(", ") : h("span", { class: "muted" }, "—")),
-    h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
+    h("td", { class: "actions" }, can.changeSounds() && h("div", { class: "buttons nowrap" },
       h("button", { onclick: () => move(name, isFolder) }, "Rename/move"),
       h("button", { onclick: () => setHidden(name, !hidden), title: "Hidden files are left out of the announcement lists" },
         hidden ? "Unhide" : "Hide"),
@@ -162,13 +162,12 @@ function render() {
   const here = files.filter((f) => inHere(f.name));
   const count = (dir) => files.filter((f) => parent(f.name) === dir).length
     + folders.filter((f) => parent(f.name) === dir).length;
-  const hiddenHere = (n) => (state.config.hidden_media ?? []).some((x) => n === x || n.startsWith(`${x}/`));
   replace(el,
     h("div", { class: "toolbar" },
       crumbs(),
       h("span", { class: "spacer" }),
-      h("button", { class: "primary", onclick: () => fileInput.click() }, "Upload…"),
-      h("button", { onclick: newFolder }, "New folder")),
+      can.changeSounds() && h("button", { class: "primary", onclick: () => fileInput.click() }, "Upload…"),
+      can.changeSounds() && h("button", { onclick: newFolder }, "New folder")),
     progress,
     state.libraryError && h("p", { class: "error" }, `Couldn't list the files: ${state.libraryError}`),
     subfolders.length || here.length
@@ -178,9 +177,10 @@ function render() {
           h("tbody", {},
             folder && h("tr", {}, h("td", { class: "icon-cell" }, "↰"),
               h("td", { colspan: 4 }, h("button", { class: "link", onclick: () => open(parent(folder)) }, "Up a folder"))),
-            subfolders.map((f) => row({ name: f.name, isFolder: true, hidden: hiddenHere(f.name), count: count(f.name) })),
+            subfolders.map((f) => row({ name: f.name, isFolder: true, hidden: f.hidden, count: count(f.name) })),
             here.map((f) => row({ name: f.name, hidden: f.hidden, size: f.bytes, used: f.used_by })))))
       : h("p", { class: "muted" }, folder ? "This folder is empty." : "No sound files yet: upload some."),
+    !can.changeSounds() && h("p", { class: "muted small" }, "This token can listen to sounds but not change them."),
     h("p", { class: "muted small" },
       "Files live on the mcast server, so its own pages see the same folders. Hidden files and folders are only left out of the panel's lists; announcements that use one still play it."));
 }
@@ -193,9 +193,9 @@ export function mount(target) {
   });
   document.body.append(fileInput);
   // Drop files anywhere on the tab to upload them here.
-  el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("dropping"); });
-  el.addEventListener("dragleave", () => el.classList.remove("dropping"));
-  el.addEventListener("drop", (e) => {
+  if (can.changeSounds()) el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("dropping"); });
+  if (can.changeSounds()) el.addEventListener("dragleave", () => el.classList.remove("dropping"));
+  if (can.changeSounds()) el.addEventListener("drop", (e) => {
     e.preventDefault();
     el.classList.remove("dropping");
     if (e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);

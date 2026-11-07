@@ -42,22 +42,62 @@ A page with a tab for each part:
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
 | **Sounds** | The mcast server's sound files, in folders: upload (or drop files on it), listen, rename or move, hide from the lists, delete. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, and the connection to the mcast server |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, and the connection to the mcast server |
 
 Sound files and phonebook names come from the mcast server, so its own web
 page and TUI see the same files and folders.
 
 Schedules only play while `mcast intercom serve` runs.
 
-The panel is its own server with its own token (`--panel-token` or
-`$MCAST_INTERCOM_TOKEN`, required unless it listens on loopback). `--token`
-stays the mcast server's. It saves edits to `intercom.json`, reading the file
+The panel is its own server with its own keys: a startup token
+(`--panel-token` or `$MCAST_INTERCOM_TOKEN`), which is an admin key, and
+named [access tokens](#access-tokens) with roles. Listening beyond loopback
+needs the startup token or an admin access token. `--token` stays the mcast
+server's. It saves edits to `intercom.json`, reading the file
 again first, so changes made by hand while it runs aren't lost. It keeps the
 last 50 plays in memory. When it stops, anything playing finishes on the mcast
 server, but repeats still to come are dropped.
 
 On a Raspberry Pi, `ENABLE_INTERCOM=yes` in `pi/pi.conf` sets it up as a
 service next to `mcast serve` ([pi/README.md](../../pi/README.md#the-intercom-panel)).
+
+### Access tokens
+
+Give each person, screen or system its own token, with only what it needs.
+Each token has one role:
+
+| Role | For | Can |
+|---|---|---|
+| `admin` | Whoever sets the panel up | Everything, tokens included |
+| `operator` | A wall tablet, a reception desk | The Panel, History and Sounds tabs: play, stop, push to talk, listen. Changes nothing |
+| `trigger` | Other systems (a doorbell, a PBX, Home Assistant) | Play announcements through the API, and stop them. Optionally limited to some announcements |
+| `media` | A recording or upload script | Sound files: list, upload, download, delete, folders, move, hide |
+
+Make them in **Settings → Access tokens**, or from the command line:
+
+```bash
+mcast intercom token add "Front doorbell" --role trigger --announcement doorbell
+mcast intercom token add Reception --role operator --expires 2027-06-30
+mcast intercom token list
+mcast intercom token revoke "Front doorbell"
+```
+
+A token's secret (`mci_...`) is shown once, when it's made: only its SHA-256
+is kept, in `tokens.json` beside `intercom.json` (or `--tokens FILE` /
+`$MCAST_INTERCOM_TOKENS`), readable by its owner only. If a secret is lost,
+revoke the token and make another. A token can expire at the end of a given
+day, in the panel's time zone. The panel notices changes to the file while it
+runs, so a token revoked from the command line stops working at once. Each
+play records which token started it, and the History tab shows it.
+
+To play an announcement from another system with a trigger token:
+
+```bash
+curl -X POST -H "Authorization: Bearer mci_..." https://HOST:8651/api/intercom/v1/announcements/doorbell/play
+```
+
+On loopback with no startup token the panel is open, as before: requests
+without a token act as admin. A known access token still gets its own role.
 
 ### Push to talk
 
@@ -260,14 +300,21 @@ by hand are picked up within 30 s.
 ## API
 
 Everything is under `/api/intercom/v1`, as JSON, with `Authorization: Bearer
-TOKEN` (or `?access_token=TOKEN`) when the panel has a token. Errors are
-`{"error": "..."}`: `404` for something that isn't there, `409` for a
-duplicate id, or a zone or announcement still in use, `422` for a config that wouldn't be valid,
-`502` when the mcast server can't be reached.
+TOKEN` when the panel has a token. Browsers can't send that header everywhere,
+so `?access_token=TOKEN` also works on `GET /events`, `GET /media/{path}`,
+`GET /chimes/{name}/preview` and `GET /live/{id}`, though not with trigger
+tokens. Errors are `{"error": "..."}`: `401` for a missing, wrong or expired
+token, `403` for a token whose [role](#access-tokens) can't do that, `404`
+for something that isn't there, `409` for a duplicate id, or a zone or
+announcement still in use, `422` for a config that wouldn't be valid, `502`
+when the mcast server can't be reached.
+
+A trigger token may only play its announcements, and `GET /runs` shows it
+only their runs.
 
 | Route | |
 |---|---|
-| `GET /health` | `{"ok": true, "version"}` |
+| `GET /health` | `{"ok": true, "version", "name", "role", "announcements"}`: who the token is (`name` is `null` without one) |
 | `GET /backend` | The mcast server: `{"url", "connected", "error", "since_ms"}` |
 | `GET /config` | The whole config, as in `intercom.json` |
 | `GET`, `POST /zones` | List, or add one (without `id`, one is made from `name`) |
@@ -289,7 +336,11 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 | `POST /media-move` | `{"from", "to"}`: rename or move a file or folder, then point what used it at the new name. Returns `{"from", "to", "folder", "updated"}` |
 | `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |
 | `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
-| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `media_changed`, `lagged` |
+| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed` (also when tokens change), `backend` (`{"status"}`), `media_changed`, `lagged` |
+| `GET /tokens` | Access tokens (admin): `[{"id", "name", "role", "announcements", "created_ms", "expires", "expires_ms", "expired", "last_used_ms", "uses"}]`, never their secrets |
+| `POST /tokens` | `{"name", "role", "announcements", "expires"}` (`announcements`, ids or names, for trigger tokens only; `expires` a date like `2027-06-30`): make one. Returns `{"token", "secret"}` (`201`), the only time the secret is shown |
+| `PUT /tokens/{id}` | `{"name", "announcements", "expires"}`: change those given (`"expires": null` clears it). The role can't change |
+| `DELETE /tokens/{id}` | Revoke it; returns it |
 
 A run:
 
@@ -301,8 +352,11 @@ A run:
               "job": 12, "error": null, "played": 0}]}
 ```
 
-A scheduled run's `trigger` is `{"type": "schedule", "id", "at_ms"}`, with the
-time it was due. Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
+A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
+button, push to talk or the command line, `{"type": "api", "by"}` for a trigger
+token, and `{"type": "schedule", "id", "at_ms"}` for a schedule, with the time
+it was due. `by` is the token's name (`"startup token"` for the startup
+token), or missing without one. Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
 `stopped`, `failed` or `missed`. A target's is `starting`, `playing`, `done`, `busy`,
 `preempted`, `stopped` or `failed`.
 

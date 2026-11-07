@@ -3,7 +3,7 @@
 use super::*;
 use crate::fake::Fake;
 use axum::body::Body;
-use axum::http::{Method, Request};
+use axum::http::{header, Method, Request};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -77,6 +77,32 @@ impl Panel {
             serde_json::from_slice(&bytes).unwrap()
         };
         (status, v)
+    }
+
+    /// Only the status, for routes that don't answer JSON. `path` may carry a query.
+    async fn status(&self, method: Method, path: &str, token: Option<&str>) -> StatusCode {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(format!("{API_PREFIX}{path}"));
+        if let Some(t) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        let resp = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        resp.status()
+    }
+
+    /// Make a token through the API (as `admin`); returns its secret.
+    async fn token(&self, admin: Option<&str>, body: Value) -> String {
+        let (s, v) = self
+            .call_with(Method::POST, "/tokens", Some(body), admin)
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        v["secret"].as_str().unwrap().to_string()
     }
 
     /// A zone and an announcement for playing.
@@ -365,10 +391,21 @@ async fn needs_the_token_when_it_has_one() {
         .call_with(Method::GET, "/health", None, Some("s3cret"))
         .await;
     assert_eq!(s, StatusCode::OK);
-    let (s, _) = p
-        .call(Method::GET, "/health?access_token=s3cret", None)
-        .await;
-    assert_eq!(s, StatusCode::OK);
+    // In the URL only where a browser can't send a header.
+    assert_eq!(
+        p.status(
+            Method::GET,
+            "/chimes/bell/preview?access_token=s3cret",
+            None
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        p.status(Method::GET, "/health?access_token=s3cret", None)
+            .await,
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]
@@ -377,6 +414,7 @@ async fn wont_listen_on_the_network_without_a_token() {
         listen: "0.0.0.0:0".parse().unwrap(),
         token: None,
         config: PathBuf::from("unused.json"),
+        tokens: None,
         web: true,
         web_dir: None,
         tls: None,
@@ -785,4 +823,504 @@ async fn live_announcements_are_talked_on_not_played_or_scheduled() {
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+// ---- access tokens ----
+
+/// Every route the router has, as routed. Kept in step with `router`: a
+/// route missing here, or with no rule in `access`, fails below.
+const ROUTES: &[(&str, &str)] = &[
+    ("GET", "/health"),
+    ("GET", "/backend"),
+    ("GET", "/config"),
+    ("GET", "/zones"),
+    ("POST", "/zones"),
+    ("GET", "/zones/{id}"),
+    ("PUT", "/zones/{id}"),
+    ("DELETE", "/zones/{id}"),
+    ("GET", "/announcements"),
+    ("POST", "/announcements"),
+    ("GET", "/announcements/{id}"),
+    ("PUT", "/announcements/{id}"),
+    ("DELETE", "/announcements/{id}"),
+    ("POST", "/announcements/{id}/play"),
+    ("GET", "/live/{id}"),
+    ("GET", "/schedules"),
+    ("POST", "/schedules"),
+    ("GET", "/schedules/{id}"),
+    ("PUT", "/schedules/{id}"),
+    ("DELETE", "/schedules/{id}"),
+    ("GET", "/sites"),
+    ("POST", "/sites"),
+    ("GET", "/sites/{id}"),
+    ("PUT", "/sites/{id}"),
+    ("DELETE", "/sites/{id}"),
+    ("GET", "/schedule-groups"),
+    ("POST", "/schedule-groups"),
+    ("GET", "/schedule-groups/{id}"),
+    ("PUT", "/schedule-groups/{id}"),
+    ("DELETE", "/schedule-groups/{id}"),
+    ("GET", "/upcoming"),
+    ("GET", "/settings"),
+    ("PUT", "/settings"),
+    ("GET", "/runs"),
+    ("DELETE", "/runs"),
+    ("GET", "/runs/{id}"),
+    ("DELETE", "/runs/{id}"),
+    ("GET", "/media"),
+    ("GET", "/media/{*name}"),
+    ("PUT", "/media/{*name}"),
+    ("DELETE", "/media/{*name}"),
+    ("GET", "/library"),
+    ("POST", "/media-folders"),
+    ("DELETE", "/media-folders/{*name}"),
+    ("POST", "/media-move"),
+    ("PUT", "/media-hidden"),
+    ("GET", "/phonebook"),
+    ("GET", "/chimes"),
+    ("PUT", "/chimes"),
+    ("GET", "/chimes/{name}/preview"),
+    ("GET", "/events"),
+    ("GET", "/tokens"),
+    ("POST", "/tokens"),
+    ("PUT", "/tokens/{id}"),
+    ("DELETE", "/tokens/{id}"),
+];
+
+#[test]
+fn every_route_has_an_access_rule() {
+    use crate::tokens::Role;
+    for (m, path) in ROUTES {
+        let m: Method = m.parse().unwrap();
+        let need = access(&m, path).unwrap_or_else(|| panic!("{m} {path} has no access rule"));
+        // What each role may do, in short: a few spot checks per role.
+        let admin = need.allows(Role::Admin);
+        assert!(admin, "{m} {path}: admin can do everything");
+        let changes_setup = m != Method::GET
+            && !path.starts_with("/media")
+            && !path.starts_with("/runs")
+            && !path.ends_with("/play");
+        if changes_setup || path.starts_with("/tokens") {
+            for r in [Role::Operator, Role::Trigger, Role::Media] {
+                assert!(!need.allows(r), "{m} {path}: only admin, not {r}");
+            }
+        }
+    }
+    let can = |m: Method, p: &str, r| access(&m, p).unwrap().allows(r);
+    assert!(can(Method::GET, "/config", Role::Operator));
+    assert!(!can(Method::GET, "/config", Role::Trigger));
+    assert!(!can(Method::GET, "/config", Role::Media));
+    assert!(can(Method::POST, "/announcements/{id}/play", Role::Trigger));
+    assert!(!can(Method::DELETE, "/runs", Role::Trigger));
+    assert!(!can(Method::GET, "/live/{id}", Role::Trigger));
+    assert!(can(Method::GET, "/live/{id}", Role::Operator));
+    assert!(can(Method::PUT, "/media/{*name}", Role::Media));
+    assert!(!can(Method::PUT, "/media/{*name}", Role::Operator));
+    assert!(can(Method::GET, "/media/{*name}", Role::Operator));
+    assert!(!can(Method::GET, "/media", Role::Trigger));
+    assert!(can(Method::GET, "/events", Role::Media));
+    assert!(access(&Method::PATCH, "/zones/{id}").is_some_and(|a| !a.allows(Role::Operator)));
+    assert_eq!(access(&Method::GET, "/no-such-route"), None);
+}
+
+#[tokio::test]
+async fn tokens_get_their_roles() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    let operator = p
+        .token(admin, json!({"name": "Desk", "role": "operator"}))
+        .await;
+    let trigger = p
+        .token(admin, json!({"name": "Doorbell", "role": "trigger"}))
+        .await;
+    let media = p
+        .token(admin, json!({"name": "Recorder", "role": "media"}))
+        .await;
+    let made_admin = p
+        .token(admin, json!({"name": "Ops", "role": "admin"}))
+        .await;
+
+    // Who's asking.
+    let (_, v) = p
+        .call_with(Method::GET, "/health", None, Some(&trigger))
+        .await;
+    assert_eq!(
+        (v["name"].clone(), v["role"].clone()),
+        (json!("Doorbell"), json!("trigger"))
+    );
+    let (_, v) = p.call_with(Method::GET, "/health", None, admin).await;
+    assert_eq!(v["name"], STARTUP_TOKEN);
+
+    /// What, how, where, with what, and whether [admin, operator, trigger, media] may.
+    type Case<'a> = (&'a str, Method, &'a str, Option<Value>, [bool; 4]);
+    let cases: &[Case] = &[
+        // [admin, operator, trigger, media]: allowed?
+        (
+            "config",
+            Method::GET,
+            "/config",
+            None,
+            [true, true, false, false],
+        ),
+        (
+            "zones",
+            Method::GET,
+            "/zones",
+            None,
+            [true, true, false, false],
+        ),
+        (
+            "new zone",
+            Method::POST,
+            "/zones",
+            Some(json!({"name": "X", "targets": [{"group": "zone-1"}]})),
+            [true, false, false, false],
+        ),
+        (
+            "settings",
+            Method::PUT,
+            "/settings",
+            Some(json!({})),
+            [true, false, false, false],
+        ),
+        (
+            "runs",
+            Method::GET,
+            "/runs",
+            None,
+            [true, true, true, false],
+        ),
+        (
+            "library",
+            Method::GET,
+            "/library",
+            None,
+            [true, true, false, true],
+        ),
+        (
+            "folder",
+            Method::POST,
+            "/media-folders",
+            Some(json!({"name": "bells"})),
+            [true, false, false, true],
+        ),
+        (
+            "tokens",
+            Method::GET,
+            "/tokens",
+            None,
+            [true, false, false, false],
+        ),
+        (
+            "all stop",
+            Method::DELETE,
+            "/runs",
+            None,
+            [true, true, false, false],
+        ),
+    ];
+    for (what, m, path, body, allowed) in cases {
+        for (i, t) in [&made_admin, &operator, &trigger, &media]
+            .into_iter()
+            .enumerate()
+        {
+            let (s, v) = p.call_with(m.clone(), path, body.clone(), Some(t)).await;
+            if allowed[i] {
+                assert!(s.is_success(), "{what} as token {i}: {s} {v}");
+            } else {
+                assert_eq!(s, StatusCode::FORBIDDEN, "{what} as token {i}: {v}");
+                assert!(v["error"].as_str().unwrap().contains("can't"), "{v}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn trigger_tokens_play_only_their_announcements_and_runs_say_who() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    for (name, zone) in [("Hall", "zone-1"), ("Yard", "239.1.1.2:5000")] {
+        let (s, v) = p
+            .call_with(
+                Method::POST,
+                "/zones",
+                Some(json!({"name": name, "targets": [{"group": zone}]})),
+                admin,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    for (name, zone) in [("Bell", "hall"), ("Gate", "yard")] {
+        let (s, v) = p
+            .call_with(
+                Method::POST,
+                "/announcements",
+                Some(json!({"name": name, "audio": "chime_only", "zones": [zone]})),
+                admin,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let doorbell = p
+        .token(
+            admin,
+            json!({"name": "Doorbell", "role": "trigger", "announcements": ["Bell"]}),
+        )
+        .await;
+    let desk = p
+        .token(admin, json!({"name": "Desk", "role": "operator"}))
+        .await;
+
+    let (s, run) = p
+        .call_with(
+            Method::POST,
+            "/announcements/bell/play",
+            None,
+            Some(&doorbell),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    assert_eq!(run["trigger"], json!({"type": "api", "by": "Doorbell"}));
+    let (s, v) = p
+        .call_with(
+            Method::POST,
+            "/announcements/gate/play",
+            None,
+            Some(&doorbell),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+
+    let (_, gate) = p
+        .call_with(Method::POST, "/announcements/gate/play", None, Some(&desk))
+        .await;
+    assert_eq!(gate["trigger"], json!({"type": "manual", "by": "Desk"}));
+    let (_, v) = p
+        .call_with(Method::POST, "/announcements/gate/play", None, admin)
+        .await;
+    assert_eq!(v["trigger"], json!({"type": "manual", "by": STARTUP_TOKEN}));
+
+    // It sees and stops only runs of its own announcements.
+    let (_, runs) = p
+        .call_with(Method::GET, "/runs", None, Some(&doorbell))
+        .await;
+    let runs = runs.as_array().unwrap();
+    assert!(
+        !runs.is_empty() && runs.iter().all(|r| r["announcement"] == "bell"),
+        "{runs:?}"
+    );
+    let gate_run = format!("/runs/{}", gate["id"]);
+    let (s, _) = p
+        .call_with(Method::DELETE, &gate_run, None, Some(&doorbell))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = p
+        .call_with(Method::GET, &gate_run, None, Some(&doorbell))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, v) = p
+        .call_with(
+            Method::DELETE,
+            &format!("/runs/{}", run["id"]),
+            None,
+            Some(&doorbell),
+        )
+        .await;
+    assert_eq!((s, v["state"].clone()), (StatusCode::OK, json!("stopped")));
+
+    // Never in the URL (until the GET trigger API).
+    assert_eq!(
+        p.status(
+            Method::GET,
+            &format!("/chimes/bell/preview?access_token={doorbell}"),
+            None
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn managing_tokens() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    let (s, v) = p
+        .call_with(
+            Method::POST,
+            "/tokens",
+            Some(json!({"name": "Desk", "role": "operator"})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let secret = v["secret"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("mci_"));
+    let id = v["token"]["id"].as_str().unwrap().to_string();
+    assert!(v["token"].get("hash").is_none(), "{v}");
+
+    // The secret is shown once: not listed, not in the file.
+    p.call_with(Method::GET, "/health", None, Some(&secret))
+        .await;
+    let (_, list) = p.call_with(Method::GET, "/tokens", None, admin).await;
+    assert_eq!(list[0]["name"], "Desk");
+    assert_eq!(list[0]["uses"], 1);
+    assert_eq!(list[0]["expired"], false);
+    assert!(list[0].get("hash").is_none() && !list.to_string().contains(&secret));
+    let file = p.path.with_file_name("tokens.json");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains(&secret) && text.contains("sha256:"));
+
+    // Mistakes.
+    let bad = [
+        json!({"name": "Desk", "role": "admin"}),
+        json!({"name": "Other", "role": "boss"}),
+        json!({"role": "admin"}),
+        json!({"name": "Other", "role": "operator", "announcements": ["x"]}),
+        json!({"name": "Other", "role": "trigger", "announcements": ["nope"]}),
+        json!({"name": "Other", "role": "admin", "expires": "soon"}),
+        json!({"name": "Other", "role": "admin", "expires": "2001-01-01"}),
+    ];
+    for b in bad {
+        let (s, v) = p
+            .call_with(Method::POST, "/tokens", Some(b.clone()), admin)
+            .await;
+        assert!(s.is_client_error(), "{b}: {s} {v}");
+    }
+
+    // Rename, set an expiry, then clear it; the role can't change.
+    let path = format!("/tokens/{id}");
+    let (s, v) = p
+        .call_with(
+            Method::PUT,
+            &path,
+            Some(json!({"name": "Front desk", "expires": "2999-12-31"})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["name"].clone(), v["expires"].clone()),
+        (json!("Front desk"), json!("2999-12-31"))
+    );
+    let (_, v) = p
+        .call_with(Method::PUT, &path, Some(json!({"expires": null})), admin)
+        .await;
+    assert_eq!(v["expires"], Value::Null);
+    let (s, _) = p
+        .call_with(Method::PUT, &path, Some(json!({"role": "admin"})), admin)
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Revoked: refused at once.
+    let (s, v) = p.call_with(Method::DELETE, &path, None, admin).await;
+    assert_eq!(
+        (s, v["name"].clone()),
+        (StatusCode::OK, json!("Front desk"))
+    );
+    let (s, _) = p
+        .call_with(Method::GET, "/health", None, Some(&secret))
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = p.call_with(Method::DELETE, &path, None, admin).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn tokens_changed_on_disk_and_expired_ones() {
+    let p = panel(Some("s3cret"));
+    let file = p.path.with_file_name("tokens.json");
+    // As `mcast intercom token add` would, while the panel runs.
+    let cfg = crate::store::load(&p.path).unwrap();
+    let mut f = crate::tokens::load(&file).unwrap();
+    let new = |name: &str| crate::tokens::NewToken {
+        name: name.into(),
+        role: crate::tokens::Role::Operator,
+        announcements: vec![],
+        expires: None,
+    };
+    let (_, fresh) = f.add(new("Fresh"), &cfg, 1).unwrap();
+    let (mut old, stale) = f.add(new("Old"), &cfg, 1).unwrap();
+    old.expires = Some("2001-01-01".into());
+    old.expires_ms = Some(978_307_200_000);
+    f.tokens[1] = old;
+    crate::tokens::save(&file, &f).unwrap();
+
+    let (s, _) = p
+        .call_with(Method::GET, "/health", None, Some(&fresh))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = p
+        .call_with(Method::GET, "/health", None, Some(&stale))
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(v["error"].as_str().unwrap().contains("expired"), "{v}");
+    let (_, list) = p
+        .call_with(Method::GET, "/tokens", None, Some("s3cret"))
+        .await;
+    assert_eq!(list[1]["expired"], true);
+
+    f.remove("Fresh").unwrap();
+    crate::tokens::save(&file, &f).unwrap();
+    let (s, _) = p
+        .call_with(Method::GET, "/health", None, Some(&fresh))
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_open_panel_still_gives_known_tokens_their_role() {
+    let p = panel(None);
+    p.set_up().await;
+    let desk = p
+        .token(None, json!({"name": "Desk", "role": "operator"}))
+        .await;
+    let (s, _) = p.call(Method::DELETE, "/zones/hall", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "no token: admin, as before");
+    let (s, _) = p
+        .call_with(Method::DELETE, "/zones/hall", None, Some(&desk))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Unknown tokens are ignored, as before.
+    let (s, _) = p
+        .call_with(Method::GET, "/tokens", None, Some("mci_whatever"))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn listens_on_the_network_with_an_admin_token_from_the_file() {
+    let dir = std::env::temp_dir().join(format!("mcast-intercom-api-admin-{}", std::process::id()));
+    let config = dir.join("intercom.json");
+    let tokens = dir.join("tokens.json");
+    let cfg = || ServeConfig {
+        listen: "0.0.0.0:0".parse().unwrap(),
+        token: None,
+        config: config.clone(),
+        tokens: Some(tokens.clone()),
+        web: false,
+        web_dir: None,
+        tls: None,
+    };
+    let mut f = crate::tokens::TokenFile::default();
+    let new = |role| crate::tokens::NewToken {
+        name: format!("{role}"),
+        role,
+        announcements: vec![],
+        expires: None,
+    };
+    f.add(new(crate::tokens::Role::Operator), &Default::default(), 1)
+        .unwrap();
+    crate::tokens::save(&tokens, &f).unwrap();
+    let e = serve(cfg(), Arc::new(Fake::default()), async {})
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("without a token"), "{e}");
+
+    f.add(new(crate::tokens::Role::Admin), &Default::default(), 1)
+        .unwrap();
+    crate::tokens::save(&tokens, &f).unwrap();
+    serve(cfg(), Arc::new(Fake::default()), async {})
+        .await
+        .unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }

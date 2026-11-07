@@ -2,7 +2,7 @@
 
 import { api, follow, setToken, token } from "./api.js";
 import { h, replace, toast } from "./dom.js";
-import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded } from "./store.js";
+import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded, can, TABS } from "./store.js";
 import * as panel from "./panel.js";
 import * as history from "./history.js";
 import * as announcements from "./announcements.js";
@@ -34,9 +34,17 @@ function showPhonebook() {
 }
 
 function tabs() {
-  const buttons = [...document.querySelectorAll("nav.tabs button")];
+  const allowed = TABS[state.me.role] ?? [];
+  const all = [...document.querySelectorAll("nav.tabs button")];
+  for (const b of all) {
+    if (!allowed.includes(b.dataset.tab)) {
+      b.remove();
+      $(`tab-${b.dataset.tab}`).remove();
+    }
+  }
+  const buttons = all.filter((b) => allowed.includes(b.dataset.tab));
   const show = (name) => {
-    if (!buttons.some((b) => b.dataset.tab === name)) name = "panel";
+    if (!buttons.some((b) => b.dataset.tab === name)) name = buttons[0]?.dataset.tab;
     for (const b of buttons) {
       const on = b.dataset.tab === name;
       b.setAttribute("aria-selected", String(on));
@@ -67,7 +75,9 @@ function askToken(wrong) {
 async function authenticate() {
   for (;;) {
     try {
-      return await api("GET", "/health");
+      const me = await api("GET", "/health");
+      state.me = { name: me.name ?? null, role: me.role ?? "admin", announcements: me.announcements ?? [] };
+      return me;
     } catch (e) {
       if (e.status !== 401) throw e;
       await askToken(token() !== "");
@@ -96,19 +106,34 @@ async function start() {
   }
   $("logout").hidden = token() === "";
   $("logout").onclick = () => { setToken(""); location.reload(); };
-  $("all-stop").onclick = allStop;
+  if (state.me.name) {
+    $("whoami").hidden = false;
+    $("whoami").textContent = state.me.role === "admin" ? state.me.name : `${state.me.name} (${state.me.role})`;
+  }
+  if (state.me.role === "trigger") {
+    setStatus("offline");
+    $("all-stop").hidden = true;
+    $("fatal").hidden = false;
+    $("fatal").textContent = `"${state.me.name}" is a trigger token, for other systems to play announcements through the API. Sign out and use an operator or admin token to use this page.`;
+    return;
+  }
+  if (can.operate()) $("all-stop").onclick = allStop;
+  else $("all-stop").hidden = true;
 
   await refreshAll().catch(() => {});
   tabs();
-  panel.mount($("panel"));
-  history.mount($("history"));
-  announcements.mount($("announcements"));
-  zones.mount($("zones"));
-  schedules.mount($("schedules"), $("days-off"), $("schedule-groups"));
-  settings.mount($("tab-settings"));
-  sounds.mount($("sounds"));
+  const mounts = {
+    panel: () => panel.mount($("panel")),
+    history: () => history.mount($("history")),
+    announcements: () => announcements.mount($("announcements")),
+    zones: () => zones.mount($("zones")),
+    schedules: () => schedules.mount($("schedules"), $("days-off"), $("schedule-groups")),
+    settings: () => settings.mount($("tab-settings")),
+    sounds: () => sounds.mount($("sounds")),
+  };
+  for (const t of TABS[state.me.role] ?? []) mounts[t]?.();
   // "in 5 min" moves on, and once-only times drop off the list.
-  setInterval(() => refreshUpcoming(), 60000);
+  if (can.operate()) setInterval(() => refreshUpcoming(), 60000);
   subscribe(["server"], () => { showBackend(); showPhonebook(); });
   showBackend();
   showPhonebook();
@@ -123,6 +148,8 @@ async function start() {
   let first = true;
   follow(apply, (s) => {
     setStatus(s);
+    // Revoked or expired meanwhile: back to signing in.
+    if (s === "offline") api("GET", "/health").catch((e) => { if (e.status === 401) location.reload(); });
     // Events may have been missed while disconnected.
     if (s === "live" && !first) refreshAll().catch(() => {});
     if (s === "live") first = false;

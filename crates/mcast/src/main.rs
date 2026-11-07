@@ -527,7 +527,9 @@ Examples:
   mcast intercom list
   mcast intercom check
   mcast intercom upcoming               # what the schedules play next
-  mcast intercom play lunch             # by id or name; Ctrl-C stops it"
+  mcast intercom play lunch             # by id or name; Ctrl-C stops it
+  mcast intercom token add Doorbell --role trigger --announcement doorbell
+  mcast intercom token list"
 )]
 struct IntercomArgs {
     #[command(subcommand)]
@@ -547,6 +549,14 @@ struct IntercomArgs {
     /// The intercom config file
     #[arg(long, global = true, value_name = "FILE", env = "MCAST_INTERCOM")]
     config: Option<PathBuf>,
+    /// The access tokens' file (default: tokens.json beside the config)
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        env = "MCAST_INTERCOM_TOKENS"
+    )]
+    tokens: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -565,6 +575,36 @@ enum IntercomCommand {
     },
     /// Run the intercom panel (a web page and HTTP/JSON API of its own) and its schedules
     Serve(IntercomServeArgs),
+    /// Access tokens for the panel: named keys, each with a role
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    /// Make a token and print its secret (shown only this once)
+    #[command(after_help = "Roles:
+  admin     everything, tokens included
+  operator  use the panel: play, stop, push to talk, history; change nothing
+  trigger   other systems: play announcements (--announcement limits which) and stop them
+  media     sound files: list, upload, download, delete, folders")]
+    Add {
+        /// What it's for, e.g. "Front doorbell"
+        name: String,
+        /// admin, operator, trigger or media
+        #[arg(long)]
+        role: mcast_intercom::tokens::Role,
+        /// Trigger tokens: an announcement (id or name) it may play; repeat for more. None: any
+        #[arg(long = "announcement", value_name = "ANNOUNCEMENT")]
+        announcements: Vec<String>,
+        /// The last day it works (YYYY-MM-DD, in the panel's time zone)
+        #[arg(long, value_name = "DATE")]
+        expires: Option<String>,
+    },
+    /// List the tokens (never their secrets)
+    List,
+    /// Revoke a token, by id or name; it stops working at once
+    Revoke { token: String },
 }
 
 #[derive(Args)]
@@ -572,8 +612,8 @@ struct IntercomServeArgs {
     /// Address to listen on
     #[arg(short, long, default_value = "127.0.0.1:8651")]
     listen: SocketAddr,
-    /// Token the panel's clients must send (required unless listening on loopback);
-    /// --token is the mcast server's
+    /// The startup token: an admin key to the panel (needed to listen beyond
+    /// loopback unless tokens.json has an admin token); --token is the mcast server's
     #[arg(long, env = "MCAST_INTERCOM_TOKEN", hide_env_values = true)]
     panel_token: Option<String>,
     /// API only: don't serve the web page
@@ -619,8 +659,31 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
         Some(p) => p,
         None => mcast_intercom::store::default_path()?,
     };
+    let tokens = a
+        .tokens
+        .clone()
+        .unwrap_or_else(|| mcast_intercom::tokens::default_path(&path));
     let backend = mcast_intercom::HttpBackend::new(&a.url, a.token);
     match a.command {
+        IntercomCommand::Token(t) => match t {
+            TokenCommand::Add {
+                name,
+                role,
+                announcements,
+                expires,
+            } => mcast_intercom::cli::token_add(
+                &path,
+                &tokens,
+                mcast_intercom::tokens::NewToken {
+                    name,
+                    role,
+                    announcements,
+                    expires,
+                },
+            ),
+            TokenCommand::List => mcast_intercom::cli::token_list(&path, &tokens),
+            TokenCommand::Revoke { token } => mcast_intercom::cli::token_revoke(&tokens, &token),
+        },
         IntercomCommand::List => mcast_intercom::cli::list(&path),
         IntercomCommand::Upcoming { n } => mcast_intercom::cli::upcoming(&path, n),
         IntercomCommand::Check => mcast_intercom::cli::check(&path, &backend),
@@ -645,6 +708,7 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
                 listen: s.listen,
                 token: s.panel_token,
                 config: path,
+                tokens: Some(tokens),
                 web_dir: s.web_dir,
                 web: !s.no_web,
             };

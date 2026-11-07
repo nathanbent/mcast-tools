@@ -110,7 +110,9 @@ fn states(run: &Run) -> Vec<TargetState> {
 fn plays_to_each_group_once() {
     let fake = Arc::new(Fake::default());
     let r = runner(&fake);
-    let run = r.play(&config(), "LUNCH name", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "LUNCH name", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.announcement, "lunch");
     let groups: Vec<_> = run.targets.iter().map(|t| t.group.as_str()).collect();
     assert_eq!(groups, ["zone-1", "239.1.1.2:5000", "nobody"]);
@@ -152,13 +154,17 @@ fn normal_priority_skips_busy_groups() {
     let other = fake
         .start_sender(&json!({"group": "239.1.1.2:5000"}))
         .unwrap();
-    let run = r.play(&config(), "two", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "two", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(states(&run), [TargetState::Busy]);
     assert_eq!(run.state, RunState::Failed);
     assert_eq!(run.error.as_deref(), Some("nothing played: 1 busy"));
     assert_eq!(fake.running_on("239.1.1.2:5000"), Some(other.id));
 
-    let run = r.play(&config(), "lunch", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "lunch", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(
         states(&run),
         [TargetState::Playing, TargetState::Busy, TargetState::Failed]
@@ -189,18 +195,20 @@ fn higher_priorities_take_groups_over() {
     let outside = fake
         .start_sender(&json!({"group": "239.1.1.2:5000"}))
         .unwrap();
-    let high = r.play(&cfg, "high", Trigger::Manual).unwrap();
+    let high = r.play(&cfg, "high", Trigger::Manual { by: None }).unwrap();
     assert_eq!(states(&high), [TargetState::Playing]);
     assert_eq!(fake.job(outside.id).unwrap().state, "stopped");
 
     // ...but not from another high one, and normal never does.
     for id in ["high2", "normal"] {
-        let run = r.play(&cfg, id, Trigger::Manual).unwrap();
+        let run = r.play(&cfg, id, Trigger::Manual { by: None }).unwrap();
         assert_eq!(states(&run), [TargetState::Busy], "{id}");
     }
 
     // Emergency does.
-    let emergency = r.play(&cfg, "emergency", Trigger::Manual).unwrap();
+    let emergency = r
+        .play(&cfg, "emergency", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(states(&emergency), [TargetState::Playing]);
     let high = wait_for(&r, high.id, "the takeover", |r| r.state.is_over());
     assert_eq!(states(&high), [TargetState::Preempted]);
@@ -214,7 +222,7 @@ fn repeats_every_group_each_round() {
     let r = runner(&fake);
     let mut cfg = config();
     cfg.announcements[0].repeat = 3;
-    let run = r.play(&cfg, "lunch", Trigger::Manual).unwrap();
+    let run = r.play(&cfg, "lunch", Trigger::Manual { by: None }).unwrap();
     for round in 1..=3 {
         let run = wait_for(&r, run.id, "a round to start", |r| {
             r.round == round && r.targets[0].state == TargetState::Playing
@@ -233,7 +241,7 @@ fn stops_playing_and_waiting_runs() {
     let fake = Arc::new(Fake::default());
     let r = runner(&fake);
     let mut cfg = config();
-    let run = r.play(&cfg, "lunch", Trigger::Manual).unwrap();
+    let run = r.play(&cfg, "lunch", Trigger::Manual { by: None }).unwrap();
     let run = r.stop(run.id).unwrap();
     assert_eq!(run.state, RunState::Stopped);
     assert_eq!(
@@ -248,7 +256,7 @@ fn stops_playing_and_waiting_runs() {
 
     cfg.announcements[1].repeat = 2;
     cfg.announcements[1].repeat_gap_s = 60.0;
-    let run = r.play(&cfg, "two", Trigger::Manual).unwrap();
+    let run = r.play(&cfg, "two", Trigger::Manual { by: None }).unwrap();
     fake.finish_all();
     wait_for(&r, run.id, "the gap", |r| r.state == RunState::Waiting);
     let run = r.stop(run.id).unwrap();
@@ -260,10 +268,12 @@ fn stops_playing_and_waiting_runs() {
 fn stop_all_stops_everything() {
     let fake = Arc::new(Fake::default());
     let r = runner(&fake);
-    let a = r.play(&config(), "two", Trigger::Manual).unwrap();
+    let a = r
+        .play(&config(), "two", Trigger::Manual { by: None })
+        .unwrap();
     let mut cfg = config();
     cfg.announcements[0].zones = vec!["down".into()];
-    let b = r.play(&cfg, "lunch", Trigger::Manual).unwrap();
+    let b = r.play(&cfg, "lunch", Trigger::Manual { by: None }).unwrap();
     r.stop_all();
     for id in [a.id, b.id] {
         assert_eq!(r.get(id).unwrap().state, RunState::Stopped);
@@ -275,7 +285,9 @@ fn an_end_reported_before_the_start_reply_counts() {
     let fake = Arc::new(Fake::default());
     fake.st.lock().unwrap().end_at_once = true;
     let r = runner(&fake);
-    let run = r.play(&config(), "two", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "two", Trigger::Manual { by: None })
+        .unwrap();
     let run = wait_for(&r, run.id, "the end", |r| r.state.is_over());
     assert_eq!(run.state, RunState::Done);
 }
@@ -284,7 +296,9 @@ fn an_end_reported_before_the_start_reply_counts() {
 fn reconcile_catches_missed_events() {
     let fake = Arc::new(Fake::default());
     let r = runner(&fake);
-    let run = r.play(&config(), "two", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "two", Trigger::Manual { by: None })
+        .unwrap();
     fake.st.lock().unwrap().quiet = true;
     fake.finish_all();
     assert_eq!(r.get(run.id).unwrap().state, RunState::Playing);
@@ -296,7 +310,7 @@ fn reconcile_catches_missed_events() {
 fn unknown_announcements_are_an_error() {
     let fake = Arc::new(Fake::default());
     let e = runner(&fake)
-        .play(&config(), "fire drill", Trigger::Manual)
+        .play(&config(), "fire drill", Trigger::Manual { by: None })
         .unwrap_err();
     assert_eq!(e.to_string(), "no announcement \"fire drill\"");
 }
@@ -404,7 +418,7 @@ fn zone_groups_use_the_default_codec_unless_they_choose_one() {
     // And the runner sends it.
     let fake = Arc::new(Fake::default());
     let r = runner(&fake);
-    r.play(&cfg, "lunch", Trigger::Manual).unwrap();
+    r.play(&cfg, "lunch", Trigger::Manual { by: None }).unwrap();
     let mut codecs: Vec<_> = fake
         .requests()
         .iter()

@@ -25,6 +25,7 @@
     <span id="backend" data-state="unknown" aria-live="polite"></span>
     <span id="status" data-state="connecting" aria-live="polite">Connecting…</span>
     <button id="all-stop" class="danger solid" title="Stop everything the panel is playing">All stop</button>
+    <span id="whoami" class="muted small" hidden></span>
     <button id="logout" class="subtle" hidden>Sign out</button>
   </header>
 
@@ -74,7 +75,7 @@
   <dialog id="login">
     <form id="login-form">
       <h2>Sign in</h2>
-      <p class="muted">This panel needs its token (<code>--panel-token</code> or <code>MCAST_INTERCOM_TOKEN</code>).</p>
+      <p class="muted">This panel needs a token: one made in Settings → Access tokens (or with <code>mcast intercom token add</code>), or its startup token (<code>--panel-token</code> / <code>MCAST_INTERCOM_TOKEN</code>).</p>
       <p id="login-error" class="error" hidden>That token didn't work.</p>
       <label class="field"><span>Token</span>
         <input id="login-token" type="password" autocomplete="current-password" required autofocus></label>

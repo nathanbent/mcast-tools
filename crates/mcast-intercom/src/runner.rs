@@ -28,8 +28,14 @@ const TAKEOVER_WAIT: Duration = Duration::from_millis(200);
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Trigger {
-    /// A button, or the command line.
-    Manual,
+    /// A button, push to talk, or the command line; `by` names the token
+    /// used, if any.
+    Manual {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+    },
+    /// Another system, with a trigger token.
+    Api { by: String },
     /// A schedule, for the time it was due.
     Schedule { id: String, at_ms: u64 },
 }

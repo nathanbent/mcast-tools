@@ -301,7 +301,7 @@ pub fn play(path: &Path, backend: Arc<dyn Backend>, which: &str, stop: &AtomicBo
     let runner = Runner::new(backend, move |_| {
         let _ = tx.send(());
     });
-    let run = runner.play(&cfg, which, Trigger::Manual)?;
+    let run = runner.play(&cfg, which, Trigger::Manual { by: None })?;
     println!(
         "Playing \"{}\" to {} group{}{}",
         run.name,
@@ -394,4 +394,94 @@ impl Shown {
             }
         }
     }
+}
+
+// ---- access tokens ----
+
+/// A moment in the panel's time zone: "2026-11-07 14:03".
+fn local_time(cfg: &Config, ms: u64) -> String {
+    let tz = cfg.tz().unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    jiff::Timestamp::from_millisecond(ms as i64)
+        .map(|t| t.to_zoned(tz).strftime("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| "?".into())
+}
+
+/// `mcast intercom token add`: make a token and print its secret, once.
+pub fn token_add(config: &Path, tokens: &Path, new: crate::tokens::NewToken) -> Result<()> {
+    let cfg = store::load(config)?;
+    let mut f = crate::tokens::load(tokens)?;
+    let (t, secret) = f.add(new, &cfg, crate::now_ms())?;
+    crate::tokens::save(tokens, &f)?;
+    let mut about = vec![format!("{} token", t.role)];
+    if !t.announcements.is_empty() {
+        about.push(format!("plays only {}", t.announcements.join(", ")));
+    }
+    if let Some(d) = &t.expires {
+        about.push(format!("works until the end of {d}"));
+    }
+    eprintln!(
+        "Made \"{}\" ({}) in {}. Its secret, shown only now:",
+        t.name,
+        about.join(", "),
+        tokens.display()
+    );
+    println!("{secret}");
+    Ok(())
+}
+
+/// `mcast intercom token list`.
+pub fn token_list(config: &Path, tokens: &Path) -> Result<()> {
+    let cfg = store::load(config)?;
+    let f = crate::tokens::load(tokens)?;
+    if f.tokens.is_empty() {
+        println!("No access tokens in {}.", tokens.display());
+        return Ok(());
+    }
+    let now = crate::now_ms();
+    println!("Access tokens in {}:", tokens.display());
+    for t in &f.tokens {
+        let mut about = Vec::new();
+        if !t.announcements.is_empty() {
+            let names: Vec<&str> = t
+                .announcements
+                .iter()
+                .map(|id| {
+                    cfg.announcement(id)
+                        .map_or(id.as_str(), |a| a.name.as_str())
+                })
+                .collect();
+            about.push(format!("plays only {}", names.join(", ")));
+        }
+        match &t.expires {
+            Some(d) if t.expired(now) => about.push(format!("EXPIRED after {d}")),
+            Some(d) => about.push(format!("until {d}")),
+            None => {}
+        }
+        about.push(match t.last_used_ms {
+            Some(ms) => format!(
+                "used {} time{}, last {}",
+                t.uses,
+                if t.uses == 1 { "" } else { "s" },
+                local_time(&cfg, ms)
+            ),
+            None => "never used".into(),
+        });
+        println!(
+            "  {:<10} {:<24} {:<9} {}",
+            t.id,
+            t.name,
+            t.role.name(),
+            about.join("; ")
+        );
+    }
+    Ok(())
+}
+
+/// `mcast intercom token revoke`, by id or name.
+pub fn token_revoke(tokens: &Path, which: &str) -> Result<()> {
+    let mut f = crate::tokens::load(tokens)?;
+    let t = f.remove(which)?;
+    crate::tokens::save(tokens, &f)?;
+    println!("Revoked \"{}\" ({}).", t.name, t.role);
+    Ok(())
 }

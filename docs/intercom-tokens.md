@@ -1,6 +1,7 @@
 # Intercom: scoped access tokens (design)
 
-Status: agreed, not built. Roadmap item 1 of v0.5.5 (`intercom-roadmap.md`).
+Status: built (roadmap item 1 of v0.5.5, `intercom-roadmap.md`). The user
+guide is in `crates/mcast-intercom/README.md` (Access tokens).
 
 Today the panel has one all-powerful bearer token (`--panel-token` /
 `MCAST_INTERCOM_TOKEN`), or none at all on loopback. This adds named tokens,
@@ -27,7 +28,8 @@ those.
 | Routes | admin | operator | trigger | media |
 |---|---|---|---|---|
 | `GET /health` (now also returns the caller's `name`, `role`) | ✓ | ✓ | ✓ | ✓ |
-| `GET` zones, announcements, schedules, sites, schedule groups, settings, upcoming, config, backend, phonebook, chimes, chime previews, `/events` | ✓ | ✓ | — | — |
+| `GET` zones, announcements, schedules, sites, schedule groups, settings, upcoming, config, backend, phonebook, chimes, chime previews | ✓ | ✓ | — | — |
+| `GET /events` | ✓ | ✓ | — | ✓² |
 | `POST /announcements/{id}/play`, `GET /runs`, `GET /runs/{id}`, `DELETE /runs/{id}` | ✓ | ✓ | limited¹ | — |
 | `DELETE /runs` (stop all), `GET /live/{id}` (push to talk) | ✓ | ✓ | — | — |
 | `GET /media`, `/library`, `/media/{name}`; `PUT`/`DELETE /media/{name}`; media folders, move, hidden | ✓ | read only | — | ✓ |
@@ -36,6 +38,9 @@ those.
 
 ¹ Only allowed announcements, and only runs of those. `GET /runs` lists
 only those runs.
+
+² Added while building: the Sounds tab follows `media_changed` events to
+stay current.
 
 A valid token without the role gets `403` ("this token (doorbell, trigger)
 can't change zones"), not `401`, so the page and scripts can tell the two
@@ -54,7 +59,12 @@ Browsers can't set headers on EventSource, media links or WebSockets, so
   the page needs.
 - **trigger**: only on the `GET` form of the trigger API (roadmap item 2),
   for devices that can only fetch a URL. At worst, a token leaked through a
-  log can fire its allowed announcements.
+  log can fire its allowed announcements. Until that's built, nowhere.
+
+A token in the URL where it isn't allowed gets `403`.
+
+On an open panel, unknown or expired tokens are ignored (the request acts as
+admin, as before), so a stale token left in a browser doesn't lock anyone out.
 
 ## Tokens
 

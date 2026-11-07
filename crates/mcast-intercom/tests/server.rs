@@ -134,7 +134,9 @@ fn plays_a_chime_to_two_groups() {
     let srv = server();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
     let r = Runner::new(backend, |_| {});
-    let run = r.play(&config(), "ding", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "ding", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.targets.len(), 2, "{run:#?}");
     assert_eq!(
         run.targets[0].address.as_deref(),
@@ -154,12 +156,16 @@ fn takes_over_a_busy_group_only_for_emergencies() {
         .unwrap();
     let r = Runner::new(backend.clone(), |_| {});
 
-    let run = r.play(&config(), "polite", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "polite", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.state, RunState::Failed);
     assert_eq!(run.targets[0].state, TargetState::Busy);
     assert!(backend.job(tone.id).unwrap().state == "running");
 
-    let run = r.play(&config(), "urgent", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "urgent", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.targets[0].state, TargetState::Playing, "{run:#?}");
     assert_eq!(backend.job(tone.id).unwrap().state, "stopped");
     let run = wait_for(&r, run.id, "the chime to end", |r| r.state.is_over());
@@ -174,7 +180,7 @@ fn stops_a_run() {
     let mut cfg = config();
     cfg.announcements[0].repeat = 5;
     cfg.announcements[0].repeat_gap_s = 0.5;
-    let run = r.play(&cfg, "ding", Trigger::Manual).unwrap();
+    let run = r.play(&cfg, "ding", Trigger::Manual { by: None }).unwrap();
     let job = run.targets[0].job.unwrap();
     let run = r.stop(run.id).unwrap();
     let run = wait_for(&r, run.id, "the stop", |r| r.state.is_over());

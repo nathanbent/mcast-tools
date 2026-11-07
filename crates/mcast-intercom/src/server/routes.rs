@@ -1,23 +1,19 @@
 //! The API's handlers: zones and announcements (the same way for both),
 //! playing and stopping, and what the panel needs from the mcast server.
 
-use super::{ApiError, ApiResult, AppState, Event};
+use super::{ApiError, ApiResult, AppState, Caller, Event};
 use crate::backend::Entry;
 use crate::model::{Announcement, Config, DayOff, Defaults, Schedule, ScheduleGroup, Site, Zone};
-use crate::runner::{PlayError, Run, Trigger};
+use crate::runner::{PlayError, Run};
 use crate::scheduler;
 use crate::store;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::Json;
+use axum::{Extension, Json};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
-
-pub(super) async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
-}
 
 /// Whether the mcast server is reachable, and where it is.
 pub(super) async fn backend_status(State(s): State<AppState>) -> Json<Value> {
@@ -333,9 +329,13 @@ pub(super) async fn delete<T: Item>(
 
 pub(super) async fn play(
     State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<String>,
 ) -> ApiResult<(StatusCode, Json<Run>)> {
     let cfg = s.load().await?;
+    if !caller.may_play(&id) {
+        return Err(caller.cant(&format!("play \"{id}\"")));
+    }
     match cfg.announcements.iter().find(|a| a.id == id) {
         None => return Err(not_found::<Announcement>(&id)),
         Some(a) if a.audio == crate::model::Audio::Live => {
@@ -347,7 +347,8 @@ pub(super) async fn play(
         Some(_) => {}
     }
     let runner = s.0.runner.clone();
-    let run = tokio::task::spawn_blocking(move || runner.play(&cfg, &id, Trigger::Manual))
+    let trigger = caller.trigger();
+    let run = tokio::task::spawn_blocking(move || runner.play(&cfg, &id, trigger))
         .await?
         .map_err(|e| match e {
             PlayError::NoAnnouncement(_) => ApiError::new(StatusCode::NOT_FOUND, e.to_string()),
@@ -356,26 +357,44 @@ pub(super) async fn play(
     Ok((StatusCode::CREATED, Json(run)))
 }
 
-pub(super) async fn list_runs(State(s): State<AppState>) -> Json<Vec<Run>> {
-    Json(s.0.runner.list())
+/// Runs; a trigger token sees only those of its announcements.
+pub(super) async fn list_runs(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+) -> Json<Vec<Run>> {
+    let mut runs = s.0.runner.list();
+    runs.retain(|r| caller.may_play(&r.announcement));
+    Json(runs)
 }
 
 fn no_run(id: u64) -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, format!("no run {id}"))
 }
 
+/// A run the caller may see and stop.
+fn their_run(s: &AppState, caller: &Caller, id: u64) -> ApiResult<Run> {
+    let run = s.0.runner.get(id).ok_or_else(|| no_run(id))?;
+    if !caller.may_play(&run.announcement) {
+        return Err(caller.cant(&format!("see or stop runs of \"{}\"", run.name)));
+    }
+    Ok(run)
+}
+
 pub(super) async fn get_run(
     State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<u64>,
 ) -> ApiResult<Json<Run>> {
-    s.0.runner.get(id).map(Json).ok_or_else(|| no_run(id))
+    their_run(&s, &caller, id).map(Json)
 }
 
 /// Stop a run; returns once its senders have stopped.
 pub(super) async fn stop_run(
     State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<u64>,
 ) -> ApiResult<Json<Run>> {
+    their_run(&s, &caller, id)?;
     let runner = s.0.runner.clone();
     tokio::task::spawn_blocking(move || runner.stop(id))
         .await?

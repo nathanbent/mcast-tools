@@ -10,6 +10,7 @@ import { field, select, numberInput, num, mountEditor } from "./editor.js";
 import { chimeField, chooserLink, openChooser } from "./chimes.js";
 import { MODES } from "./announcements.js";
 import { ENCODINGS, encodingValue } from "./zones.js";
+import * as tokens from "./tokens.js";
 
 export async function putSettings(body, done) {
   try {
@@ -182,7 +183,7 @@ function connection() {
       h("dt", {}, "Phonebook names"), h("dd", {}, String(state.phonebook.length)),
       h("dt", {}, "Panel version"), h("dd", {}, version ?? "…")),
     h("p", { class: "muted small" },
-      "The panel's address, token and config file are set when it starts (mcast intercom serve --help)."));
+      "The panel's address, startup token and config file are set when it starts (mcast intercom serve --help)."));
   };
   show();
   subscribe(["server"], show);
@@ -200,5 +201,6 @@ export function mount(el) {
     card("Time zone", timeZone()),
     card("Sites", sitesEditor()),
     card("Chime lists", chimes()),
+    card("Access tokens", tokens.mount()),
     card("Connection", connection()));
 }
