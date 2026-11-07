@@ -604,8 +604,10 @@ A page to a group that one of its jobs is already sending to is refused with
 Listening on anything but loopback requires a token. See
 [docs/api.md](docs/api.md) for every route and field.
 
-The GUI pages from uploaded files, live input, a test tone or the chord pad, shows what's
-playing with a stop button, lists announced streams with a Listen button, and
+The GUI pages from uploaded files, live input, a test tone or the chord pad;
+chats on real-time text channels; sends files and pictures and receives them
+into its media list (with thumbnails); shows what's playing with a stop
+button; lists announced streams with Listen, Join and Receive buttons; and
 shows the monitor with level meters. It asks for the token if one is set.
 `--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
 the GUI's files from disk, so edits show up on reload without rebuilding.
@@ -617,8 +619,9 @@ ssh pager mcast tui                                  # the server on that box
 MCAST_TOKEN=change-me mcast tui --url http://pager:8650
 ```
 
-Tabs for what's playing, announced streams, the monitor, media and probes; `p` opens
-the page form, `?` lists the keys. Like the web GUI, it's a client of the
+Tabs for what's playing, text chat, announced streams, the monitor, media
+(send and receive files there too) and probes; `p` opens the page form, `?`
+lists the keys. Like the web GUI, it's a client of the
 API: it needs `mcast serve` running, and every client sees the same jobs.
 
 ## Probes
@@ -646,7 +649,7 @@ when the server is back. See [docs/probes.md](docs/probes.md) for the design,
 verdicts and roadmap, and [docs/api.md](docs/api.md#probes) for the routes.
 The web GUI has a Probes view (the Probes tab, or `/#probes`) with each
 probe's state, verdicts and loss timeline, where probes can be configured
-and added before they're deployed. `mcast tui` has a Probes tab (5) too:
+and added before they're deployed. `mcast tui` has a Probes tab (6) too:
 `u` toggles unicast copies, `l`/`g`/`i` set the label, groups and interval.
 
 ## Layout
@@ -665,6 +668,7 @@ and added before they're deployed. `mcast tui` has a Probes tab (5) too:
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
+| `pi/` | Raspberry Pi appliance build: `mcast serve` as a service, LLDP/CDP, SSH, Cockpit, firewall ([pi/README.md](pi/README.md)) |
 
 New tool families go in their own crate (e.g. `crates/mcast-<thing>`) and get a
 subcommand in the CLI.

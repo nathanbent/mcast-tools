@@ -1,14 +1,15 @@
 // Start-up: check access, load everything, follow events, mount the panels.
 
 import { api, follow, setToken, token } from "./api.js";
-import { refreshAll, apply } from "./store.js";
+import { refreshAll, apply, state, subscribe } from "./store.js";
 import * as page from "./page.js";
 import * as jobs from "./jobs.js";
 import * as streams from "./streams.js";
 import * as monitor from "./monitor.js";
 import * as media from "./media.js";
+import * as text from "./text.js";
+import * as files from "./files.js";
 import * as probes from "./probes.js";
-import { state, subscribe } from "./store.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -86,6 +87,8 @@ async function start() {
   page.mount($("page"));
   jobs.mount($("jobs"));
   media.mount($("media"));
+  text.mount($("text"));
+  files.mount($("files"));
   streams.mount($("streams"));
   monitor.mount($("monitor"));
   probes.mount($("probes"));

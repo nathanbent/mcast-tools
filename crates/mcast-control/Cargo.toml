@@ -13,6 +13,8 @@ ring.workspace = true
 mcast-core.workspace = true
 mcast-audio.workspace = true
 mcast-monitor.workspace = true
+mcast-text.workspace = true
+mcast-file.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

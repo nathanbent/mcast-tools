@@ -1,42 +1,42 @@
 //! HTTP/JSON API over [`mcast_control`]: start and stop pages and
-//! receivers, list announced streams, read the monitor, manage uploaded
-//! audio, and follow everything live as server-sent events.
+//! receivers, text channels and file transfers; list announced streams,
+//! read the monitor, manage media files, and follow everything live as
+//! server-sent events.
 //!
 //! All routes are under `/api/v1`. See `docs/api.md` for the reference.
 
+mod events;
+mod files;
+mod media;
+mod probes;
+mod routes;
+mod text;
+
+use events::events;
+use files::{start_file_receiver, start_file_sender};
+use media::{delete_media, download_media, list_media, upload_media};
+use probes::*;
+use routes::*;
+use text::{send_text, start_text, text_history};
+
 use anyhow::{bail, Context, Result};
-use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use futures_util::{Stream, StreamExt};
-use mcast_control::probes::{
-    hello_proof, Beacon, CheckIn, CheckInReply, Hello, IntervalReport, ProbeError,
-};
-use mcast_control::request::{ChimeRequest, SinkRequest, SourceRequest};
-use mcast_control::{
-    Announcements, Event, EventSink, JobId, Jobs, ProbeConfig, ProbeInfo, Probes, RecvRequest,
-    SendRequest, StartError, Watch,
-};
+use mcast_control::{Announcements, Event, EventSink, JobId, Jobs, Probes, StartError, Watch};
 use mcast_core::Interface;
 use mcast_monitor::{MonitorConfig, Target};
-use serde::Serialize;
 use serde_json::json;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, watch};
-
-/// How long `DELETE /jobs/{id}` waits for the job to wind down.
-const STOP_WAIT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -176,13 +176,6 @@ pub async fn serve(
         }
     );
     let app = router(state.clone()).merge(extra);
-    let beacon = match &cfg.beacon {
-        Some(b) => {
-            let port = listener.local_addr()?.port();
-            Some(start_beacon(b, cfg.interface, port).context("starting the probe beacon")?)
-        }
-        None => None,
-    };
     {
         // Notice probes that stop checking in.
         let state = state.clone();
@@ -194,6 +187,13 @@ pub async fn serve(
             }
         });
     }
+    let beacon = match &cfg.beacon {
+        Some(b) => {
+            let port = listener.local_addr()?.port();
+            Some(start_beacon(b, cfg.interface, port).context("starting the probe beacon")?)
+        }
+        None => None,
+    };
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown.await;
@@ -217,7 +217,14 @@ pub fn router(state: AppState) -> Router {
         .route("/senders", post(start_sender))
         .route("/receivers", post(start_receiver))
         .route("/media", get(list_media))
-        .route("/media/{name}", put(upload_media).delete(delete_media))
+        .route(
+            "/media/{name}",
+            get(download_media).put(upload_media).delete(delete_media),
+        )
+        .route("/texts", post(start_text))
+        .route("/jobs/{id}/text", get(text_history).post(send_text))
+        .route("/file-senders", post(start_file_sender))
+        .route("/file-receivers", post(start_file_receiver))
         .route("/events", get(events))
         .route("/probe-hello", get(probe_hello))
         .route("/probes", get(list_probes))
@@ -356,450 +363,6 @@ async fn auth(State(s): State<AppState>, req: Request, next: Next) -> Response {
         );
         r
     }
-}
-
-// ---- handlers ----
-
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
-}
-
-#[derive(Serialize)]
-struct Device {
-    name: String,
-    kind: &'static str,
-    default: bool,
-}
-
-async fn devices() -> ApiResult<Json<serde_json::Value>> {
-    let (host, list) = tokio::task::spawn_blocking(mcast_audio::device::devices)
-        .await?
-        .map_err(ApiError::internal)?;
-    let devices: Vec<Device> = list
-        .into_iter()
-        .map(|d| Device {
-            name: d.name,
-            kind: if d.input { "input" } else { "output" },
-            default: d.default,
-        })
-        .collect();
-    Ok(Json(json!({ "host": host, "devices": devices })))
-}
-
-async fn streams(State(s): State<AppState>) -> Json<Vec<mcast_control::Announced>> {
-    Json(s.0.announcements.list())
-}
-
-async fn monitor(State(s): State<AppState>) -> ApiResult<Json<mcast_control::MonitorSnapshot>> {
-    match &s.0.watch {
-        Some(w) => Ok(Json(w.snapshot())),
-        None => Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "the monitor is off (started with --no-monitor)",
-        )),
-    }
-}
-
-async fn list_jobs(State(s): State<AppState>) -> Json<Vec<mcast_control::JobInfo>> {
-    Json(s.0.jobs.list())
-}
-
-fn no_job(id: JobId) -> ApiError {
-    ApiError::new(StatusCode::NOT_FOUND, format!("no job {id}"))
-}
-
-async fn get_job(
-    State(s): State<AppState>,
-    Path(id): Path<JobId>,
-) -> ApiResult<Json<mcast_control::JobInfo>> {
-    s.0.jobs.get(id).map(Json).ok_or_else(|| no_job(id))
-}
-
-async fn stop_job(
-    State(s): State<AppState>,
-    Path(id): Path<JobId>,
-) -> ApiResult<Json<mcast_control::JobInfo>> {
-    tokio::task::spawn_blocking(move || s.0.jobs.stop(id, STOP_WAIT))
-        .await?
-        .map(Json)
-        .ok_or_else(|| no_job(id))
-}
-
-async fn start_sender(
-    State(s): State<AppState>,
-    body: Result<Json<SendRequest>, JsonRejection>,
-) -> ApiResult<(StatusCode, Json<mcast_control::JobInfo>)> {
-    let Json(mut req) = body?;
-    let shown = req.clone();
-    if req.render.is_some() {
-        return Err(ApiError::bad(
-            "render is only available from the command line",
-        ));
-    }
-    if let SourceRequest::File { path, .. } = &mut req.source {
-        *path = s.media_path(path)?;
-    }
-    if let Some(ChimeRequest::File(path)) = &mut req.chime {
-        *path = s.media_path(path)?;
-    }
-    let info = tokio::task::spawn_blocking(move || s.0.jobs.start_sender_as(req, shown)).await??;
-    Ok((StatusCode::CREATED, Json(info)))
-}
-
-async fn start_receiver(
-    State(s): State<AppState>,
-    body: Result<Json<RecvRequest>, JsonRejection>,
-) -> ApiResult<(StatusCode, Json<mcast_control::JobInfo>)> {
-    let Json(req) = body?;
-    if matches!(req.sink, SinkRequest::Wav { .. }) {
-        return Err(ApiError::bad(
-            "recording to WAV is only available from the command line",
-        ));
-    }
-    let info = tokio::task::spawn_blocking(move || {
-        let known = s.0.announcements.streams();
-        s.0.jobs.start_receiver(req, &known)
-    })
-    .await??;
-    Ok((StatusCode::CREATED, Json(info)))
-}
-
-// ---- probes ----
-
-/// Multicasts a [`Beacon`] every few seconds until dropped.
-struct BeaconSender {
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Drop for BeaconSender {
-    fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
-fn start_beacon(b: &BeaconConfig, interface: Interface, port: u16) -> Result<BeaconSender> {
-    let mut opts = mcast_core::MulticastOptions::new(b.group)?;
-    opts.interface = interface;
-    opts.ttl = b.ttl;
-    let socket = mcast_core::open_sender(&opts)?;
-    let payload = serde_json::to_vec(&Beacon {
-        service: Beacon::SERVICE.into(),
-        v: 1,
-        name: mcast_control::request::hostname(),
-        port,
-        url: b.url.clone(),
-    })?;
-    eprintln!("announcing to probes on {}", b.group);
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let thread = {
-        let stop = stop.clone();
-        std::thread::Builder::new()
-            .name("mcast-beacon".into())
-            .spawn(move || {
-                let tick = Duration::from_millis(200);
-                let every = Duration::from_secs(mcast_control::probes::BEACON_INTERVAL_S);
-                let mut next = std::time::Instant::now();
-                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    if std::time::Instant::now() >= next {
-                        // A missing route now may be there later; keep trying.
-                        let _ = socket.send(&payload);
-                        next += every;
-                    }
-                    std::thread::sleep(tick);
-                }
-            })?
-    };
-    Ok(BeaconSender {
-        stop,
-        thread: Some(thread),
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct HelloQuery {
-    nonce: String,
-}
-
-/// Prove to a probe that found us by beacon that we know its token.
-async fn probe_hello(
-    State(s): State<AppState>,
-    Query(q): Query<HelloQuery>,
-) -> ApiResult<Json<Hello>> {
-    if !mcast_control::probes::valid_nonce(&q.nonce) {
-        return Err(ApiError::bad("nonce must be 16-128 hex digits"));
-    }
-    let proofs = [&s.0.probe_token, &s.0.token]
-        .into_iter()
-        .flatten()
-        .map(|t| hello_proof(t, &q.nonce))
-        .collect();
-    Ok(Json(Hello {
-        name: mcast_control::request::hostname(),
-        proofs,
-    }))
-}
-
-impl From<ProbeError> for ApiError {
-    fn from(e: ProbeError) -> Self {
-        match e {
-            ProbeError::NotFound => ApiError::new(StatusCode::NOT_FOUND, "no such probe"),
-            ProbeError::Invalid(m) => ApiError::bad(m),
-        }
-    }
-}
-
-fn no_probe(id: &str) -> ApiError {
-    ApiError::new(StatusCode::NOT_FOUND, format!("no probe \"{id}\""))
-}
-
-async fn list_probes(State(s): State<AppState>) -> Json<Vec<ProbeInfo>> {
-    Json(s.0.probes.list())
-}
-
-async fn get_probe(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<ProbeInfo>> {
-    s.0.probes.get(&id).map(Json).ok_or_else(|| no_probe(&id))
-}
-
-async fn remove_probe(State(s): State<AppState>, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    s.0.probes.remove(&id).map_err(|_| no_probe(&id))?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn probe_check_in(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-    body: Result<Json<CheckIn>, JsonRejection>,
-) -> ApiResult<Json<CheckInReply>> {
-    let Json(c) = body?;
-    Ok(Json(s.0.probes.check_in(&id, c)?))
-}
-
-#[derive(serde::Deserialize)]
-struct ReportsQuery {
-    /// Only reports that ended after this time (ms since the epoch).
-    after_ms: Option<u64>,
-}
-
-async fn probe_reports(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-    Query(q): Query<ReportsQuery>,
-) -> ApiResult<Json<Vec<IntervalReport>>> {
-    s.0.probes
-        .reports(&id, q.after_ms)
-        .map(Json)
-        .ok_or_else(|| no_probe(&id))
-}
-
-async fn set_probe_config(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-    body: Result<Json<ProbeConfig>, JsonRejection>,
-) -> ApiResult<Json<ProbeInfo>> {
-    let Json(c) = body?;
-    Ok(Json(s.0.probes.set_config(&id, Some(c))?))
-}
-
-async fn reset_probe_config(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<ProbeInfo>> {
-    if s.0.probes.get(&id).is_none() {
-        return Err(no_probe(&id));
-    }
-    Ok(Json(s.0.probes.set_config(&id, None)?))
-}
-
-async fn probe_defaults(State(s): State<AppState>) -> Json<ProbeConfig> {
-    Json(s.0.probes.defaults())
-}
-
-async fn set_probe_defaults(
-    State(s): State<AppState>,
-    body: Result<Json<ProbeConfig>, JsonRejection>,
-) -> ApiResult<Json<ProbeConfig>> {
-    let Json(c) = body?;
-    Ok(Json(s.0.probes.set_defaults(c)?))
-}
-
-// ---- media ----
-
-/// A plain file name: no directories, no hidden files.
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && !name.starts_with('.')
-        && !name
-            .chars()
-            .any(|c| c == '/' || c == '\\' || c.is_control())
-}
-
-impl AppState {
-    /// Requests name media files; turn the name into a path inside the media directory.
-    fn media_path(&self, name: &std::path::Path) -> ApiResult<PathBuf> {
-        let n = name.to_str().filter(|n| valid_name(n)).ok_or_else(|| {
-            ApiError::bad(format!(
-                "\"{}\" isn't a media file name (upload files with PUT /api/v1/media/NAME)",
-                name.display()
-            ))
-        })?;
-        let path = self.0.media_dir.join(n);
-        if !path.is_file() {
-            return Err(ApiError::bad(format!("no media file \"{n}\"")));
-        }
-        Ok(path)
-    }
-}
-
-#[derive(Serialize)]
-struct MediaFile {
-    name: String,
-    bytes: u64,
-    modified_ms: Option<u64>,
-}
-
-async fn list_media(State(s): State<AppState>) -> ApiResult<Json<Vec<MediaFile>>> {
-    let mut dir = tokio::fs::read_dir(&s.0.media_dir)
-        .await
-        .map_err(ApiError::internal)?;
-    let mut files = Vec::new();
-    while let Some(e) = dir.next_entry().await.map_err(ApiError::internal)? {
-        let Ok(name) = e.file_name().into_string() else {
-            continue;
-        };
-        let Ok(meta) = e.metadata().await else {
-            continue;
-        };
-        if !valid_name(&name) || !meta.is_file() {
-            continue;
-        }
-        files.push(MediaFile {
-            name,
-            bytes: meta.len(),
-            modified_ms: meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64),
-        });
-    }
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Json(files))
-}
-
-async fn upload_media(
-    State(s): State<AppState>,
-    Path(name): Path<String>,
-    body: Body,
-) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
-    if !valid_name(&name) {
-        return Err(ApiError::bad(
-            "media names are plain file names, not starting with '.'",
-        ));
-    }
-    let max = s.0.max_upload;
-    let too_large = || {
-        ApiError::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!("uploads are limited to {} MB", max / (1 << 20)),
-        )
-    };
-    let dest = s.0.media_dir.join(&name);
-    // Write beside it and rename, so a job reading the old file is undisturbed.
-    let tmp =
-        s.0.media_dir
-            .join(format!(".upload-{}-{name}", mcast_core::random_u32()));
-    let result = async {
-        let mut file = tokio::fs::File::create(&tmp)
-            .await
-            .map_err(ApiError::internal)?;
-        let mut stream = body.into_data_stream();
-        let mut total = 0u64;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| {
-                ApiError::new(StatusCode::BAD_REQUEST, format!("upload failed: {e}"))
-            })?;
-            total += chunk.len() as u64;
-            if total > max {
-                return Err(too_large());
-            }
-            file.write_all(&chunk).await.map_err(ApiError::internal)?;
-        }
-        file.flush().await.map_err(ApiError::internal)?;
-        file.sync_all().await.map_err(ApiError::internal)?;
-        tokio::fs::rename(&tmp, &dest)
-            .await
-            .map_err(ApiError::internal)?;
-        Ok::<_, ApiError>(total)
-    }
-    .await;
-    match result {
-        Ok(bytes) => Ok((
-            StatusCode::CREATED,
-            Json(json!({ "name": name, "bytes": bytes })),
-        )),
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            Err(e)
-        }
-    }
-}
-
-async fn delete_media(
-    State(s): State<AppState>,
-    Path(name): Path<String>,
-) -> ApiResult<StatusCode> {
-    if !valid_name(&name) {
-        return Err(ApiError::bad("not a media file name"));
-    }
-    match tokio::fs::remove_file(s.0.media_dir.join(&name)).await {
-        Ok(()) => Ok(StatusCode::NO_CONTENT),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            format!("no media file \"{name}\""),
-        )),
-        Err(e) => Err(ApiError::internal(e)),
-    }
-}
-
-// ---- events ----
-
-fn sse_event(e: &Event) -> SseEvent {
-    let value = serde_json::to_value(e).unwrap_or_default();
-    let kind = value["type"].as_str().unwrap_or("event").to_string();
-    SseEvent::default().event(kind).data(value.to_string())
-}
-
-async fn events(
-    State(s): State<AppState>,
-) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
-    let rx = s.0.events.subscribe();
-    let mut closing = s.0.closing.clone();
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        let e = match rx.recv().await {
-            Ok(e) => sse_event(&e),
-            // A slow client missed some; tell it so it can refetch.
-            Err(broadcast::error::RecvError::Lagged(n)) => SseEvent::default()
-                .event("lagged")
-                .data(json!({ "type": "lagged", "missed": n }).to_string()),
-            Err(broadcast::error::RecvError::Closed) => return None,
-        };
-        Some((Ok(e), rx))
-    })
-    .take_until(async move {
-        // End on shutdown only: a dropped sender (no shutdown wired up) isn't one.
-        if closing.wait_for(|c| *c).await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    });
-    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 #[cfg(test)]

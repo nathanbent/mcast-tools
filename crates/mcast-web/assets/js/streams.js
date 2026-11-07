@@ -3,6 +3,8 @@
 import { api } from "./api.js";
 import { h, replace, saved, toast } from "./dom.js";
 import { state, subscribe, putJob } from "./store.js";
+import { joinChannel } from "./text.js";
+import { receive } from "./files.js";
 
 let output = saved.get("output", "");
 
@@ -28,18 +30,47 @@ function outputPicker() {
       outputs.map((d) => h("option", { value: d.name, selected: d.name === output }, d.name))));
 }
 
-function row(s) {
+// What the stream carries, and the button that uses it.
+function kind(s) {
   const a = s.audio;
-  // G.722's SDP clock rate is 8000 (RFC 3551), but its audio is 16 kHz.
-  const khz = a && (a.encoding.toUpperCase() === "G722" ? 16 : a.sample_rate / 1000);
-  const format = a ? `${a.encoding} ${khz} kHz ${a.channels === 1 ? "mono" : `${a.channels} ch`}` : "no audio";
+  if (a) {
+    // G.722's SDP clock rate is 8000 (RFC 3551), but its audio is 16 kHz.
+    const khz = a.encoding.toUpperCase() === "G722" ? 16 : a.sample_rate / 1000;
+    return {
+      group: a.group,
+      format: `${a.encoding} ${khz} kHz ${a.channels === 1 ? "mono" : `${a.channels} ch`}`,
+      action: h("button", { disabled: !a.playable, title: a.playable ? "" : "can't decode this stream",
+        onclick: () => listen(s) }, "Listen"),
+    };
+  }
+  if (s.text) {
+    const t = s.text;
+    return {
+      group: t.group,
+      format: "real-time text",
+      action: h("button", { onclick: () => joinChannel({
+        group: t.group, t140_pt: t.t140_pt, red_pt: t.red_pt ?? 100, redundancy: t.red_pt != null,
+      }) }, "Join"),
+    };
+  }
+  if (s.file) {
+    return {
+      group: s.file.group,
+      format: "files",
+      action: h("button", { onclick: () => receive({ group: s.file.group, payload_type: s.file.payload_type }) },
+        "Receive"),
+    };
+  }
+  return { group: "–", format: "unknown", action: null };
+}
+
+function row(s) {
+  const k = kind(s);
   return h("tr", {},
     h("td", {}, h("strong", {}, s.name), h("div", { class: "muted small" }, `from ${s.origin}`)),
-    h("td", { class: "mono" }, a?.group ?? "–"),
-    h("td", {}, format),
-    h("td", { class: "actions" },
-      h("button", { disabled: !a?.playable, title: a?.playable ? "" : "can't decode this stream",
-        onclick: () => listen(s) }, "Listen")));
+    h("td", { class: "mono" }, k.group),
+    h("td", {}, k.format),
+    h("td", { class: "actions" }, k.action));
 }
 
 function render(el) {

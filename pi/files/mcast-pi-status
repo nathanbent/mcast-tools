@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# mcast-pi-status - one-screen summary of this box: addresses, which switch
+# port it's plugged into (from LLDP/CDP), and whether mcast is running.
+# Installed by mcast-tools/pi/install.sh; also shown at SSH login.
+set -u
+
+bold=$'\e[1m' dim=$'\e[2m' green=$'\e[32m' red=$'\e[31m' reset=$'\e[0m'
+if [ ! -t 1 ] && [ "${MOTD:-}" != 1 ]; then bold='' dim='' green='' red='' reset=''; fi
+
+printf '%s%s%s  %s\n' "$bold" "$(hostname)" "$reset" "$(uptime -p 2>/dev/null)"
+
+# Addresses, one line per interface that has one.
+ip -brief address show 2>/dev/null | awk '$1 != "lo" && NF > 2 {
+    printf "  %-10s %-6s", $1, $2; for (i = 3; i <= NF; i++) printf " %s", $i; printf "\n" }'
+
+# Switch and port, from lldpd (also covers CDP when it's enabled).
+if command -v lldpcli >/dev/null 2>&1; then
+    lldpcli -f keyvalue show neighbors 2>/dev/null | awk -F= -v dim="$dim" -v reset="$reset" '
+        {
+            split($1, k, "."); ifc = k[2]; key = substr($1, length("lldp." ifc ".") + 1)
+            if (!(ifc in seen)) { seen[ifc] = 1; n++ }
+            if (key == "chassis.name") sw[ifc] = $2
+            else if (key == "port.ifname" || key == "port.local") port[ifc] = $2
+            else if (key == "port.descr" && port[ifc] == "") port[ifc] = $2
+            else if (key == "vlan.vlan-id") vlan[ifc] = (vlan[ifc] == "" ? $2 : vlan[ifc] "," $2)
+            else if (key == "chassis.mgmt-ip" && mgmt[ifc] == "") mgmt[ifc] = $2
+        }
+        END {
+            for (i in seen) {
+                printf "  %-10s %s-> %s%s port %s", i, dim, reset, (sw[i] != "" ? sw[i] : "?"), (port[i] != "" ? port[i] : "?")
+                if (vlan[i] != "") printf "  vlan %s", vlan[i]
+                if (mgmt[i] != "") printf "  (%s)", mgmt[i]
+                printf "\n"
+            }
+            if (n == 0) printf "  %sno LLDP/CDP neighbor seen (yet)%s\n", dim, reset
+        }'
+fi
+
+# mcast service.
+if systemctl list-unit-files mcast.service >/dev/null 2>&1; then
+    if systemctl is-active --quiet mcast.service; then
+        # shellcheck source=/dev/null
+        listen=$(. /etc/mcast/mcast.env 2>/dev/null; echo "${MCAST_LISTEN:-}")
+        port=${listen##*:}
+        printf '  mcast      %srunning%s  http://%s.local:%s/  %s(mcast tui for the terminal UI)%s\n' \
+            "$green" "$reset" "$(hostname)" "${port:-8650}" "$dim" "$reset"
+    else
+        printf '  mcast      %s%s%s  %s(journalctl -u mcast)%s\n' \
+            "$red" "$(systemctl is-active mcast.service)" "$reset" "$dim" "$reset"
+    fi
+fi

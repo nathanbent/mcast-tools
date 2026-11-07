@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by mcast-tools/pi/install.sh as /etc/update-motd.d/60-mcast.
+echo
+MOTD=1 /usr/local/bin/mcast-pi-status

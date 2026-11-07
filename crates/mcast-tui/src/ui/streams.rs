@@ -17,7 +17,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Line::from(vec![
             Span::raw("Listen plays on: "),
             Span::raw(output).fg(Color::Cyan),
-            Span::raw("  (o to change)").dim(),
+            Span::raw("  (o to change) · Enter: listen, join text, receive files").dim(),
         ])),
         top,
     );
@@ -29,9 +29,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         );
     }
     let rows = app.streams.iter().map(|s| {
-        let (group, format, playable) = match &s.audio {
-            Some(a) => (a.group.clone(), a.format(), a.playable),
-            None => ("–".into(), "no audio".into(), false),
+        let (group, format, playable) = match (&s.audio, &s.text, &s.file) {
+            (Some(a), _, _) => (a.group.clone(), a.format(), a.playable),
+            (None, Some(t), _) => (t.group.clone(), "real-time text".into(), true),
+            (None, None, Some(fl)) => (fl.group.clone(), "files".into(), true),
+            _ => ("–".into(), "unknown".into(), false),
         };
         let row = Row::new(vec![s.name.clone(), group, format, s.origin.clone()]);
         if playable {

@@ -1,11 +1,12 @@
-//! Drawing. One module per tab, plus the overlays (page form, prompts, help).
+//! Drawing. One module per tab, plus the overlays (forms, prompts, help).
 
+mod form;
 mod jobs;
 mod media;
 mod monitor;
-mod page;
 mod probes;
 mod streams;
+mod text;
 
 use crate::app::{App, Level, Mode, Tab};
 use crate::keys::HELP;
@@ -27,6 +28,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let inner = body.inner(ratatui::layout::Margin::new(1, 0));
     match app.tab {
         Tab::Jobs => jobs::draw(f, app, inner),
+        Tab::Text => text::draw(f, app, inner),
         Tab::Streams => streams::draw(f, app, inner),
         Tab::Monitor => monitor::draw(f, app, inner),
         Tab::Media => media::draw(f, app, inner),
@@ -34,12 +36,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     draw_footer(f, app, footer);
     match &app.mode {
-        Mode::Page => page::draw(f, app),
+        Mode::Form(kind) => form::draw(f, app, *kind),
         Mode::Upload(path) => prompt(
             f,
             "Upload",
             vec![
-                Line::from("Path of a local audio file (WAV, MP3, FLAC, Ogg, AAC/M4A):"),
+                Line::from("Path of a local file: audio to page, or any file or picture to send:"),
                 Line::from(vec![
                     Span::raw(path.clone()),
                     Span::raw("▏").fg(Color::Cyan),
@@ -76,7 +78,8 @@ pub fn draw(f: &mut Frame, app: &App) {
             ))],
         ),
         Mode::Help => help(f),
-        Mode::Normal => {}
+        // Typed on the Text tab itself.
+        Mode::Normal | Mode::Compose(_) => {}
     }
 }
 
@@ -138,9 +141,10 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         None => {
             let tab = match app.tab {
                 Tab::Jobs => "s stop",
-                Tab::Streams => "Enter listen · o output",
+                Tab::Text => "i type · j join · [ ] channel · s leave",
+                Tab::Streams => "Enter listen/join/receive · o output",
                 Tab::Monitor => "",
-                Tab::Media => "Enter page this · u upload · d delete",
+                Tab::Media => "Enter page · f send · r receive · u upload · d delete",
                 Tab::Probes => {
                     "u unicast · s SAP · l label · g groups · i interval · D defaults · f forget"
                 }
@@ -177,20 +181,46 @@ fn prompt(f: &mut Frame, title: &str, lines: Vec<Line>) {
     );
 }
 
+fn help_line(&(k, what): &(&'static str, &'static str)) -> Line<'static> {
+    if what.is_empty() {
+        Line::from(Span::raw(k).add_modifier(Modifier::BOLD))
+    } else {
+        Line::from(vec![
+            Span::raw(format!("{k:>12}  ")).fg(Color::Cyan),
+            Span::raw(what),
+        ])
+    }
+}
+
 fn help(f: &mut Frame) {
-    let lines: Vec<Line> = HELP
-        .iter()
-        .map(|(k, what)| {
-            if what.is_empty() {
-                Line::from(Span::raw(*k).add_modifier(Modifier::BOLD))
-            } else {
-                Line::from(vec![
-                    Span::raw(format!("{k:>12}  ")).fg(Color::Cyan),
-                    Span::raw(*what),
-                ])
-            }
-        })
-        .collect();
+    let lines: Vec<Line> = HELP.iter().map(help_line).collect();
+    let screen = f.area();
+    // Too tall for the screen: two columns, split at a section break.
+    if lines.len() as u16 + 2 > screen.height && screen.width >= 120 {
+        let mid = HELP.len() / 2;
+        let split = (mid..HELP.len())
+            .find(|&i| HELP[i].0.is_empty())
+            .map_or(mid, |i| i + 1);
+        let (left, right) = HELP.split_at(split);
+        let height = left.len().max(right.len()) as u16 + 2;
+        let area = centered(screen, 120, height);
+        f.render_widget(Clear, area);
+        let block = Block::bordered()
+            .title(" Keys (any key closes) ")
+            .border_style(Style::new().fg(Color::Cyan));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let [l, r] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(inner);
+        f.render_widget(
+            Paragraph::new(left.iter().map(help_line).collect::<Vec<_>>()),
+            l,
+        );
+        f.render_widget(
+            Paragraph::new(right.iter().map(help_line).collect::<Vec<_>>()),
+            r,
+        );
+        return;
+    }
     prompt(f, "Keys (any key closes)", lines);
 }
 

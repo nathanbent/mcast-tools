@@ -1,4 +1,5 @@
 use super::*;
+use axum::body::Body;
 use axum::http::Request;
 use tower::ServiceExt;
 
@@ -275,6 +276,259 @@ async fn refuses_to_listen_publicly_without_a_token() {
     assert!(err.to_string().contains("without a token"));
 }
 
+async fn wait_until(what: &str, mut done: impl AsyncFnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !done().await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_channels_over_http() {
+    let h = harness(None);
+    let g = "239.255.77.41:5004";
+    let (status, ear) = call(
+        &h,
+        "POST",
+        "/api/v1/texts",
+        Some(json!({"group": g, "send": false, "name": "ear"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{ear}");
+    let (status, desk) = call(
+        &h,
+        "POST",
+        "/api/v1/texts",
+        Some(json!({"group": g, "name": "desk"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{desk}");
+    assert_eq!(desk["kind"], "text");
+    let (ear, desk) = (ear["id"].as_u64().unwrap(), desk["id"].as_u64().unwrap());
+
+    // The channel's group is taken for sending, by pages too.
+    let (status, err) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(json!({"group": g, "sap": false})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["job"], desk);
+
+    let (status, sent) = call(
+        &h,
+        "POST",
+        &format!("/api/v1/jobs/{desk}/text"),
+        Some(json!({"text": "fire drill at 3"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert_eq!(sent[0]["own"], true);
+    wait_until("the line to arrive", async || {
+        let (_, lines) = call(&h, "GET", &format!("/api/v1/jobs/{ear}/text"), None, None).await;
+        lines.as_array().is_some_and(|l| !l.is_empty())
+    })
+    .await;
+    let (_, lines) = call(&h, "GET", &format!("/api/v1/jobs/{ear}/text"), None, None).await;
+    assert_eq!(lines[0]["text"], "fire drill at 3");
+    assert_eq!(lines[0]["own"], false);
+
+    let say = || Some(json!({"text": "hi"}));
+    assert_eq!(
+        call(&h, "POST", &format!("/api/v1/jobs/{ear}/text"), say(), None)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(&h, "POST", "/api/v1/jobs/999/text", say(), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &h,
+            "POST",
+            &format!("/api/v1/jobs/{desk}/text"),
+            Some(json!({"txt": "hi"})),
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(
+            &h,
+            "POST",
+            "/api/v1/texts",
+            Some(json!({"stream": "nobody"})),
+            None
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    call(&h, "DELETE", &format!("/api/v1/jobs/{desk}"), None, None).await;
+    assert_eq!(
+        call(
+            &h,
+            "POST",
+            &format!("/api/v1/jobs/{desk}/text"),
+            say(),
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    call(&h, "DELETE", &format!("/api/v1/jobs/{ear}"), None, None).await;
+}
+
+async fn put_media(h: &Harness, name: &str, data: Vec<u8>) -> StatusCode {
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/api/v1/media/{name}"))
+        .body(Body::from(data))
+        .unwrap();
+    h.app.clone().oneshot(req).await.unwrap().status()
+}
+
+async fn get_raw(h: &Harness, uri: &str) -> axum::response::Response {
+    let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    h.app.clone().oneshot(req).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_over_http_land_in_media() {
+    let h = harness(None);
+    let g = "239.255.77.42:5004";
+    let pic: Vec<u8> = (0..30_000u32).map(|i| (i * 13 % 256) as u8).collect();
+    assert_eq!(
+        put_media(&h, "pic.png", pic.clone()).await,
+        StatusCode::CREATED
+    );
+
+    let (status, rx) = call(
+        &h,
+        "POST",
+        "/api/v1/file-receivers",
+        Some(json!({"group": g, "rtcp": false})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{rx}");
+    let (status, tx) = call(
+        &h,
+        "POST",
+        "/api/v1/file-senders",
+        Some(json!({"group": g, "files": ["pic.png"], "sap": false, "rtcp": false, "rate_kbps": 20000, "loop": true})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{tx}");
+    assert_eq!(
+        tx["request"]["files"][0], "pic.png",
+        "clients see media names, not paths"
+    );
+
+    wait_until("the copy to show in media", async || {
+        let (_, media) = call(&h, "GET", "/api/v1/media", None, None).await;
+        media
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "pic-2.png")
+    })
+    .await;
+    let r = get_raw(&h, "/api/v1/media/pic-2.png").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
+    let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), pic.as_slice());
+
+    // Anything that isn't a picture or audio downloads instead of rendering.
+    assert_eq!(
+        put_media(&h, "evil.html", b"<script>alert(1)</script>".to_vec()).await,
+        StatusCode::CREATED
+    );
+    let r = get_raw(&h, "/api/v1/media/evil.html").await;
+    assert_eq!(
+        r.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    assert!(r.headers()[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap()
+        .starts_with("attachment"));
+    assert!(r.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap()
+        .contains("sandbox"));
+    assert_eq!(
+        get_raw(&h, "/api/v1/media/missing.png").await.status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // Bad requests.
+    for body in [json!({"files": ["../../etc/passwd"]}), json!({"files": []})] {
+        let (status, err) =
+            call(&h, "POST", "/api/v1/file-senders", Some(body.clone()), None).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}: {err}");
+    }
+    // The looping sender still holds its group.
+    let again = json!({"files": ["pic.png"], "group": g});
+    let (status, err) = call(&h, "POST", "/api/v1/file-senders", Some(again), None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    assert_eq!(err["job"], tx["id"]);
+    let (status, _) = call(
+        &h,
+        "POST",
+        "/api/v1/file-receivers",
+        Some(json!({"out_dir": "/tmp"})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "clients can't choose where files go"
+    );
+    let (status, err) = call(
+        &h,
+        "POST",
+        "/api/v1/file-receivers",
+        Some(json!({"max_size_mb": 5000})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+
+    for j in [&rx, &tx] {
+        call(
+            &h,
+            "DELETE",
+            &format!("/api/v1/jobs/{}", j["id"]),
+            None,
+            None,
+        )
+        .await;
+    }
+}
+
 fn check_in(unicast_addr: Option<std::net::SocketAddr>, seq: u64) -> serde_json::Value {
     json!({
         "version": "test",
@@ -421,9 +675,9 @@ async fn proves_it_knows_the_tokens_without_asking_for_one() {
     .await;
     assert_eq!(status, StatusCode::OK, "{hello}");
     let proofs: Vec<String> = serde_json::from_value(hello["proofs"].clone()).unwrap();
-    assert!(proofs.contains(&hello_proof("probe", nonce)));
-    assert!(proofs.contains(&hello_proof("admin", nonce)));
-    assert!(!proofs.contains(&hello_proof("guess", nonce)));
+    assert!(proofs.contains(&mcast_control::probes::hello_proof("probe", nonce)));
+    assert!(proofs.contains(&mcast_control::probes::hello_proof("admin", nonce)));
+    assert!(!proofs.contains(&mcast_control::probes::hello_proof("guess", nonce)));
     let (status, _) = call(&h, "GET", "/api/v1/probe-hello?nonce=zz", None, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     // The exemption is for that route only.

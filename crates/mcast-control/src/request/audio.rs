@@ -1,7 +1,6 @@
-//! What to send or receive, as plain data. The CLI builds these from its
-//! flags and the API server deserializes them from JSON; both turn them into
-//! library configs the same way.
+//! Audio: send (pages, tones, live input) and receive.
 
+use super::{hostname, ms, opt_str, secs, NetRequest};
 use anyhow::{bail, Result};
 use mcast_audio::chime::{Chime, ChimeSource};
 use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
@@ -9,7 +8,7 @@ use mcast_audio::process::{Mode, ProcessOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
 use mcast_core::rtcp::RtcpConfig;
 use mcast_core::sap::{self, Directory, DirectoryEvent};
-use mcast_core::{Interface, MulticastOptions};
+use mcast_core::Interface;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,36 +19,6 @@ pub const DEFAULT_GROUP: &str = "239.69.0.1:5004";
 
 fn default_group() -> SocketAddr {
     DEFAULT_GROUP.parse().expect("valid default group")
-}
-
-/// Network options shared by senders and receivers.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NetRequest {
-    /// `None` uses the caller's default.
-    pub interface: Option<Interface>,
-    pub ttl: u32,
-    /// Deliver our own packets to receivers on this host.
-    pub loopback: bool,
-}
-
-impl Default for NetRequest {
-    fn default() -> Self {
-        Self {
-            interface: None,
-            ttl: 16,
-            loopback: true,
-        }
-    }
-}
-
-impl NetRequest {
-    pub fn options(&self, group: SocketAddr, default_iface: Interface) -> Result<MulticastOptions> {
-        let mut o = MulticastOptions::new(group)?;
-        o.interface = self.interface.unwrap_or(default_iface);
-        o.ttl = self.ttl;
-        o.loopback = self.loopback;
-        Ok(o)
-    }
 }
 
 /// Codec, rate and channels; unset fields take the codec's defaults.
@@ -230,17 +199,6 @@ impl Default for SendRequest {
             rtcp_interval_s: 5.0,
         }
     }
-}
-
-fn ms(v: f64) -> Duration {
-    Duration::from_secs_f64(v.max(0.0) / 1000.0)
-}
-
-fn secs(v: f64, what: &str) -> Result<Duration> {
-    if !v.is_finite() || v < 0.0 {
-        bail!("{what} must be a non-negative number of seconds");
-    }
-    Ok(Duration::from_secs_f64(v))
 }
 
 impl SendRequest {
@@ -596,42 +554,6 @@ impl RecvRequest {
                 interval: Duration::from_secs_f64(self.rtcp_interval_s.max(0.1)),
             }),
         })
-    }
-}
-
-/// This host's name, for default stream names.
-pub fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .ok()
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "mcast".into())
-}
-
-/// Serde for `Option<T>` through `T`'s `FromStr` and `Display`.
-mod opt_str {
-    use serde::{de::Error, Deserialize, Deserializer, Serializer};
-    use std::fmt::Display;
-    use std::str::FromStr;
-
-    pub fn serialize<T: Display, S: Serializer>(v: &Option<T>, s: S) -> Result<S::Ok, S::Error> {
-        match v {
-            Some(v) => s.collect_str(&v.to_string().to_lowercase()),
-            None => s.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, T, D>(d: D) -> Result<Option<T>, D::Error>
-    where
-        T: FromStr,
-        T::Err: Display,
-        D: Deserializer<'de>,
-    {
-        Option::<String>::deserialize(d)?
-            .map(|s| s.parse().map_err(D::Error::custom))
-            .transpose()
     }
 }
 
