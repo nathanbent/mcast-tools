@@ -25,7 +25,7 @@ pub struct UpdateArgs {
     /// Update from a local clone instead: `git pull` it, then install from it
     #[arg(long, value_name = "DIR", conflicts_with = "repo")]
     path: Option<PathBuf>,
-    /// Reinstall even if cargo thinks this revision is already installed
+    /// Rebuild even if the installed commit is already the latest
     #[arg(short, long)]
     force: bool,
 }
@@ -74,12 +74,10 @@ pub fn run(a: UpdateArgs) -> Result<()> {
             cmd.args(["--git", &a.repo, "--branch", &a.branch, "mcast"]);
         }
     }
-    // A local path is always rebuilt; a git source is skipped by cargo when the
-    // same revision is installed, which can't happen here unless we don't know
-    // our own commit. --force covers that and the explicit request.
-    if a.force || BUILD_SHA.is_none() {
-        cmd.arg("--force");
-    }
+    // We've already decided an update is wanted. --force also lets a git
+    // install replace one made with `cargo install --path` (the README's
+    // instructions), which cargo otherwise refuses.
+    cmd.arg("--force");
 
     let in_cargo_bin = check_location();
     println!("Running: {}", describe(&cmd));
