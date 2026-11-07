@@ -84,8 +84,10 @@ history. Logs: `journalctl -u mcast-intercom -f`.
 Setting `ENABLE_INTERCOM=no` again stops and removes the service, but keeps
 `intercom.json` and the token.
 
-The intercom needs mcast 0.4.0 or later. With an older binary, `install.sh`
-skips it and says so: run `sudo mcast update`, then re-run `install.sh`.
+The intercom needs mcast 0.4.0 or later, and HTTPS (for push to talk) 0.5.0
+or later. With an older binary, `install.sh` skips the intercom, or serves it
+over plain HTTP, and says so: run `sudo mcast update`, then re-run
+`install.sh`.
 
 The release binaries are 64-bit only, so the 32-bit OS isn't supported.
 
