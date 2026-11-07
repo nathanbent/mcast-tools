@@ -251,13 +251,14 @@ Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   163
 
 TTL and DSCP are reported on Linux.
 
-## API server
+## Web GUI and API server
 
-`mcast serve` runs everything above as a long-lived service with an HTTP/JSON
-API, for web front ends, home automation, or scripts on other machines:
+`mcast serve` runs everything above as a long-lived service, with a web GUI
+at `/` and an HTTP/JSON API under `/api/v1` for home automation or scripts on
+other machines:
 
 ```bash
-mcast serve                                          # http://127.0.0.1:8650/api/v1
+mcast serve                                          # open http://127.0.0.1:8650/
 MCAST_TOKEN=change-me mcast serve --listen 0.0.0.0:8650
 ```
 
@@ -280,6 +281,12 @@ A page to a group that one of its jobs is already sending to is refused with
 Listening on anything but loopback requires a token. See
 [docs/api.md](docs/api.md) for every route and field.
 
+The GUI pages from uploaded files, live input or a test tone, shows what's
+playing with a stop button, lists announced streams with a Listen button, and
+shows the monitor with level meters. It asks for the token if one is set.
+`--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
+the GUI's files from disk, so edits show up on reload without rebuilding.
+
 ## Layout
 
 | Crate | Purpose |
@@ -289,6 +296,7 @@ Listening on anything but loopback requires a token. See
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
 | `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
+| `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
 

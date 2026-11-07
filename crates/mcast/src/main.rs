@@ -29,7 +29,7 @@ enum Command {
     Audio(AudioCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
-    /// Run an HTTP/JSON API for sending, receiving, discovery and monitoring
+    /// Run the web GUI and HTTP/JSON API for sending, receiving, discovery and monitoring
     Serve(ServeArgs),
 }
 
@@ -296,6 +296,13 @@ struct ServeArgs {
     /// Don't run the stream monitor
     #[arg(long, conflicts_with = "watch")]
     no_monitor: bool,
+    /// API only: don't serve the web GUI
+    #[arg(long)]
+    no_web: bool,
+    /// Serve the web GUI from this directory instead of the built-in copy
+    /// (for working on crates/mcast-web/assets)
+    #[arg(long, value_name = "DIR", conflicts_with = "no_web")]
+    web_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -655,8 +662,13 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
         monitor: (!a.no_monitor).then_some(a.watch),
         max_upload: a.max_upload_mb.saturating_mul(1 << 20),
     };
+    let web = if a.no_web {
+        axum::Router::new()
+    } else {
+        mcast_web::router(a.web_dir)
+    };
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(mcast_server::serve(cfg, async move {
+    rt.block_on(mcast_server::serve(cfg, web, async move {
         // SIGTERM (systemd, docker stop) or Ctrl-C, which the ctrlc handler turns into `stop`.
         let sigterm = async {
             #[cfg(unix)]

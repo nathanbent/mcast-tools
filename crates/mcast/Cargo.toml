@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 clap.workspace = true
 ctrlc.workspace = true
 mcast-core.workspace = true
@@ -18,4 +19,5 @@ mcast-audio.workspace = true
 mcast-monitor.workspace = true
 mcast-control.workspace = true
 mcast-server.workspace = true
+mcast-web.workspace = true
 tokio.workspace = true

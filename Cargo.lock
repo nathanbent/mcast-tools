@@ -765,6 +765,7 @@ name = "mcast"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "ctrlc",
  "mcast-audio",
@@ -772,6 +773,7 @@ dependencies = [
  "mcast-core",
  "mcast-monitor",
  "mcast-server",
+ "mcast-web",
  "tokio",
 ]
 
@@ -830,6 +832,15 @@ dependencies = [
  "mcast-monitor",
  "serde",
  "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
+name = "mcast-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
  "tokio",
  "tower",
 ]

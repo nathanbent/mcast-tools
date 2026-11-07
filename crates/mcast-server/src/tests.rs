@@ -261,6 +261,6 @@ async fn refuses_to_listen_publicly_without_a_token() {
         monitor: None,
         max_upload: 0,
     };
-    let err = serve(cfg, async {}).await.unwrap_err();
+    let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
     assert!(err.to_string().contains("without a token"));
 }

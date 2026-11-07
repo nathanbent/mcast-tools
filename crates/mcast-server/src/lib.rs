@@ -117,9 +117,11 @@ impl AppState {
     }
 }
 
-/// Serve until `shutdown` resolves, then stop every job.
+/// Serve the API, plus `extra` routes outside `/api/v1` (such as a web
+/// front end), until `shutdown` resolves; then stop every job.
 pub async fn serve(
     cfg: ServerConfig,
+    extra: Router,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     if !cfg.listen.ip().is_loopback() && cfg.token.as_deref().map_or(true, str::is_empty) {
@@ -138,7 +140,7 @@ pub async fn serve(
         .await
         .with_context(|| format!("listening on {}", cfg.listen))?;
     eprintln!(
-        "mcast API on http://{}/api/v1 (media in {}){}",
+        "mcast on http://{} (API under /api/v1, media in {}){}",
         listener.local_addr()?,
         state.0.media_dir.display(),
         if state.0.token.is_some() {
@@ -147,7 +149,7 @@ pub async fn serve(
             ""
         }
     );
-    let app = router(state.clone());
+    let app = router(state.clone()).merge(extra);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown.await;
@@ -172,11 +174,11 @@ pub fn router(state: AppState) -> Router {
         .route("/media", get(list_media))
         .route("/media/{name}", put(upload_media).delete(delete_media))
         .route("/events", get(events))
+        .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state);
-    Router::new()
-        .nest("/api/v1", api)
-        .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
+    // No fallback outside /api/v1, so other routers can be merged in.
+    Router::new().nest("/api/v1", api)
 }
 
 // ---- errors ----

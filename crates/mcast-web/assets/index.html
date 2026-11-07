@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>mcast</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='3' fill='%233b82f6'/%3E%3Ccircle cx='8' cy='8' r='6.5' fill='none' stroke='%233b82f6' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header>
+    <h1>mcast</h1>
+    <span id="version" class="muted small"></span>
+    <span class="spacer"></span>
+    <span id="status" data-state="connecting" aria-live="polite">Connecting…</span>
+    <button id="logout" class="subtle" hidden>Sign out</button>
+  </header>
+
+  <p id="fatal" class="fatal" role="alert" hidden></p>
+
+  <main>
+    <div class="col">
+      <section aria-labelledby="h-page">
+        <h2 id="h-page">Page</h2>
+        <div id="page"></div>
+      </section>
+      <section aria-labelledby="h-media">
+        <h2 id="h-media">Media</h2>
+        <div id="media"></div>
+      </section>
+    </div>
+    <div class="col">
+      <section aria-labelledby="h-jobs">
+        <h2 id="h-jobs">Now playing</h2>
+        <div id="jobs"></div>
+      </section>
+      <section aria-labelledby="h-streams">
+        <h2 id="h-streams">Announced streams</h2>
+        <div id="streams"></div>
+      </section>
+      <section aria-labelledby="h-monitor">
+        <h2 id="h-monitor">Monitor</h2>
+        <div id="monitor"></div>
+      </section>
+    </div>
+  </main>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <dialog id="login">
+    <form id="login-form">
+      <h2>Sign in</h2>
+      <p class="muted">This server needs its API token (<code>--token</code> or <code>MCAST_TOKEN</code>).</p>
+      <p id="login-error" class="error" hidden>That token didn't work.</p>
+      <label class="field"><span>Token</span>
+        <input id="login-token" type="password" autocomplete="current-password" required autofocus></label>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </dialog>
+</body>
+</html>
