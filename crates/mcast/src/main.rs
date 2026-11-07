@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
+use mcast_audio::chime::{Chime, ChimeSource};
 use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
 use mcast_audio::process::{Mode, ProcessOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
@@ -186,6 +187,16 @@ struct SendArgs {
     /// Lead-in silence in ms, so the first word isn't clipped
     #[arg(short = 'L', long, default_value_t = 0.0)]
     lead_in: f64,
+    /// Silence after the audio in ms, so the end isn't cut off
+    #[arg(short = 'E', long, default_value_t = 300.0)]
+    tail: f64,
+    /// Pre-tone before the audio: an audio file, or no value for the built-in
+    /// chime ($MCAST_CHIME, if set, replaces the built-in one)
+    #[arg(short = 'C', long, value_name = "FILE", num_args = 0..=1, default_missing_value = "default")]
+    chime: Option<String>,
+    /// Gap between the chime and the audio, in ms
+    #[arg(short = 'G', long, default_value_t = 400.0, requires = "chime")]
+    chime_gap: f64,
     /// Start this many seconds into the file (adds a short fade-in)
     #[arg(short, long, requires = "wav")]
     start: Option<f64>,
@@ -350,6 +361,17 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
             Some(OpusBandwidth::Narrow | OpusBandwidth::Wide) => OpusMode::Voice,
             _ => OpusMode::Music,
         });
+    let ms = |v: f64| Duration::from_secs_f64(v.max(0.0) / 1000.0);
+    let chime = a.chime.as_deref().map(|c| {
+        let path = match c {
+            "default" => std::env::var_os("MCAST_CHIME").filter(|p| !p.is_empty()),
+            file => Some(file.into()),
+        };
+        Chime {
+            source: path.map_or(ChimeSource::BuiltIn, |p| ChimeSource::File(p.into())),
+            gap: ms(a.chime_gap),
+        }
+    });
     let announce = (!a.no_sap && a.render.is_none()).then(|| sender::Announce {
         name: a
             .name
@@ -380,7 +402,9 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
         source,
         start: a.start.map(Duration::from_secs_f64),
         duration: a.duration.map(Duration::from_secs_f64),
-        lead_in: Duration::from_secs_f64(a.lead_in.max(0.0) / 1000.0),
+        lead_in: ms(a.lead_in),
+        chime: chime.clone(),
+        tail: ms(a.tail),
         render: a.render.clone(),
         announce,
     })?;
@@ -409,6 +433,12 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
     }
     if let Some(v) = a.volume {
         details += &format!(", {v:+} dB");
+    }
+    if let Some(c) = &chime {
+        details += &match &c.source {
+            ChimeSource::BuiltIn => ", built-in chime".to_string(),
+            ChimeSource::File(p) => format!(", chime {}", p.display()),
+        };
     }
     eprintln!("{spec} {destination} ({details})");
     if let Some(l) = s.loudness() {

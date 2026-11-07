@@ -107,6 +107,27 @@ mcast audio send --wav song.wav -e g711u -m music -o preview.wav   # hear what t
 | `music` | high-pass (150 / 60 Hz), compressor 2:1 at -24 dB, on G.711 a mid EQ (-2 dB at 300 Hz, +2 dB at 1.8 kHz), loudness -18 LUFS |
 | `none` (default) | nothing |
 
+#### Chime and dead air
+
+A page can open with a chime and keep the stream open a little on each side,
+so phones don't clip the first or last word:
+
+```bash
+mcast audio send --file page.wav -e g711u -p -C -L 1000 -E 1000 -g 239.192.2.1:10000   # built-in chime
+mcast audio send --file page.wav -e g711u -p -C tones/bell.wav -G 600 -o preview.wav   # your own tone
+```
+
+| Option | Meaning |
+|---|---|
+| `-C, --chime [FILE]` | Pre-tone: an audio file, or no value for the built-in three-note chime (C5-E5-G5, all within 500-1600 Hz so it sounds the same on G.711). `MCAST_CHIME=FILE` makes a file the default. |
+| `-G, --chime-gap MS` | Silence between the chime and the audio (default 400) |
+| `-L, --lead-in MS` | Silence before everything (default 0; try 800-1000) |
+| `-E, --tail MS` | Silence after the audio (default 300) |
+
+The chime is band-limited for the codec (200 Hz high-pass, the codec's
+low-pass), normalised to -18 LUFS / -3 dBTP, and not voice-processed. `-v`
+applies to it too.
+
 With voice or music, a low-pass at the codec's band edge (3.4 kHz G.711,
 7 kHz G.722 and wideband Opus) runs before loudness normalisation, and the
 true peak is held at -2 dBTP. Opus tuning follows the mode.
@@ -117,7 +138,8 @@ true peak is held at -2 dBTP. Opus tuning follows the mode.
 | `FILE` (anything ffmpeg reads) | `--file FILE` (WAV, MP3, FLAC, Ogg, AAC/M4A, ALAC) |
 | `-c opuswb` | `-e opus --opus-bandwidth wb --bitrate 32` |
 | `-m voice` / `-p` / `-m music` | `-m voice` / `-p` / `-m music` |
-| `-v DB`, `-L MS`, `-s SECS`, `-t SECS` | same |
+| `-v DB`, `-L MS`, `-E MS`, `-s SECS`, `-t SECS` | same |
+| `-C default` / `-C FILE`, `-G MS` | `-C` / `-C FILE`, `-G MS` (`DEFAULT_TONE` → `MCAST_CHIME`) |
 | `-l` | `--loop` |
 | `-g GROUP -P PORT` | `-g GROUP:PORT` |
 | `-T PT` | `--pt PT` |
@@ -134,6 +156,33 @@ accurately: files are measured first (two passes, EBU R128), so output lands
 near the target, where ffmpeg's single-pass `loudnorm` often falls short. Expect
 `mcast` to be about 2 dB louder than the script for voice; use `-v` to taste.
 Live input (`--capture`) uses a slow automatic gain control instead.
+
+### The `mcast-play.sh` script
+
+[`scripts/mcast-play.sh`](scripts/mcast-play.sh) is the ffmpeg-based original,
+kept as a quick way to try ideas: a new filter or setting is a one-line change,
+and `-o preview.wav` renders exactly what a phone would decode. Features that
+prove themselves there get ported to `mcast audio send` (the table above maps
+the options). It needs only bash and ffmpeg (with libopus for Opus):
+
+```bash
+scripts/mcast-play.sh page.wav -p -C default -L 1000 -E 1000      # G.711u to 239.192.2.1:10000
+scripts/mcast-play.sh page.wav -p -C default -o preview.wav       # render instead of sending
+scripts/mcast-play.sh -h                                          # all options
+```
+
+It first renders the finished page (chime, processing, dead air) to a
+temporary WAV, then streams that with steady pacing: one 20 ms packet at a time,
+released in real time by ffmpeg's `arealtime` (`-re` alone sends packets in
+bursts of about seven every 140 ms, which phones' jitter buffers handle badly).
+Packets are marked DSCP EF with `dscp=46`; ffmpeg's RTP output ignores `tos=184`.
+
+To compare the two on the same input, render both and listen or measure:
+
+```bash
+scripts/mcast-play.sh page.wav -p -C default -L 500 -o script.wav
+mcast audio send --file page.wav -e g711u -p -C -L 500 -o mcast.wav
+```
 
 ### Discovery details
 
@@ -191,26 +240,6 @@ Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   163
   Traffic that isn't RTP is still counted. A summary prints on exit.
 
 TTL and DSCP are reported on Linux.
-
-## ffmpeg paging script
-
-`scripts/mcast-play.sh` streams an audio file to a multicast paging group with
-ffmpeg, with the same voice/music processing as `mcast audio send -m`. It's the
-original script `mcast` was modelled on, with two fixes:
-
-- **Steady pacing**: packets go out every 20 ms instead of in bursts (`-re`
-  only throttles input reading). Processing and sending are two ffmpeg
-  processes joined by a pipe; the sender cuts audio into one-packet frames and
-  releases them in real time. Pages also start ~2.5 s sooner in voice/music mode.
-- **QoS marking**: uses `dscp=46`; ffmpeg's RTP output ignores `tos=184`.
-
-```bash
-scripts/mcast-play.sh announcement.wav -m voice -L 500        # G.711 u-law to 239.192.2.1:10000
-scripts/mcast-play.sh song.flac -c g722 -m music -v -6
-scripts/mcast-play.sh announcement.wav -c g711u -m voice -o preview.wav
-```
-
-Run it with no arguments for all options. Requires ffmpeg (with libopus for Opus).
 
 ## Layout
 

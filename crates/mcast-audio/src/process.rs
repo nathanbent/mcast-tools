@@ -70,7 +70,7 @@ impl Mode {
 
 const TRUE_PEAK_DBTP: f64 = -2.0;
 /// ffmpeg `alimiter` limit used after a volume change.
-const VOLUME_LIMIT: f64 = 0.89;
+pub(crate) const VOLUME_LIMIT: f64 = 0.89;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ProcessOptions {

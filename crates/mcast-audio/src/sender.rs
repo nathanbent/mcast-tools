@@ -1,10 +1,12 @@
 //! Multicast RTP audio sender.
 //!
-//! Pipeline: source (tone / WAV / capture) → fades → channel mapping →
+//! Pipeline: [lead-in, chime + gap] then source (tone / WAV / capture) →
+//! fades → channel mapping →
 //! [`Processor`] (voice/music processing, at the source rate) →
 //! [`Converter`] (sample rate) → [`Packetizer`] (codec + RTP) → socket,
 //! or, when rendering, back through the codec's decoder into a WAV file.
 
+use crate::chime::Chime;
 use crate::codec::{Codec, Decoder, OpusOptions, StreamSpec};
 use crate::convert::{map_channels, Converter};
 use crate::device;
@@ -25,8 +27,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Silence added after file and tone sources so the last word isn't cut off.
-const TAIL: Duration = Duration::from_millis(300);
 const FADE_IN: Duration = Duration::from_millis(50);
 const FADE_OUT: Duration = Duration::from_millis(300);
 
@@ -61,6 +61,10 @@ pub struct SenderConfig {
     pub duration: Option<Duration>,
     /// Silence before the audio, so the first word isn't clipped.
     pub lead_in: Duration,
+    /// Pre-tone played after the lead-in and before the source.
+    pub chime: Option<Chime>,
+    /// Silence after file and tone sources, so the last word isn't cut off.
+    pub tail: Duration,
     /// Write what a receiver would decode to this WAV file instead of sending.
     pub render: Option<PathBuf>,
     /// Announce the stream with SAP so receivers can find it.
@@ -249,6 +253,9 @@ pub struct Sender {
     reader: Option<Reader>,
     duration: Option<Duration>,
     lead_in: Duration,
+    /// Rendered chime and gap, at the processing rate and stream channels.
+    chime: Vec<f32>,
+    tail: Duration,
     loudness: Option<LoudnessInfo>,
     sdp: SessionDescription,
     announce: Option<(MulticastOptions, Duration)>,
@@ -331,6 +338,10 @@ impl Sender {
             _ => Loudness::Dynamic,
         };
         let processor = Processor::new(cfg.process, band, loudness, rate, channels as usize);
+        let chime = match &cfg.chime {
+            Some(c) => c.render(band, cfg.process.volume_db, rate, channels)?,
+            None => Vec::new(),
+        };
 
         let pt = cfg
             .payload_type
@@ -396,6 +407,8 @@ impl Sender {
             reader,
             duration: cfg.duration,
             lead_in: cfg.lead_in,
+            chime,
+            tail: cfg.tail,
             loudness: loudness_info,
             sdp,
             announce,
@@ -414,6 +427,12 @@ impl Sender {
     /// Rate and channels of the source, before conversion.
     pub fn source_format(&self) -> (u32, u16) {
         self.source_format
+    }
+
+    /// Length of the chime and its gap, if there is one.
+    pub fn chime_duration(&self) -> Duration {
+        let frames = self.chime.len() / self.spec.channels as usize;
+        Duration::from_secs_f64(frames as f64 / self.source_format.0 as f64)
     }
 
     /// Loudness measurement for file sources with processing on.
@@ -456,16 +475,14 @@ impl Sender {
         };
         let capture = matches!(self.source, Source::Capture { .. });
         let target = self.target.take().expect("run consumes the sender");
+        let network = matches!(target, Target::Network(_));
         let mut out = Output {
-            paced: !capture && matches!(target, Target::Network(_)),
+            // Lead-in and chime are always paced; live capture paces itself after that.
+            paced: network,
             target,
             start: Instant::now(),
             ptime: self.ptime,
-            // Paced sources stop on their own; capture stops after `duration`.
-            limit: self
-                .duration
-                .filter(|_| capture)
-                .map(|d| (d.as_secs_f64() / self.ptime.as_secs_f64()).ceil() as u64),
+            limit: None,
             stats: SenderStats::default(),
             fatal: None,
         };
@@ -486,6 +503,20 @@ impl Sender {
                 .map_err(encoding)?;
             out.check()?;
         }
+        if !self.chime.is_empty() {
+            let mut converted = Vec::new();
+            self.converter.process(&self.chime, &mut converted);
+            self.packetizer
+                .push(&converted, |p| out.send(p))
+                .map_err(encoding)?;
+            out.check()?;
+        }
+        out.paced = network && !capture;
+        // Paced sources stop on their own; capture stops after `duration` of live audio.
+        out.limit = self
+            .duration
+            .filter(|_| capture)
+            .map(|d| out.sent() + (d.as_secs_f64() / self.ptime.as_secs_f64()).ceil() as u64);
 
         let mut stages = Stages::default();
         if let Source::Capture { device } = &self.source {
@@ -510,7 +541,7 @@ impl Sender {
                 stages.run(&mut self, &buf[..n], last, &mut out)?;
                 if last {
                     self.packetizer
-                        .push(&silence(TAIL), |p| out.send(p))
+                        .push(&silence(self.tail), |p| out.send(p))
                         .map_err(encoding)?;
                     self.packetizer.finish(|p| out.send(p)).map_err(encoding)?;
                     out.check()?;
