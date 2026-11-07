@@ -583,6 +583,7 @@ other machines:
 ```bash
 mcast serve                                          # open http://127.0.0.1:8650/
 MCAST_TOKEN=change-me mcast serve --listen 0.0.0.0:8650
+MCAST_TOKEN=change-me MCAST_LISTEN=0.0.0.0:8650 mcast serve   # the same, from the environment
 ```
 
 ```bash
@@ -601,7 +602,7 @@ streams job progress and changes as server-sent events (`GET /api/v1/events`).
 A page to a group that one of its jobs is already sending to is refused with
 `409 Conflict`. Audio files are uploaded to its media directory
 (`~/.local/share/mcast/media` by default) and named by file name in requests.
-Listening on anything but loopback requires a token. See
+Listening on anything but loopback (`--listen` or `MCAST_LISTEN`) requires a token. See
 [docs/api.md](docs/api.md) for every route and field.
 
 The GUI pages from uploaded files, live input, a test tone or the chord pad, shows what's

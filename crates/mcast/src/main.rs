@@ -443,7 +443,7 @@ struct DiscoverArgs {
 #[derive(Args)]
 struct ServeArgs {
     /// Address to listen on. Anything but loopback needs --token
-    #[arg(short, long, default_value = "127.0.0.1:8650")]
+    #[arg(short, long, env = "MCAST_LISTEN", default_value = "127.0.0.1:8650")]
     listen: SocketAddr,
     /// Bearer token clients must send (Authorization: Bearer TOKEN)
     #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
