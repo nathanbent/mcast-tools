@@ -92,6 +92,9 @@ impl TargetState {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TargetRun {
+    /// Which of the announcement's parts it plays (from 1); `None` for its own audio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<usize>,
     /// As written in the zone: a phonebook name or an address.
     pub group: String,
     /// The address it resolved to; `None` if it couldn't be.
@@ -427,14 +430,21 @@ impl Inner {
         a: &Announcement,
         site: Option<&str>,
     ) -> Result<Vec<TargetRun>, PlayError> {
-        let wanted: Vec<_> = cfg
-            .zones_at(a, site)
+        // Each group with the audio its section plays there.
+        let wanted: Vec<(&crate::model::Audio, Option<usize>, &crate::model::Target)> = a
+            .sections()
             .into_iter()
-            .flat_map(|z| &z.targets)
+            .enumerate()
+            .flat_map(|(i, (audio, zones))| {
+                cfg.zones_in(zones, site)
+                    .into_iter()
+                    .flat_map(|z| &z.targets)
+                    .map(move |t| (audio, (i > 0).then_some(i), t))
+            })
             .collect();
         let book = if wanted
             .iter()
-            .any(|t| t.group.trim().parse::<SocketAddr>().is_err())
+            .any(|(_, _, t)| t.group.trim().parse::<SocketAddr>().is_err())
         {
             self.backend
                 .phonebook()
@@ -444,7 +454,7 @@ impl Inner {
         };
         let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for t in wanted {
+        for (audio, part, t) in wanted {
             let name = t.group.trim();
             let address = match name.parse::<SocketAddr>() {
                 Ok(a) => Some(a.to_string()),
@@ -459,8 +469,11 @@ impl Inner {
                 continue;
             }
             let target = cfg.defaults.target(t);
-            let request = address.as_deref().map(|g| a.send_request(&target, g));
+            let request = address
+                .as_deref()
+                .map(|g| a.send_request(cfg, audio, &target, g));
             out.push(TargetRun {
+                part,
                 group: t.group.clone(),
                 state: if request.is_some() {
                     TargetState::Starting

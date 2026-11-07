@@ -36,11 +36,16 @@ pub fn list(path: &Path) -> Result<()> {
     }
     println!("Announcements:");
     for a in &cfg.announcements {
-        let audio = match &a.audio {
+        let describe = |au: &Audio| match au {
             Audio::Media(m) => m.clone(),
             Audio::ChimeOnly => "chime only".into(),
             Audio::Live => "live (push to talk)".into(),
+            Audio::Playlist(id) => format!(
+                "playlist {}",
+                cfg.playlist(id).map_or(id.as_str(), |p| p.name.as_str())
+            ),
         };
+        let audio = describe(&a.audio);
         let mut extras = Vec::new();
         // As it plays, with the defaults: say which chimes are those.
         let played = a.with_defaults(&cfg.defaults);
@@ -58,6 +63,13 @@ pub fn list(path: &Path) -> Result<()> {
         }
         if a.priority != Default::default() {
             extras.push(format!("{} priority", a.priority));
+        }
+        for p in &a.parts {
+            extras.push(format!(
+                "and {} -> {}",
+                describe(&p.audio),
+                p.zones.join(", ")
+            ));
         }
         let extras = if extras.is_empty() {
             String::new()
@@ -255,17 +267,32 @@ fn server_problems(
     // The defaults, then each announcement's own (the defaults it uses are
     // checked once, above).
     let d = &cfg.defaults;
-    let mut uses = vec![("defaults".to_string(), None, [&d.chime, &d.end_chime])];
+    // (what, its media files, its chimes)
+    type Uses<'a> = Vec<(String, Vec<&'a str>, [&'a Option<Value>; 2])>;
+    let mut uses: Uses = vec![("defaults".to_string(), Vec::new(), [&d.chime, &d.end_chime])];
     for a in &cfg.announcements {
         let what = format!("announcement \"{}\"", a.id);
-        let media = match &a.audio {
-            Audio::Media(m) => Some(m.as_str()),
-            Audio::ChimeOnly | Audio::Live => None,
-        };
+        let media: Vec<&str> = a
+            .sections()
+            .into_iter()
+            .filter_map(|(au, _)| match au {
+                Audio::Media(m) => Some(m.as_str()),
+                _ => None,
+            })
+            .collect();
         uses.push((what, media, [&a.chime, &a.end_chime]));
     }
+    for p in &cfg.playlists {
+        let what = format!("playlist \"{}\"", p.id);
+        let media = p
+            .items
+            .iter()
+            .filter_map(crate::model::PlaylistItem::media)
+            .collect();
+        uses.push((what, media, [&None, &None]));
+    }
     for (what, audio, chime_values) in uses {
-        let mut files: Vec<&str> = audio.into_iter().collect();
+        let mut files: Vec<&str> = audio;
         for c in chime_values.into_iter().flatten() {
             if let Some(f) = c["file"].as_str() {
                 files.push(f);

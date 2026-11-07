@@ -444,6 +444,7 @@ mod tests {
                     repeat_gap_s: 0.0,
                     zones: vec!["z".into()],
                     priority: Priority::Normal,
+                    parts: Vec::new(),
                 })
                 .collect(),
             schedules,

@@ -145,6 +145,14 @@ The original sketch:
 
 ### 8. Playlists (requested)
 
+**Built.**
+- **Core:** `mcast serve` has a `files` source that plays up to 100 files as one stream, with no gap or SAP churn between them. It uses the first file's format and converts the rest, with an optional `gap_ms`. Loudness is measured over the whole list.
+- **Panel:** playlists (`{"type": "sound"}` items, `gap_ms`) in a Playlists tab, with drag-to-reorder and lengths. An announcement's audio can be a playlist.
+- **Parts:** each part sends other audio (a sound, a playlist or chime only) to other zones in the same run. Targets say which part they play. The trigger API's zone override narrows across parts.
+- **Next:** text pages as playlist items.
+
+The plan before building:
+
 Decided so far:
 - Playlists are their own named things, in a Playlists tab, and announcements use one in place of a single sound. Schedules and the trigger API follow from that.
 - A playlist plays its items **in sequence**: sounds now, text pages later (through `mcast text`), maybe pauses. It plays as one run, with the announcement's chime before and after.

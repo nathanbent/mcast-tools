@@ -32,7 +32,7 @@ export const can = {
 
 // The tabs each role sees.
 export const TABS = {
-  admin: ["panel", "history", "schedules", "announcements", "sounds", "zones", "settings"],
+  admin: ["panel", "history", "schedules", "announcements", "playlists", "sounds", "zones", "settings"],
   operator: ["panel", "history", "sounds"],
   media: ["sounds"],
   trigger: [],

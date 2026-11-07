@@ -10,6 +10,7 @@ import * as zones from "./zones.js";
 import * as schedules from "./schedules.js";
 import * as settings from "./settings.js";
 import * as sounds from "./sounds.js";
+import * as playlists from "./playlists.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -130,6 +131,7 @@ async function start() {
     schedules: () => schedules.mount($("schedules"), $("days-off"), $("schedule-groups")),
     settings: () => settings.mount($("tab-settings")),
     sounds: () => sounds.mount($("sounds")),
+    playlists: () => playlists.mount($("playlists")),
   };
   for (const t of TABS[state.me.role] ?? []) mounts[t]?.();
   // "in 5 min" moves on, and once-only times drop off the list.

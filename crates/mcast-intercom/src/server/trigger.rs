@@ -147,6 +147,12 @@ pub(super) async fn trigger(
         if zones.is_empty() {
             return Err(ApiError::bad("zones: give at least one"));
         }
+        // Any of the zones it plays to, its own or its parts'.
+        let all: Vec<String> = a
+            .sections()
+            .iter()
+            .flat_map(|(_, zs)| zs.iter().cloned())
+            .collect();
         let mut ids = Vec::new();
         for z in zones {
             let zone = cfg
@@ -155,17 +161,22 @@ pub(super) async fn trigger(
                 .find(|x| x.id == *z)
                 .or_else(|| cfg.zones.iter().find(|x| x.name.eq_ignore_ascii_case(z)));
             match zone {
-                Some(zone) if a.zones.contains(&zone.id) => ids.push(zone.id.clone()),
+                Some(zone) if all.contains(&zone.id) => ids.push(zone.id.clone()),
                 _ => {
                     return Err(ApiError::bad(format!(
                         "zone \"{z}\" isn't one of \"{}\"'s zones ({})",
                         a.name,
-                        a.zones.join(", ")
+                        all.join(", ")
                     )))
                 }
             }
         }
-        changed.zones = ids;
+        // Each section keeps only the zones asked for; parts left with none go.
+        changed.zones.retain(|z| ids.contains(z));
+        for p in &mut changed.parts {
+            p.zones.retain(|z| ids.contains(z));
+        }
+        changed.parts.retain(|p| !p.zones.is_empty());
     }
     if let Some(n) = o.repeat {
         if !(1..=MAX_REPEAT).contains(&n) {

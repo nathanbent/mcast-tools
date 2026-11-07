@@ -102,7 +102,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_mode` | follows `mode` | `voice` or `music` |
 | `opus_bandwidth` | | `nb`, `wb`, `swb`, `fb` |
 | `opus_fec` | `true` | |
-| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
+| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "files", "paths": ["NAME", ...], "gap_ms": 0}` (up to 100 files one after another as one stream, at the first one's rate and channels, with `gap_ms` of silence between them; loudness is measured over them all), `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | |
 | `chime` | | Chime before the audio: `"default"` (`rising`, or `$MCAST_CHIME`), a built-in (any name `GET /chimes` lists, such as `"ding-dong"`, `"westminster"`, `"church-bell"`, `"beep"` or `"siren-wail"`), or `{"file": "NAME"}` |

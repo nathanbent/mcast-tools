@@ -82,6 +82,7 @@ fn config() -> Config {
         repeat_gap_s: 0.0,
         zones: vec![zone.into()],
         priority,
+        parts: Vec::new(),
     };
     Config {
         zones: vec![
@@ -330,6 +331,7 @@ fn talks_live_to_two_groups() {
         repeat_gap_s: 0.0,
         zones: vec!["both".into()],
         priority: Priority::Normal,
+        parts: Vec::new(),
     });
     std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
@@ -380,4 +382,50 @@ fn talks_live_to_two_groups() {
             .iter()
             .all(|t| t.state == TargetState::Done && t.played == 1));
     });
+}
+
+/// A playlist to one zone and a sound to another, in one run, on a real
+/// mcast server: both play to the end.
+#[test]
+fn plays_a_playlist_and_a_part_together() {
+    let srv = server();
+    let media = srv.dir.join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    for (name, rate) in [
+        ("one.wav", 16_000),
+        ("two.wav", 8_000),
+        ("other.wav", 48_000),
+    ] {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(media.join(name), spec).unwrap();
+        for i in 0..rate / 4 {
+            w.write_sample(((i % 50) as i16 - 25) * 300).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    let cfg: Config = serde_json::from_value(json!({
+        "zones": [
+            {"id": "a", "name": "A", "targets": [{"group": "239.255.77.81:5004", "encoding": "g711u"}]},
+            {"id": "b", "name": "B", "targets": [{"group": "239.255.77.82:5004"}]}
+        ],
+        "playlists": [{"id": "pl", "name": "PL", "gap_ms": 100,
+            "items": [{"type": "sound", "media": "one.wav"}, {"type": "sound", "media": "two.wav"}]}],
+        "announcements": [{"id": "both", "name": "Both", "audio": {"playlist": "pl"}, "zones": ["a"],
+            "parts": [{"zones": ["b"], "audio": {"media": "other.wav"}}]}]
+    }))
+    .unwrap();
+    cfg.validate().unwrap();
+    let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
+    let r = Runner::new(backend, |_| {});
+    let run = r.play(&cfg, "both", Trigger::Manual { by: None }).unwrap();
+    assert_eq!(run.targets.len(), 2, "{run:#?}");
+    assert!(run.targets.iter().all(|t| t.error.is_none()), "{run:#?}");
+    let run = wait_for(&r, run.id, "both to end", |r| r.state.is_over());
+    assert_eq!(run.state, RunState::Done, "{run:#?}");
+    assert!(run.targets.iter().all(|t| t.played == 1), "{run:#?}");
 }

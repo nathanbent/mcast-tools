@@ -32,6 +32,7 @@ fn announcement(id: &str, zones: &[&str]) -> Announcement {
         repeat_gap_s: 0.0,
         zones: zones.iter().map(|z| z.to_string()).collect(),
         priority: Priority::Normal,
+        parts: Vec::new(),
     }
 }
 
@@ -338,7 +339,12 @@ fn reads_the_documented_format() {
     assert_eq!(fire.repeat, 1);
     assert_eq!(fire.repeat_gap_s, 2.0);
     assert_eq!(
-        fire.send_request(&cfg.zones[0].targets[0], "239.1.1.1:5000"),
+        fire.send_request(
+            &cfg,
+            &fire.audio,
+            &cfg.zones[0].targets[0],
+            "239.1.1.1:5000"
+        ),
         json!({
             "group": "239.1.1.1:5000", "name": "Fire", "source": {"type": "chime"},
             "chime": {"file": "alarm.wav"}, "encoding": "g711u", "tos": 184,
@@ -364,10 +370,8 @@ fn announcements_use_the_defaults_they_leave_out() {
     .unwrap();
     cfg.validate().unwrap();
     let request = |id: &str| {
-        cfg.announcement(id)
-            .unwrap()
-            .with_defaults(&cfg.defaults)
-            .send_request(&cfg.zones[0].targets[0], "239.1.1.1:5000")
+        let a = cfg.announcement(id).unwrap().with_defaults(&cfg.defaults);
+        a.send_request(&cfg, &a.audio, &cfg.zones[0].targets[0], "239.1.1.1:5000")
     };
     assert_eq!(
         request("plain"),

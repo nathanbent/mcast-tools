@@ -860,6 +860,11 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/schedule-groups/{id}"),
     ("PUT", "/schedule-groups/{id}"),
     ("DELETE", "/schedule-groups/{id}"),
+    ("GET", "/playlists"),
+    ("POST", "/playlists"),
+    ("GET", "/playlists/{id}"),
+    ("PUT", "/playlists/{id}"),
+    ("DELETE", "/playlists/{id}"),
     ("GET", "/upcoming"),
     ("GET", "/settings"),
     ("PUT", "/settings"),
@@ -1817,4 +1822,164 @@ async fn tags_follow_files_and_are_set_many_at_once() {
     assert_eq!(v["voice/fire.wav"], json!([]));
     let (_, cfg) = p.call(Method::GET, "/config", None).await;
     assert!(cfg["media_tags"].get("voice/fire.wav").is_none());
+}
+
+// ---- playlists and parts ----
+
+#[tokio::test]
+async fn playlists_and_parts_play_together_in_one_run() {
+    let p = panel(None);
+    for name in ["en/msg.wav", "en/thanks.wav", "es/msg.wav"] {
+        p.fake.upload_media(name, b"RIFF").unwrap();
+    }
+    for (name, group) in [
+        ("Building A", "zone-1"),
+        ("Building B", "239.1.1.2:5000"),
+        ("Yard", "239.1.1.3:5000"),
+    ] {
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/zones",
+                Some(json!({"name": name, "targets": [{"group": group}]})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/playlists",
+            Some(json!({"name": "English", "gap_ms": 500,
+                "items": [{"type": "sound", "media": "en/msg.wav"}, {"type": "sound", "media": "en/thanks.wav"}]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["id"], "english");
+    let (s, _) = p
+        .call(Method::POST, "/playlists", Some(json!({"name": "Empty"})))
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // English to A, Spanish to B, chime only to the yard: one run.
+    let ann = json!({"name": "Closing", "audio": {"playlist": "english"}, "zones": ["building-a"],
+        "parts": [{"zones": ["building-b"], "audio": {"media": "es/msg.wav"}},
+                  {"zones": ["yard"], "audio": "chime_only"}]});
+    let (s, v) = p
+        .call(Method::POST, "/announcements", Some(ann.clone()))
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, run) = p
+        .call(Method::POST, "/announcements/closing/play", None)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    let parts: Vec<Value> = run["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["part"].clone())
+        .collect();
+    assert_eq!(parts, [Value::Null, json!(1), json!(2)]);
+    let sources: Vec<Value> = p
+        .fake
+        .requests()
+        .iter()
+        .map(|r| r["source"].clone())
+        .collect();
+    assert!(
+        sources.contains(
+            &json!({"type": "files", "paths": ["en/msg.wav", "en/thanks.wav"], "gap_ms": 500})
+        ),
+        "{sources:?}"
+    );
+    assert!(sources.contains(&json!({"type": "file", "path": "es/msg.wav"})));
+    assert!(sources.contains(&json!({"type": "chime"})));
+    p.call(Method::DELETE, "/runs", None).await;
+
+    // The trigger API narrows across parts: only Building B plays.
+    let (s, run) = p
+        .call(
+            Method::POST,
+            "/trigger/closing",
+            Some(json!({"zones": ["Building B"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    assert_eq!(run["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(run["targets"][0]["address"], "239.1.1.2:5000");
+    p.call(Method::DELETE, "/runs", None).await;
+
+    // In use: the playlist and its files can't go; renaming a file follows.
+    let (s, v) = p.call(Method::DELETE, "/playlists/english", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("Closing"));
+    let (s, v) = p.call(Method::DELETE, "/media/en/thanks.wav", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("playlist English"),
+        "{v}"
+    );
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/media-move",
+            Some(json!({"from": "en", "to": "english"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, pl) = p.call(Method::GET, "/playlists/english", None).await;
+    assert_eq!(pl["items"][1]["media"], "english/thanks.wav");
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert_eq!(
+        cfg["announcements"][0]["parts"][0]["audio"]["media"],
+        "es/msg.wav"
+    );
+
+    // Mistakes.
+    let bad = |change: Value| {
+        let mut a = ann.clone();
+        a.as_object_mut()
+            .unwrap()
+            .extend(change.as_object().unwrap().clone());
+        a["name"] = json!("Other");
+        a
+    };
+    for (what, body) in [
+        (
+            "an empty playlist",
+            bad(json!({"audio": {"playlist": "empty"}})),
+        ),
+        (
+            "no such playlist",
+            bad(json!({"audio": {"playlist": "nope"}})),
+        ),
+        (
+            "a zone twice",
+            bad(json!({"parts": [{"zones": ["building-a"], "audio": "chime_only"}]})),
+        ),
+        (
+            "a live part",
+            bad(json!({"parts": [{"zones": ["yard"], "audio": "live"}]})),
+        ),
+        ("live with parts", bad(json!({"audio": "live"}))),
+        (
+            "a part with no zones",
+            bad(json!({"parts": [{"zones": [], "audio": "chime_only"}]})),
+        ),
+    ] {
+        let (s, v) = p.call(Method::POST, "/announcements", Some(body)).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{what}: {v}");
+    }
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/playlists/english",
+            Some(json!({"name": "English", "items": []})),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "emptying a playlist in use"
+    );
 }

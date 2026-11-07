@@ -287,7 +287,9 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/schedule-groups"
         | "/schedule-groups/{id}"
         | "/settings"
-        | "/chimes" => {
+        | "/chimes"
+        | "/playlists"
+        | "/playlists/{id}" => {
             if get {
                 Read
             } else {

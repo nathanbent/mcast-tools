@@ -14,7 +14,7 @@ mod trigger;
 mod web;
 
 use crate::backend::Backend;
-use crate::model::{Announcement, Config, Schedule, ScheduleGroup, Site, Zone};
+use crate::model::{Announcement, Config, Playlist, Schedule, ScheduleGroup, Site, Zone};
 use crate::runner::{BackendStatus, Change, Run, Runner};
 use crate::scheduler::{Scheduler, GRACE};
 use crate::store;
@@ -316,6 +316,13 @@ pub fn router(state: AppState) -> Router {
             get(get_one::<ScheduleGroup>)
                 .put(put::<ScheduleGroup>)
                 .delete(delete::<ScheduleGroup>),
+        )
+        .route("/playlists", get(list::<Playlist>).post(create::<Playlist>))
+        .route(
+            "/playlists/{id}",
+            get(get_one::<Playlist>)
+                .put(put::<Playlist>)
+                .delete(delete::<Playlist>),
         )
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))

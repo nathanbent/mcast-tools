@@ -950,3 +950,51 @@ async fn checks_audio_on_upload_and_says_how_long_files_are() {
     let (s, _) = call(&h, "GET", "/api/v1/media-info/..%2Fx", None, None).await;
     assert!(s.is_client_error());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_a_list_of_files_as_one_stream() {
+    let h = harness(None);
+    for name in ["bells/a.wav", "b.wav"] {
+        assert_eq!(put_media(&h, name, wav()).await, StatusCode::CREATED);
+    }
+    let send = |paths: serde_json::Value| {
+        json!({
+            "group": "239.255.77.23:5004", "sap": false, "encoding": "g711u", "tail_ms": 0,
+            "source": {"type": "files", "paths": paths, "gap_ms": 200}
+        })
+    };
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(send(json!(["bells/a.wav", "nope.wav"]))),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, v) = call(&h, "POST", "/api/v1/senders", Some(send(json!([]))), None).await;
+    assert!(s.is_client_error(), "{v}");
+
+    let (s, job) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(send(json!(["bells/a.wav", "b.wav", "bells/a.wav"]))),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{job}");
+    let id = job["id"].as_u64().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let (_, j) = call(&h, "GET", &format!("/api/v1/jobs/{id}"), None, None).await;
+        if j["state"] != "running" || std::time::Instant::now() > deadline {
+            break j;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(done["state"], "finished", "{done}");
+    // Three 0.2 s files and two 0.2 s gaps: about a second.
+    let secs = done["stats"]["seconds"].as_f64().unwrap();
+    assert!((0.9..1.6).contains(&secs), "{done}");
+}
