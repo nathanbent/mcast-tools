@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
-use mcast_audio::{receiver, sender, AudioFormat, Encoding, StreamInfo};
+use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
 use mcast_core::sap::{self, Directory, DirectoryEvent};
 use mcast_core::{Interface, MulticastOptions};
 use std::net::SocketAddr;
@@ -68,19 +68,41 @@ struct FormatArgs {
     /// Channel count [default: 2]
     #[arg(short, long)]
     channels: Option<u16>,
-    /// Sample encoding: l16 or l24 [default: l16]
+    /// Encoding: l16, l24 (send and receive); pcmu/g711u, pcma/g711a, g722, opus (receive)
+    /// [default: l16]
     #[arg(short, long)]
-    encoding: Option<Encoding>,
+    encoding: Option<Codec>,
 }
 
 impl FormatArgs {
-    fn format(&self) -> AudioFormat {
+    /// PCM format for sending.
+    fn send_format(&self) -> Result<AudioFormat> {
         let d = AudioFormat::default();
-        AudioFormat {
+        let codec = self.encoding.unwrap_or(Codec::L16);
+        let Some(encoding) = codec.pcm_encoding() else {
+            bail!("sending {codec} isn't supported yet; use l16 or l24");
+        };
+        Ok(AudioFormat {
             sample_rate: self.rate.unwrap_or(d.sample_rate),
             channels: self.channels.unwrap_or(d.channels),
-            encoding: self.encoding.unwrap_or(d.encoding),
-        }
+            encoding,
+        })
+    }
+
+    /// Decoding spec for receiving (codec-fixed rates/channels win).
+    fn spec(&self) -> StreamSpec {
+        let d = AudioFormat::default();
+        let codec = self.encoding.unwrap_or(Codec::L16);
+        let default_channels = if codec == Codec::L16 || codec == Codec::L24 {
+            d.channels
+        } else {
+            1
+        };
+        StreamSpec::new(
+            codec,
+            self.rate.unwrap_or(d.sample_rate),
+            self.channels.unwrap_or(default_channels),
+        )
     }
 
     fn any_set(&self) -> bool {
@@ -159,7 +181,8 @@ struct SendArgs {
 
 #[derive(Args)]
 struct RecvArgs {
-    /// Multicast group and port; skips SAP discovery and uses the format flags
+    /// Multicast group and port; skips SAP discovery. The codec comes from
+    /// --encoding, or from the payload type for G.711/G.722 (else L16/48000/2)
     #[arg(short, long)]
     group: Option<SocketAddr>,
     /// Pick the announced stream whose name contains this text
@@ -262,7 +285,7 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
     });
     let s = sender::Sender::new(sender::SenderConfig {
         net: a.net.options(a.group)?,
-        format: a.format.format(),
+        format: a.format.send_format()?,
         ptime: Duration::from_secs_f64(a.ptime / 1000.0),
         payload_type: a.pt,
         source,
@@ -325,7 +348,7 @@ fn find_stream(
                     continue;
                 }
             }
-            if info.format().is_none() {
+            if info.spec().is_none() {
                 eprintln!("  skipping {info}");
                 continue;
             }
@@ -336,8 +359,19 @@ fn find_stream(
 }
 
 fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
-    let (group, fmt) = match a.group {
-        Some(g) => (g, a.format.format()),
+    // (fixed spec, payload-type filter, fallback for dynamic payload types)
+    let (group, stream, payload_type, fallback) = match a.group {
+        Some(g) => {
+            let explicit = a.format.any_set().then(|| a.format.spec());
+            let fallback = StreamSpec::new(Codec::L16, 48_000, 2);
+            match explicit {
+                Some(spec) => eprintln!("joining {g} expecting {spec}. Ctrl-C to stop."),
+                None => eprintln!(
+                    "joining {g}; codec from payload type (G.711/G.722), else {fallback}. Ctrl-C to stop."
+                ),
+            }
+            (g, explicit, None, Some(fallback))
+        }
         None => {
             match &a.stream {
                 Some(n) => eprintln!("looking for a stream named \"{n}\" via SAP..."),
@@ -363,7 +397,9 @@ fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
                     "(use --stream NAME to choose; `mcast audio discover` lists all streams)"
                 );
             }
-            (info.group, info.format().expect("checked playable"))
+            let spec = info.spec().expect("find_stream returns playable streams");
+            eprintln!("joining {} as {spec}. Ctrl-C to stop.", info.group);
+            (info.group, Some(spec), Some(info.payload_type), None)
         }
     };
 
@@ -371,10 +407,11 @@ fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
         Some(path) => receiver::Sink::Wav { path },
         None => receiver::Sink::Play { device: a.device },
     };
-    eprintln!("joining {group} expecting {fmt}. Ctrl-C to stop.");
     let cfg = receiver::ReceiverConfig {
         net: a.net.options(group)?,
-        format: fmt,
+        stream,
+        fallback,
+        payload_type,
         latency: Duration::from_secs_f64(a.latency / 1000.0),
         sink,
         duration: a.duration.map(Duration::from_secs_f64),
@@ -384,16 +421,22 @@ fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
             Duration::MAX
         },
     };
-    let stats = receiver::run(cfg, stop, |event| {
-        match event {
+    let stats = receiver::run(cfg, stop, |event| match event {
         receiver::Event::Stats(s) => eprintln!("{}", format_stats(s)),
-        receiver::Event::NewSource { ssrc, from, payload_type } => {
-            eprintln!("stream from {from} (ssrc {ssrc:08x}, pt {payload_type})")
+        receiver::Event::NewSource {
+            ssrc,
+            from,
+            payload_type,
+            spec,
+        } => {
+            eprintln!("stream from {from} (ssrc {ssrc:08x}, pt {payload_type}): decoding as {spec}")
         }
-        receiver::Event::FormatMismatch { payload_len } => eprintln!(
-            "warning: {payload_len}-byte payload doesn't fit {fmt}; check --rate/--channels/--encoding"
+        receiver::Event::UnknownPayloadType { payload_type } => eprintln!(
+            "warning: payload type {payload_type} is dynamic; pass --encoding (e.g. -e opus)"
         ),
-    }
+        receiver::Event::DecodeError { message } => {
+            eprintln!("warning: {message}; check --encoding/--rate/--channels")
+        }
     })?;
     eprintln!("done: {}", format_stats(&stats));
     Ok(())
@@ -429,9 +472,10 @@ fn audio_discover(a: DiscoverArgs, stop: &AtomicBool) -> Result<()> {
 
 fn format_stats(s: &receiver::ReceiverStats) -> String {
     format!(
-        "packets {} lost {} late {} invalid {} | buffer {:.1}ms underruns {} overflows {}",
+        "packets {} lost {} (concealed {}) late {} invalid {} | buffer {:.1}ms underruns {} overflows {}",
         s.packets,
         s.lost,
+        s.concealed,
         s.late,
         s.invalid,
         s.buffered.as_secs_f64() * 1000.0,

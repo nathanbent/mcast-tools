@@ -10,3 +10,4 @@ anyhow.workspace = true
 cpal.workspace = true
 hound.workspace = true
 mcast-core.workspace = true
+opus.workspace = true

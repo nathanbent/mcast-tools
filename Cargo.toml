@@ -13,6 +13,7 @@ clap = { version = "4", features = ["derive"] }
 cpal = "0.15"
 ctrlc = "3"
 hound = "3.5"
+opus = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
 mcast-core = { path = "crates/mcast-core" }
 mcast-audio = { path = "crates/mcast-audio" }

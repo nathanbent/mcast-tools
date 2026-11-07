@@ -1,6 +1,7 @@
 //! Mapping between audio streams and SDP session descriptions.
 
-use crate::format::{AudioFormat, Encoding};
+use crate::codec::{Codec, StreamSpec};
+use crate::format::AudioFormat;
 use mcast_core::random_u32;
 use mcast_core::sdp::{Attribute, Connection, Media, Origin, SessionDescription};
 use std::fmt;
@@ -18,6 +19,8 @@ pub struct StreamInfo {
     pub sample_rate: u32,
     pub channels: u16,
     pub ptime_ms: Option<f64>,
+    /// Opus fmtp `stereo=1` / `sprop-stereo=1`.
+    pub opus_stereo: bool,
 }
 
 impl StreamInfo {
@@ -32,8 +35,14 @@ impl StreamInfo {
         let (encoding, sample_rate, channels) = match media.rtpmap(payload_type) {
             Some(m) => (m.encoding, m.clock_rate, m.channels.unwrap_or(1)),
             None => {
-                let (e, r, c) = static_payload_type(payload_type)?;
-                (e.to_string(), r, c)
+                let spec = StreamSpec::from_static_payload_type(payload_type)?;
+                // RTP clock rate is what SDP reports (8000 for G.722).
+                let rate = if spec.codec == Codec::G722 {
+                    8_000
+                } else {
+                    spec.sample_rate
+                };
+                (spec.codec.to_string(), rate, spec.channels)
             }
         };
         Some(Self {
@@ -44,21 +53,26 @@ impl StreamInfo {
             sample_rate,
             channels,
             ptime_ms: media.ptime_ms(),
+            opus_stereo: media.attributes.iter().any(|a| {
+                a.name == "fmtp"
+                    && a.value.as_deref().is_some_and(|v| {
+                        v.split([' ', ';'])
+                            .any(|p| matches!(p.trim(), "stereo=1" | "sprop-stereo=1"))
+                    })
+            }),
         })
     }
 
-    /// The PCM format, if this is a stream we can decode.
-    pub fn format(&self) -> Option<AudioFormat> {
-        let encoding = match self.encoding.to_ascii_uppercase().as_str() {
-            "L16" => Encoding::L16,
-            "L24" => Encoding::L24,
-            _ => return None,
+    /// How to decode this stream, if we support its codec.
+    pub fn spec(&self) -> Option<StreamSpec> {
+        let codec = Codec::from_sdp_name(&self.encoding)?;
+        // Opus always says "/2" in rtpmap (RFC 7587); decode stereo only if
+        // the sender says it sends stereo.
+        let channels = match codec {
+            Codec::Opus if !self.opus_stereo => 1,
+            _ => self.channels,
         };
-        Some(AudioFormat {
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            encoding,
-        })
+        Some(StreamSpec::new(codec, self.sample_rate, channels))
     }
 }
 
@@ -72,23 +86,11 @@ impl fmt::Display for StreamInfo {
         if let Some(p) = self.ptime_ms {
             write!(f, " ptime {p}ms")?;
         }
-        if self.format().is_none() {
+        if self.spec().is_none() {
             write!(f, " (unsupported encoding)")?;
         }
         Ok(())
     }
-}
-
-/// RFC 3551 static audio payload types.
-fn static_payload_type(pt: u8) -> Option<(&'static str, u32, u16)> {
-    Some(match pt {
-        0 => ("PCMU", 8000, 1),
-        8 => ("PCMA", 8000, 1),
-        9 => ("G722", 8000, 1),
-        10 => ("L16", 44_100, 2),
-        11 => ("L16", 44_100, 1),
-        _ => return None,
-    })
 }
 
 /// Build an SDP for a stream we're sending.
@@ -145,6 +147,7 @@ pub fn describe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::Encoding;
     use mcast_core::sdp;
 
     #[test]
@@ -171,7 +174,7 @@ mod tests {
         assert_eq!(info.name, "Lobby");
         assert_eq!(info.group, group);
         assert_eq!(info.ptime_ms, Some(1.0));
-        assert_eq!(info.format(), Some(fmt));
+        assert_eq!(info.spec(), Some(StreamSpec::new(Codec::L24, 48_000, 2)));
     }
 
     #[test]
@@ -183,6 +186,40 @@ mod tests {
             (info.encoding.as_str(), info.sample_rate, info.channels),
             ("PCMU", 8000, 1)
         );
-        assert_eq!(info.format(), None);
+        assert_eq!(info.spec(), Some(StreamSpec::new(Codec::Pcmu, 8_000, 1)));
+    }
+
+    #[test]
+    fn g722_and_opus_from_rtpmap() {
+        let parse = |m: &str| {
+            let text =
+                format!("v=0\no=- 1 1 IN IP4 10.0.0.9\ns=x\nc=IN IP4 239.192.2.1/16\nt=0 0\n{m}");
+            StreamInfo::from_sdp(&sdp::parse(&text).unwrap())
+                .unwrap()
+                .spec()
+                .unwrap()
+        };
+        assert_eq!(
+            parse("m=audio 10000 RTP/AVP 9\na=rtpmap:9 G722/8000\n").to_string(),
+            "G722/16000/1"
+        );
+        assert_eq!(
+            parse("m=audio 10000 RTP/AVP 107\na=rtpmap:107 opus/48000/2\n").to_string(),
+            "opus/48000/1"
+        );
+        assert_eq!(
+            parse(
+                "m=audio 10000 RTP/AVP 107\na=rtpmap:107 opus/48000/2\na=fmtp:107 sprop-stereo=1\n"
+            )
+            .to_string(),
+            "opus/48000/2"
+        );
+        let g729 = "v=0\no=- 1 1 IN IP4 10.0.0.9\ns=x\nc=IN IP4 239.192.2.1/16\nt=0 0\nm=audio 10000 RTP/AVP 18\na=rtpmap:18 G729/8000\n";
+        assert_eq!(
+            StreamInfo::from_sdp(&sdp::parse(g729).unwrap())
+                .unwrap()
+                .spec(),
+            None
+        );
     }
 }
