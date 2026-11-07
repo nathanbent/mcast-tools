@@ -1,0 +1,16 @@
+[package]
+name = "mcast-control"
+description = "Run senders, receivers, discovery and monitoring as managed jobs; shared by the CLI and the API server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+mcast-core.workspace = true
+mcast-audio.workspace = true
+mcast-monitor.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

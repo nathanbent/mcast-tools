@@ -1,0 +1,21 @@
+[package]
+name = "mcast-server"
+description = "HTTP/JSON API for mcast-tools: start and stop pages, receivers, discovery and monitoring"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+mcast-core.workspace = true
+mcast-audio.workspace = true
+mcast-monitor.workspace = true
+mcast-control.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

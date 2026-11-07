@@ -1,12 +1,14 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use clap::{Args, Parser, Subcommand};
-use mcast_audio::chime::{Chime, ChimeSource};
-use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
-use mcast_audio::process::{Mode, ProcessOptions};
-use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
-use mcast_core::rtcp::RtcpConfig;
+use mcast_audio::codec::{OpusBandwidth, OpusMode};
+use mcast_audio::process::Mode;
+use mcast_audio::{receiver, sender, Codec, StreamInfo, StreamSpec};
+use mcast_control::request::hostname;
+use mcast_control::request::{ChimeRequest, SinkRequest, SourceRequest, DEFAULT_GROUP};
+use mcast_control::{describe, RecvRequest, SendRequest};
 use mcast_core::sap::{self, Directory, DirectoryEvent};
-use mcast_core::{Interface, MulticastOptions};
+use mcast_core::Interface;
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,12 +16,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod file;
+mod presets;
 mod text;
-
-const DEFAULT_GROUP: &str = "239.69.0.1:5004";
+mod update;
 
 #[derive(Parser)]
-#[command(name = "mcast", version, about = "Multicast tools")]
+#[command(name = "mcast", version = env!("MCAST_VERSION"), about = "Multicast tools")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -40,6 +42,96 @@ enum Command {
     File(file::FileCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
+    /// Save options for `audio send`, `recv`, `discover`, `monitor` or `update` under a name; run with `mcast @NAME`
+    #[command(subcommand)]
+    Preset(PresetCommand),
+    /// Update mcast: download the latest release, or rebuild it with cargo
+    Update(update::UpdateArgs),
+    /// Run the web GUI and HTTP/JSON API for sending, receiving, discovery and monitoring
+    Serve(ServeArgs),
+    /// Terminal front end for a running `mcast serve` (works over SSH)
+    Tui(TuiArgs),
+}
+
+#[derive(Subcommand)]
+#[command(after_help = "Examples:
+  mcast preset create page-1 -g 239.192.2.1:10000 -e g711u --tos 184 --no-sap
+  mcast preset set page-1 -p -C -L 800          # add or change options
+  mcast preset unset page-1 chime               # remove one (by name or flag)
+  mcast @page-1 --file page.wav                 # run it; options given here win
+  mcast audio send -P page-1 --file page.wav    # same
+  mcast preset create lobby --recv -s lobby -v -6
+  mcast preset create zones --monitor 239.192.2.1:10000 239.192.2.2:10000 --sap
+  mcast @zones --log                            # groups given here replace the preset's
+  mcast preset create sap2 --discover --sap-group 239.195.255.255:9875 --sdp
+  mcast preset create dev --update -b dev --path ~/src/mcast-tools
+
+Presets are kept in ~/.config/mcast/presets.conf ($MCAST_PRESETS overrides),
+one option per line; the file can be edited by hand.")]
+enum PresetCommand {
+    /// Create a preset for `audio send` (or `audio recv` with --recv, `audio
+    /// discover` with --discover, `monitor` with --monitor, `update` with
+    /// --update), with any options
+    Create {
+        name: String,
+        /// The preset is for `mcast audio recv` (put this before the options)
+        #[arg(long)]
+        recv: bool,
+        /// The preset is for `mcast audio discover` (put this before the options)
+        #[arg(long, conflicts_with = "recv")]
+        discover: bool,
+        /// The preset is for `mcast monitor` (put this before the options)
+        #[arg(long, conflicts_with_all = ["recv", "discover"])]
+        monitor: bool,
+        /// The preset is for `mcast update` (put this before the options)
+        #[arg(long, conflicts_with_all = ["recv", "discover", "monitor"])]
+        update: bool,
+        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor, update)
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// Add or change options (creating a send preset if needed); they replace
+    /// the same option, or ones they conflict with, e.g. --file replaces --tone
+    Set {
+        name: String,
+        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor, update); see their --help
+        #[arg(
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// Remove options, named like `group`, `--group` or `-g` (`groups` for monitor's groups)
+    Unset {
+        name: String,
+        #[arg(required = true, allow_hyphen_values = true, value_name = "OPTION")]
+        options: Vec<String>,
+    },
+    /// Run a preset; extra options are added and override it. Shortcut: mcast @NAME
+    Run {
+        name: String,
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// List presets, or show one, as the commands they run
+    #[command(visible_aliases = ["ls", "show"])]
+    List { name: Option<String> },
+    /// Copy a preset to a new name
+    #[command(visible_alias = "cp")]
+    Copy { from: String, to: String },
+    /// Delete a preset
+    #[command(visible_alias = "rm")]
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
@@ -68,12 +160,15 @@ struct NetArgs {
 }
 
 impl NetArgs {
-    fn options(&self, group: SocketAddr) -> Result<MulticastOptions> {
-        let mut o = MulticastOptions::new(group)?;
-        o.interface = self.iface;
-        o.ttl = self.ttl;
-        o.loopback = !self.no_loopback;
-        Ok(o)
+    /// Socket options for `group` (text and file commands; audio goes
+    /// through `SendRequest`/`RecvRequest`, which do the same).
+    fn options(&self, group: SocketAddr) -> Result<mcast_core::MulticastOptions> {
+        mcast_control::request::NetRequest {
+            interface: Some(self.iface),
+            ttl: self.ttl,
+            loopback: !self.no_loopback,
+        }
+        .options(group, Interface::Any)
     }
 }
 
@@ -88,29 +183,6 @@ struct FormatArgs {
     /// Encoding: l16, l24, pcmu/g711u, pcma/g711a, g722, opus [default: l16]
     #[arg(short, long)]
     encoding: Option<Codec>,
-}
-
-impl FormatArgs {
-    /// Stream spec (codec-fixed rates/channels win). L16/L24 default to
-    /// 48 kHz stereo; G.711, G.722 and Opus to mono.
-    fn spec(&self) -> StreamSpec {
-        let d = AudioFormat::default();
-        let codec = self.encoding.unwrap_or(Codec::L16);
-        let default_channels = if codec == Codec::L16 || codec == Codec::L24 {
-            d.channels
-        } else {
-            1
-        };
-        StreamSpec::new(
-            codec,
-            self.rate.unwrap_or(d.sample_rate),
-            self.channels.unwrap_or(default_channels),
-        )
-    }
-
-    fn any_set(&self) -> bool {
-        self.rate.is_some() || self.channels.is_some() || self.encoding.is_some()
-    }
 }
 
 #[derive(Args)]
@@ -150,6 +222,9 @@ impl RtcpArgs {
 
 #[derive(Args)]
 struct SendArgs {
+    /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Multicast group and port, e.g. 239.69.0.1:5004 or [ff15::69]:5004
     #[arg(short, long, default_value = DEFAULT_GROUP)]
     group: SocketAddr,
@@ -179,10 +254,11 @@ struct SendArgs {
     /// Disable Opus in-band forward error correction
     #[arg(long)]
     no_fec: bool,
-    /// Send a sine tone at this frequency (Hz) [default source]
-    #[arg(long, group = "source")]
-    tone: Option<f32>,
-    /// Tone level in dBFS
+    /// Send a sine tone at this frequency (Hz), or "pad" for a soft, slowly
+    /// changing chord [default source: 440]
+    #[arg(long, group = "source", value_name = "HZ|pad", value_parser = parse_tone)]
+    tone: Option<Tone>,
+    /// Tone level in dBFS (for pad, its peak)
     #[arg(long, default_value_t = -12.0, allow_negative_numbers = true)]
     level: f32,
     /// Send an audio file: WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ALAC
@@ -251,8 +327,30 @@ struct SendArgs {
     rtcp: RtcpArgs,
 }
 
+/// `--tone` value: a sine frequency or the pad.
+#[derive(Clone, Copy, Debug)]
+enum Tone {
+    Sine(f32),
+    Pad,
+}
+
+fn parse_tone(s: &str) -> Result<Tone, String> {
+    if s.eq_ignore_ascii_case("pad") {
+        return Ok(Tone::Pad);
+    }
+    match s.parse::<f32>() {
+        Ok(f) if f > 0.0 && f.is_finite() => Ok(Tone::Sine(f)),
+        _ => Err(format!(
+            "expected a frequency in Hz or \"pad\", got \"{s}\""
+        )),
+    }
+}
+
 #[derive(Args)]
 struct RecvArgs {
+    /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Multicast group and port; skips SAP discovery. The codec comes from
     /// --encoding, or from the payload type for G.711/G.722 (else L16/48000/2)
     #[arg(short, long)]
@@ -296,6 +394,9 @@ struct RecvArgs {
 
 #[derive(Args)]
 struct MonitorArgs {
+    /// Start from a saved preset (`mcast preset`); options and groups given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Groups to watch (ADDR:PORT). With none, watches every stream announced via SAP
     #[arg(value_name = "GROUP")]
     groups: Vec<SocketAddr>,
@@ -323,6 +424,9 @@ struct MonitorArgs {
 
 #[derive(Args)]
 struct DiscoverArgs {
+    /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     #[command(flatten)]
     sap: SapListenArgs,
     /// Interface: IPv4 address (IPv4 groups) or interface index (IPv6 groups)
@@ -336,8 +440,57 @@ struct DiscoverArgs {
     sdp: bool,
 }
 
+#[derive(Args)]
+struct ServeArgs {
+    /// Address to listen on. Anything but loopback needs --token
+    #[arg(short, long, default_value = "127.0.0.1:8650")]
+    listen: SocketAddr,
+    /// Bearer token clients must send (Authorization: Bearer TOKEN)
+    #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// Directory for uploaded audio [default: ~/.local/share/mcast/media]
+    #[arg(long, value_name = "DIR")]
+    media_dir: Option<PathBuf>,
+    /// Largest upload in MB
+    #[arg(long, default_value_t = 200)]
+    max_upload_mb: u64,
+    /// Interface for jobs, discovery and monitoring: IPv4 address or interface index
+    #[arg(short, long, default_value = "any")]
+    iface: Interface,
+    #[command(flatten)]
+    sap: SapListenArgs,
+    /// Also monitor these groups (ADDR:PORT), besides SAP-announced streams
+    #[arg(long = "watch", value_name = "ADDR:PORT")]
+    watch: Vec<SocketAddr>,
+    /// Don't run the stream monitor
+    #[arg(long, conflicts_with = "watch")]
+    no_monitor: bool,
+    /// API only: don't serve the web GUI
+    #[arg(long)]
+    no_web: bool,
+    /// Serve the web GUI from this directory instead of the built-in copy
+    /// (for working on crates/mcast-web/assets)
+    #[arg(long, value_name = "DIR", conflicts_with = "no_web")]
+    web_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct TuiArgs {
+    /// The server to control
+    #[arg(
+        short,
+        long,
+        default_value = "http://127.0.0.1:8650",
+        env = "MCAST_URL"
+    )]
+    url: String,
+    /// Its API token
+    #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(presets::expand(std::env::args_os().collect())?);
     let stop = Arc::new(AtomicBool::new(false));
     {
         let stop = stop.clone();
@@ -350,6 +503,10 @@ fn main() -> Result<()> {
         Command::Text(c) => text::run(c, &stop),
         Command::File(c) => file::run(c, &stop),
         Command::Monitor(a) => monitor(a, &stop),
+        Command::Preset(c) => preset(c),
+        Command::Update(a) => update::run(a),
+        Command::Serve(a) => serve(a, stop),
+        Command::Tui(a) => mcast_tui::run(&a.url, a.token),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");
@@ -359,17 +516,79 @@ fn main() -> Result<()> {
     }
 }
 
-fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname")
-        .ok()
-        .or_else(|| std::env::var("COMPUTERNAME").ok())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "mcast".into())
+fn preset(c: PresetCommand) -> Result<()> {
+    let mut store = presets::Store::load()?;
+    match c {
+        PresetCommand::Create {
+            name,
+            recv,
+            discover,
+            monitor,
+            update,
+            options,
+        } => {
+            let kind = if recv {
+                presets::Kind::Recv
+            } else if discover {
+                presets::Kind::Discover
+            } else if monitor {
+                presets::Kind::Monitor
+            } else if update {
+                presets::Kind::Update
+            } else {
+                presets::Kind::Send
+            };
+            let p = store.create(&name, kind, &options)?;
+            println!("created {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Set { name, options } => {
+            let (p, created) = store.set(&name, &options)?;
+            let verb = if created { "created" } else { "updated" };
+            println!("{verb} {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Unset { name, options } => {
+            let p = store.unset(&name, &options)?;
+            println!("updated {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Run { name, .. } => {
+            // `presets::expand` rewrites `preset run NAME` before parsing.
+            bail!("can't run preset \"{name}\"");
+        }
+        PresetCommand::List { name: Some(name) } => {
+            println!("{}", store.get(&name)?.command_line());
+            return Ok(());
+        }
+        PresetCommand::List { name: None } => {
+            if store.presets.is_empty() {
+                eprintln!(
+                    "no presets in {}; create one with `mcast preset create NAME [OPTIONS]`",
+                    store.path.display()
+                );
+            }
+            let width = store
+                .presets
+                .iter()
+                .map(|p| p.name.len())
+                .max()
+                .unwrap_or(0);
+            for p in &store.presets {
+                println!("{:<width$}  {}", p.name, p.command_line());
+            }
+            return Ok(());
+        }
+        PresetCommand::Copy { from, to } => {
+            let p = store.copy(&from, &to)?;
+            println!("created {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Delete { name } => {
+            store.delete(&name)?;
+            println!("deleted {name}");
+        }
+    }
+    store.save()
 }
 
-fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
+fn send_request(a: &SendArgs) -> Result<SendRequest> {
     // -p is shorthand for -m voice; saying both is fine, contradicting it isn't.
     let mode = match (a.voice, a.mode) {
         (true, Some(m)) if m != Mode::Voice => {
@@ -378,127 +597,77 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
         (true, _) => Mode::Voice,
         (false, m) => m.unwrap_or_default(),
     };
-    let endless = (a.wav.is_none() || a.looped) && a.duration.is_none();
-    if a.render.is_some() && endless {
-        bail!("--render needs an end: a file without --loop, or --duration");
-    }
-    let source = if let Some(path) = a.wav {
-        sender::Source::File {
-            path,
+    let source = if let Some(path) = &a.wav {
+        SourceRequest::File {
+            path: path.clone(),
             looped: a.looped,
         }
-    } else if let Some(dev) = a.capture {
-        sender::Source::Capture {
-            device: (dev != "default").then_some(dev),
+    } else if let Some(dev) = &a.capture {
+        SourceRequest::Capture {
+            device: Some(dev.clone()).filter(|d| d != "default"),
         }
     } else {
-        sender::Source::Tone {
-            frequency: a.tone.unwrap_or(440.0),
-            amplitude: 10f32.powf(a.level / 20.0),
+        match a.tone.unwrap_or(Tone::Sine(440.0)) {
+            Tone::Sine(frequency) => SourceRequest::Tone {
+                frequency,
+                level_dbfs: a.level,
+            },
+            Tone::Pad => SourceRequest::Pad {
+                level_dbfs: a.level,
+            },
         }
     };
-    // Like mcast-play.sh: Opus tuning follows the content; with no mode,
-    // band-limited Opus (its "opuswb") is treated as speech.
-    let opus_mode = a
-        .opus_mode
-        .or(mode.opus_mode())
-        .unwrap_or(match a.opus_bandwidth {
-            Some(OpusBandwidth::Narrow | OpusBandwidth::Wide) => OpusMode::Voice,
-            _ => OpusMode::Music,
-        });
-    let ms = |v: f64| Duration::from_secs_f64(v.max(0.0) / 1000.0);
-    let chime = a.chime.as_deref().map(|c| {
-        let path = match c {
-            "default" => std::env::var_os("MCAST_CHIME").filter(|p| !p.is_empty()),
-            file => Some(file.into()),
-        };
-        Chime {
-            source: path.map_or(ChimeSource::BuiltIn, |p| ChimeSource::File(p.into())),
-            gap: ms(a.chime_gap),
-        }
-    });
-    let name = a
-        .name
-        .clone()
-        .unwrap_or_else(|| format!("{} audio", hostname()));
-    let announce = (!a.no_sap && a.render.is_none()).then(|| sender::Announce {
-        name: name.clone(),
-        sap_group: a.sap_group,
-        interval: Duration::from_secs_f64(a.sap_interval.max(0.5)),
-    });
-    let mut net = a.net.options(a.group)?;
-    net.tos = a.tos;
-    let s = sender::Sender::new(sender::SenderConfig {
-        net,
-        stream: a.format.spec(),
-        match_file_format: a.format.rate.is_none() && a.format.channels.is_none(),
-        ptime: a.ptime.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
+    Ok(SendRequest {
+        group: a.group,
+        interface: Some(a.net.iface),
+        ttl: a.net.ttl,
+        loopback: !a.net.no_loopback,
+        encoding: a.format.encoding,
+        rate: a.format.rate,
+        channels: a.format.channels,
+        tos: a.tos,
+        ptime_ms: a.ptime,
         payload_type: a.pt,
-        opus: OpusOptions {
-            mode: opus_mode,
-            bitrate: a.bitrate * 1000,
-            max_bandwidth: a.opus_bandwidth,
-            fec: !a.no_fec,
-            ..OpusOptions::default()
-        },
-        process: ProcessOptions {
-            mode,
-            volume_db: a.volume,
-        },
+        opus_bitrate_kbps: a.bitrate,
+        opus_mode: a.opus_mode,
+        opus_bandwidth: a.opus_bandwidth,
+        opus_fec: !a.no_fec,
         source,
-        start: a.start.map(Duration::from_secs_f64),
-        duration: a.duration.map(Duration::from_secs_f64),
-        lead_in: ms(a.lead_in),
-        chime: chime.clone(),
-        tail: ms(a.tail),
-        render: a.render.clone(),
-        announce,
-        rtcp: a.rtcp.interval().map(|interval| RtcpConfig {
-            name: Some(name),
-            interval,
+        mode: Some(mode),
+        volume_db: a.volume,
+        lead_in_ms: a.lead_in,
+        tail_ms: a.tail,
+        chime: a.chime.as_deref().map(|c| match c {
+            "default" => ChimeRequest::Default,
+            file => ChimeRequest::File(file.into()),
         }),
-    })?;
+        chime_gap_ms: a.chime_gap,
+        start_s: a.start,
+        duration_s: a.duration,
+        render: a.render.clone(),
+        name: a.name.clone(),
+        sap: !a.no_sap,
+        sap_group: a.sap_group,
+        sap_interval_s: a.sap_interval,
+        rtcp: !a.rtcp.no_rtcp,
+        rtcp_interval_s: a.rtcp.rtcp_interval,
+    })
+}
+
+fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
+    let req = send_request(&a)?;
+    if a.render.is_some() && req.endless() {
+        bail!("--render needs an end: a file without --loop, or --duration");
+    }
+    let s = sender::Sender::new(req.to_config(Interface::Any)?)?;
     if let Some(path) = &a.sdp {
         std::fs::write(path, s.sdp().to_string())?;
         eprintln!("wrote SDP to {}", path.display());
     }
     let spec = s.spec();
-    let (src_rate, src_ch) = s.source_format();
-    let conversion = if (src_rate, src_ch) != (spec.sample_rate, spec.channels) {
-        format!(", converted from {src_rate} Hz/{src_ch}ch")
-    } else {
-        String::new()
-    };
-    let destination = match &a.render {
-        Some(path) => format!("rendering to {}", path.display()),
-        None => format!("sending to {}", a.group),
-    };
-    let mut details = format!(
-        "pt {}, {} ms packets{conversion}",
-        s.payload_type(),
-        s.ptime().as_secs_f64() * 1000.0
-    );
-    if mode != Mode::None {
-        details += &format!(", {mode} processing");
-    }
-    if let Some(v) = a.volume {
-        details += &format!(", {v:+} dB");
-    }
-    if let Some(c) = &chime {
-        details += &match &c.source {
-            ChimeSource::BuiltIn => ", built-in chime".to_string(),
-            ChimeSource::File(p) => format!(", chime {}", p.display()),
-        };
-    }
-    eprintln!("{spec} {destination} ({details})");
-    if let Some(l) = s.loudness() {
-        match l.measured {
-            Some(m) => eprintln!(
-                "loudness: measured {m:.1} LUFS after processing; {:+.1} dB to reach {} LUFS",
-                l.gain_db, l.target
-            ),
-            None => eprintln!("loudness: source is silent; no normalisation"),
-        }
+    eprintln!("{}", describe::send_summary(&s, &req));
+    if let Some(note) = describe::loudness_note(&s) {
+        eprintln!("{note}");
     }
     if a.render.is_some() {
         let stats = s.run(stop)?;
@@ -548,107 +717,72 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-/// Wait for a SAP-announced stream we can play, optionally matching `name`.
-fn find_stream(
-    dir: &mut Directory,
-    name: Option<&str>,
-    wait: Duration,
-    stop: &AtomicBool,
-) -> Result<Option<StreamInfo>> {
-    let wanted = name.map(str::to_lowercase);
-    let deadline = Instant::now() + wait;
-    while !stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-        for event in dir.poll(deadline.saturating_duration_since(Instant::now()))? {
-            let (DirectoryEvent::Added(s) | DirectoryEvent::Changed(s)) = event else {
-                continue;
-            };
-            let Some(info) = StreamInfo::from_sdp(&s.sdp) else {
-                continue;
-            };
-            if let Some(w) = &wanted {
-                if !info.name.to_lowercase().contains(w) {
-                    eprintln!("  skipping {info}");
-                    continue;
-                }
-            }
-            if info.spec().is_none() {
-                eprintln!("  skipping {info}");
-                continue;
-            }
-            return Ok(Some(info));
-        }
-    }
-    Ok(None)
-}
-
 fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
-    // (fixed spec, payload-type filter, fallback for dynamic payload types)
-    let (group, stream, payload_type, fallback) = match a.group {
-        Some(g) => {
-            let explicit = a.format.any_set().then(|| a.format.spec());
-            let fallback = StreamSpec::new(Codec::L16, 48_000, 2);
-            match explicit {
-                Some(spec) => eprintln!("joining {g} expecting {spec}. Ctrl-C to stop."),
-                None => eprintln!(
-                    "joining {g}; codec from payload type (G.711/G.722), else {fallback}. Ctrl-C to stop."
+    let req = RecvRequest {
+        group: a.group,
+        stream: a.stream.clone(),
+        wait_s: a.wait,
+        sap_groups: a.sap.sap_groups.clone(),
+        interface: Some(a.net.iface),
+        ttl: a.net.ttl,
+        loopback: !a.net.no_loopback,
+        encoding: a.format.encoding,
+        rate: a.format.rate,
+        channels: a.format.channels,
+        latency_ms: a.latency,
+        volume_db: a.volume,
+        sink: match a.wav {
+            Some(path) => SinkRequest::Wav { path },
+            None => SinkRequest::Play { device: a.device },
+        },
+        duration_s: a.duration,
+        stats_interval_s: a.stats,
+        rtcp: !a.rtcp.no_rtcp,
+        rtcp_interval_s: a.rtcp.rtcp_interval,
+        name: a.name.clone(),
+    };
+    let resolved = match req.direct() {
+        Some(r) => {
+            match (r.stream, r.fallback) {
+                (Some(spec), _) => {
+                    eprintln!("joining {} expecting {spec}. Ctrl-C to stop.", r.group)
+                }
+                (None, Some(fallback)) => eprintln!(
+                    "joining {}; codec from payload type (G.711/G.722), else {fallback}. Ctrl-C to stop.",
+                    r.group
                 ),
+                (None, None) => eprintln!("joining {}. Ctrl-C to stop.", r.group),
             }
-            (g, explicit, None, Some(fallback))
+            r
         }
         None => {
             match &a.stream {
                 Some(n) => eprintln!("looking for a stream named \"{n}\" via SAP..."),
                 None => eprintln!("looking for streams via SAP..."),
             }
-            let mut dir = a.sap.open(a.net.iface)?;
-            let wait = Duration::from_secs_f64(a.wait);
-            let Some(info) = find_stream(&mut dir, a.stream.as_deref(), wait, stop)? else {
-                if stop.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-                bail!(
-                    "no playable stream announced within {}s; check `mcast audio discover`, or pass --group",
-                    a.wait
-                );
+            let found = req
+                .resolve(Interface::Any, stop, |info| eprintln!("  skipping {info}"))
+                .map_err(|e| anyhow!("{e:#}; check `mcast audio discover`, or pass --group"))?;
+            let Some(r) = found else {
+                return Ok(());
             };
-            if a.format.any_set() {
+            if req.format().any_set() {
                 eprintln!("note: --rate/--channels/--encoding ignored; using the announced format");
             }
-            eprintln!("found {info}");
+            if let Some(info) = &r.announced {
+                eprintln!("found {info}");
+            }
             if a.stream.is_none() {
                 eprintln!(
                     "(use --stream NAME to choose; `mcast audio discover` lists all streams)"
                 );
             }
-            let spec = info.spec().expect("find_stream returns playable streams");
-            eprintln!("joining {} as {spec}. Ctrl-C to stop.", info.group);
-            (info.group, Some(spec), Some(info.payload_type), None)
+            let spec = r.stream.expect("announced streams have a spec");
+            eprintln!("joining {} as {spec}. Ctrl-C to stop.", r.group);
+            r
         }
     };
-
-    let sink = match a.wav {
-        Some(path) => receiver::Sink::Wav { path },
-        None => receiver::Sink::Play { device: a.device },
-    };
-    let cfg = receiver::ReceiverConfig {
-        net: a.net.options(group)?,
-        stream,
-        fallback,
-        payload_type,
-        latency: Duration::from_secs_f64(a.latency / 1000.0),
-        volume_db: a.volume,
-        sink,
-        duration: a.duration.map(Duration::from_secs_f64),
-        stats_interval: if a.stats > 0.0 {
-            Duration::from_secs_f64(a.stats)
-        } else {
-            Duration::MAX
-        },
-        rtcp: a.rtcp.interval().map(|interval| RtcpConfig {
-            name: Some(a.name.clone().unwrap_or_else(hostname)),
-            interval,
-        }),
-    };
+    let cfg = req.to_config(&resolved, Interface::Any)?;
     let stats = receiver::run(cfg, stop, |event| match event {
         receiver::Event::Stats(s) => eprintln!("{}", format_stats(s)),
         receiver::Event::NewSource {
@@ -809,6 +943,58 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
         monitor_table(&m.groups(), &totals, &m.listeners(), false)
     );
     Ok(())
+}
+
+fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
+    let media_dir = a.media_dir.unwrap_or_else(|| {
+        std::env::var_os("XDG_DATA_HOME")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("mcast/media")
+    });
+    let cfg = mcast_server::ServerConfig {
+        listen: a.listen,
+        token: a.token,
+        media_dir,
+        interface: a.iface,
+        sap_groups: if a.sap.sap_groups.is_empty() {
+            sap::default_listen_groups()
+        } else {
+            a.sap.sap_groups
+        },
+        monitor: (!a.no_monitor).then_some(a.watch),
+        max_upload: a.max_upload_mb.saturating_mul(1 << 20),
+    };
+    let web = if a.no_web {
+        axum::Router::new()
+    } else {
+        mcast_web::router(a.web_dir)
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(mcast_server::serve(cfg, web, async move {
+        // SIGTERM (systemd, docker stop) or Ctrl-C, which the ctrlc handler turns into `stop`.
+        let sigterm = async {
+            #[cfg(unix)]
+            if let Ok(mut t) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            {
+                t.recv().await;
+                return;
+            }
+            std::future::pending::<()>().await
+        };
+        let ctrl_c = async {
+            while !stop.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        };
+        tokio::select! {
+            _ = sigterm => {}
+            _ = ctrl_c => {}
+        }
+    }))
 }
 
 fn fmt_elapsed(d: Duration) -> String {

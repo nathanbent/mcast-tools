@@ -284,6 +284,15 @@ impl FromStr for OpusMode {
     }
 }
 
+impl fmt::Display for OpusMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            OpusMode::Voice => "voice",
+            OpusMode::Music => "music",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpusBandwidth {
     Narrow,
@@ -304,6 +313,17 @@ impl FromStr for OpusBandwidth {
                 "unknown Opus bandwidth '{s}' (expected nb, wb, swb, fb)"
             )),
         }
+    }
+}
+
+impl fmt::Display for OpusBandwidth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            OpusBandwidth::Narrow => "nb",
+            OpusBandwidth::Wide => "wb",
+            OpusBandwidth::SuperWide => "swb",
+            OpusBandwidth::Full => "fb",
+        })
     }
 }
 

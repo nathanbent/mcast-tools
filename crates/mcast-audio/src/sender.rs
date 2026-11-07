@@ -12,6 +12,7 @@ use crate::convert::{map_channels, Converter};
 use crate::device;
 use crate::file::AudioFile;
 use crate::packetizer::Packetizer;
+use crate::pad::Pad;
 use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
 use anyhow::{anyhow, bail, Context, Result};
 use mcast_core::net::{open_sender, MulticastOptions};
@@ -36,6 +37,8 @@ const FADE_OUT: Duration = Duration::from_millis(300);
 pub enum Source {
     /// Sine test tone.
     Tone { frequency: f32, amplitude: f32 },
+    /// Soft chord progression (see `pad`); `amplitude` is its peak.
+    Pad { amplitude: f32 },
     /// Audio file (WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ...), converted to
     /// the stream's rate and channels.
     File { path: PathBuf, looped: bool },
@@ -93,6 +96,13 @@ pub struct SenderStats {
     pub capture_dropped: u64,
 }
 
+/// Live counters for a running sender, readable from another thread.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub packets: AtomicU64,
+    pub send_errors: AtomicU64,
+}
+
 /// Result of measuring a file's loudness before sending.
 #[derive(Debug, Clone, Copy)]
 pub struct LoudnessInfo {
@@ -109,6 +119,7 @@ enum Input {
         phase: f32,
         amplitude: f32,
     },
+    Pad(Pad),
     File {
         file: AudioFile,
         looped: bool,
@@ -143,6 +154,7 @@ impl Reader {
                 phase: 0.0,
                 amplitude: *amplitude,
             },
+            Source::Pad { amplitude } => Input::Pad(Pad::new(rate, *amplitude)),
             Source::File { path, looped } => {
                 let mut file = AudioFile::open(path)?;
                 if let Some(s) = start {
@@ -193,6 +205,10 @@ impl Reader {
                     frame.fill(phase.sin() * *amplitude);
                     *phase = (*phase + *step) % std::f32::consts::TAU;
                 }
+                out.len()
+            }
+            Input::Pad(pad) => {
+                pad.fill(out, self.channels);
                 out.len()
             }
             Input::File { file, looped } => {
@@ -274,7 +290,7 @@ impl Sender {
     pub fn new(cfg: SenderConfig) -> Result<Self> {
         let mut spec = cfg.stream;
         let source_format = match &cfg.source {
-            Source::Tone { .. } => (spec.sample_rate, spec.channels),
+            Source::Tone { .. } | Source::Pad { .. } => (spec.sample_rate, spec.channels),
             Source::File { path, .. } => {
                 let f = AudioFile::open(path)?;
                 let (file_rate, file_channels) = (f.sample_rate(), f.channels());
@@ -296,7 +312,7 @@ impl Sender {
         }
         // Tones are generated at the stream rate.
         let source_format = match cfg.source {
-            Source::Tone { .. } => (spec.sample_rate, spec.channels),
+            Source::Tone { .. } | Source::Pad { .. } => (spec.sample_rate, spec.channels),
             _ => source_format,
         };
         if cfg.start.is_some() && !matches!(cfg.source, Source::File { .. }) {
@@ -491,7 +507,16 @@ impl Sender {
     }
 
     /// Stream until the source ends, `duration` elapses, or `stop` is set.
-    pub fn run(mut self, stop: &AtomicBool) -> Result<SenderStats> {
+    pub fn run(self, stop: &AtomicBool) -> Result<SenderStats> {
+        self.run_with_progress(stop, Arc::default())
+    }
+
+    /// Like [`Sender::run`], updating `progress` as packets go out.
+    pub fn run_with_progress(
+        mut self,
+        stop: &AtomicBool,
+        progress: Arc<Progress>,
+    ) -> Result<SenderStats> {
         // Announces until dropped at the end of `run`, then sends a SAP deletion.
         let _announcer = match &self.announce {
             Some((net, interval)) => Some(
@@ -511,6 +536,7 @@ impl Sender {
             ptime: self.ptime,
             limit: None,
             stats: SenderStats::default(),
+            progress,
             fatal: None,
             rtcp: self.rtcp.take(),
         };
@@ -688,6 +714,7 @@ struct Output {
     ptime: Duration,
     limit: Option<u64>,
     stats: SenderStats,
+    progress: Arc<Progress>,
     fatal: Option<anyhow::Error>,
     rtcp: Option<SenderRtcp>,
 }
@@ -715,6 +742,7 @@ impl Output {
             Target::Network(socket) => match socket.send(pkt) {
                 Ok(_) => {
                     self.stats.packets += 1;
+                    self.progress.packets.store(self.stats.packets, Ordering::Relaxed);
                     if let Some(r) = &mut self.rtcp {
                         r.sent(pkt, Instant::now());
                     }
@@ -724,7 +752,10 @@ impl Output {
                     if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
                         || e.raw_os_error() == Some(105) /* ENOBUFS */ =>
                 {
-                    self.stats.send_errors += 1
+                    self.stats.send_errors += 1;
+                    self.progress
+                        .send_errors
+                        .store(self.stats.send_errors, Ordering::Relaxed);
                 }
                 Err(e) => self.fatal = Some(anyhow::Error::from(e).context("sending packet")),
             },
@@ -748,7 +779,12 @@ impl Output {
                         Ok(())
                     });
                 match result {
-                    Ok(()) => self.stats.packets += 1,
+                    Ok(()) => {
+                        self.stats.packets += 1;
+                        self.progress
+                            .packets
+                            .store(self.stats.packets, Ordering::Relaxed);
+                    }
                     Err(e) => self.fatal = Some(e.context("rendering")),
                 }
             }

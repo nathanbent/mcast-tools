@@ -1,0 +1,13 @@
+[package]
+name = "mcast-web"
+description = "Browser front end for the mcast API: static files, embedded in the binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
