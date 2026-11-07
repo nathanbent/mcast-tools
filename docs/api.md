@@ -9,6 +9,9 @@ mcast serve [--listen 127.0.0.1:8650] [--token TOKEN] [--media-dir DIR]
             [--watch ADDR:PORT]... [--no-monitor]
 ```
 
+`--listen` can also be set with `MCAST_LISTEN`, and `--token` with
+`MCAST_TOKEN`; a flag given on the command line wins.
+
 Ctrl-C or SIGTERM stops every job (withdrawing their SAP announcements) before exiting.
 
 ## Authentication
