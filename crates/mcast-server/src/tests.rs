@@ -26,6 +26,7 @@ fn harness(token: Option<&str>) -> Harness {
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor: None,
         max_upload: 1 << 20,
+        phonebook: dir.join("phonebook.conf"),
     };
     let (_tx, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
@@ -261,6 +262,7 @@ async fn refuses_to_listen_publicly_without_a_token() {
         sap_groups: Vec::new(),
         monitor: None,
         max_upload: 0,
+        phonebook: PathBuf::from("phonebook.conf"),
     };
     let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
     assert!(err.to_string().contains("without a token"));
@@ -517,4 +519,68 @@ async fn files_over_http_land_in_media() {
         )
         .await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn phonebook_names_stand_in_for_groups() {
+    let h = harness(None);
+    let (_, list) = call(&h, "GET", "/api/v1/phonebook", None, None).await;
+    assert_eq!(list, json!([]));
+
+    let entry = json!({"group": "239.255.77.31:5004", "description": "Test zone"});
+    let (status, e) = call(&h, "PUT", "/api/v1/phonebook/Zone%201", Some(entry), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{e}");
+    assert_eq!(e["name"], "Zone 1");
+
+    // Replace (same name, any case), then rename.
+    let entry = json!({"group": "239.255.77.32:5004", "description": "Moved", "name": "zone-1"});
+    let (status, e) = call(&h, "PUT", "/api/v1/phonebook/zone%201", Some(entry), None).await;
+    assert_eq!(status, StatusCode::OK, "{e}");
+    let (_, list) = call(&h, "GET", "/api/v1/phonebook", None, None).await;
+    assert_eq!(
+        list,
+        json!([{"name": "zone-1", "group": "239.255.77.32:5004", "description": "Moved"}])
+    );
+
+    for bad in [
+        json!({"group": "nope"}),
+        json!({"group": "239.1.1.1:5", "description": "two\nlines"}),
+        json!({"group": "239.1.1.1:5", "colour": "red"}),
+    ] {
+        let (status, err) = call(&h, "PUT", "/api/v1/phonebook/x", Some(bad), None).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    }
+    let (status, _) = call(
+        &h,
+        "PUT",
+        "/api/v1/phonebook/239.1.1.1:5",
+        Some(json!({"group": "239.1.1.1:5"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A page by name goes to the saved group.
+    let page = json!({"group": "ZONE-1", "sap": false, "encoding": "g711u"});
+    let (status, job) = call(&h, "POST", "/api/v1/senders", Some(page), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{job}");
+    assert_eq!(job["group"], "239.255.77.32:5004");
+    let id = job["id"].as_u64().unwrap();
+    call(&h, "DELETE", &format!("/api/v1/jobs/{id}"), None, None).await;
+
+    let (status, err) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(json!({"group": "kitchen"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(err["error"].as_str().unwrap().contains("kitchen"), "{err}");
+
+    let (status, _) = call(&h, "DELETE", "/api/v1/phonebook/zone-1", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(&h, "DELETE", "/api/v1/phonebook/zone-1", None, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

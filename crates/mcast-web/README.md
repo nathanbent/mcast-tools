@@ -24,6 +24,7 @@ and reload the page to see changes.
 | `js/streams.js` | SAP-announced streams and Listen |
 | `js/monitor.js` | Monitor table and level meters |
 | `js/media.js` | Uploads |
+| `js/phonebook.js` | Saved groups (names and descriptions), and suggestions for group fields |
 
 Each panel is one module exporting `mount(element)`; add a panel by adding a
 module and a `<section>` in `index.html`.

@@ -79,8 +79,8 @@ impl SenderArgs {
 pub struct TextSendArgs {
     /// Message to send (else lines from stdin)
     message: Vec<String>,
-    /// Multicast group and port
-    #[arg(short, long, default_value = DEFAULT_TEXT_GROUP)]
+    /// Multicast group and port, or a phonebook name
+    #[arg(short, long, default_value = DEFAULT_TEXT_GROUP, value_parser = crate::book::parse_group)]
     group: SocketAddr,
     /// Name announced to receivers [default: "<hostname> text"]
     #[arg(short, long)]
@@ -100,8 +100,8 @@ pub struct TextSendArgs {
 
 #[derive(Args)]
 pub struct TextRecvArgs {
-    /// Multicast group and port; skips SAP discovery
-    #[arg(short, long)]
+    /// Multicast group and port, or a phonebook name; skips SAP discovery
+    #[arg(short, long, value_parser = crate::book::parse_group)]
     group: Option<SocketAddr>,
     /// Pick the announced text stream whose name contains this text
     #[arg(short, long, conflicts_with = "group")]
@@ -134,8 +134,8 @@ pub struct TextRecvArgs {
 
 #[derive(Args)]
 pub struct TextChatArgs {
-    /// Multicast group and port everyone chats on
-    #[arg(short, long, default_value = DEFAULT_TEXT_GROUP)]
+    /// Multicast group and port everyone chats on, or a phonebook name
+    #[arg(short, long, default_value = DEFAULT_TEXT_GROUP, value_parser = crate::book::parse_group)]
     group: SocketAddr,
     /// Your name, shown to the others [default: hostname]
     #[arg(short, long)]

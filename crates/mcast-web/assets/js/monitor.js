@@ -2,6 +2,7 @@
 
 import { h, replace } from "./dom.js";
 import { state, subscribe } from "./store.js";
+import { groupCell } from "./streams.js";
 
 const FLOOR = -60;
 
@@ -18,7 +19,7 @@ function row(r) {
   const idle = r.idle_ms > 2000;
   return h("tr", { class: idle ? "idle" : "" },
     h("td", {}, h("strong", {}, r.name ?? "–"), h("div", { class: "muted small mono" }, `${r.source}`)),
-    h("td", { class: "mono" }, r.group),
+    groupCell(r.group),
     h("td", {}, r.codec ?? "?"),
     h("td", { class: "num" }, idle ? `idle ${Math.round(r.idle_ms / 1000)} s` : `${Math.round(r.kbit_per_sec)} kbit/s`),
     h("td", { class: `num${r.loss_percent > 1 ? " bad" : ""}` }, `${r.loss_percent.toFixed(1)} %`),

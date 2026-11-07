@@ -22,9 +22,9 @@ impl From<TextError> for ApiError {
 /// Join a text channel (or listen to one).
 pub(crate) async fn start_text(
     State(s): State<AppState>,
-    body: Result<Json<TextRequest>, JsonRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<JobInfo>)> {
-    let Json(req) = body?;
+    let req: TextRequest = s.named(body)?;
     let info = tokio::task::spawn_blocking(move || {
         let known = s.0.announcements.text_streams();
         s.0.jobs.start_text(req, &known)

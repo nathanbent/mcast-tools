@@ -2,7 +2,7 @@
 
 import { api, ApiError } from "./api.js";
 import { h, replace, saved, toast } from "./dom.js";
-import { state, subscribe, putJob } from "./store.js";
+import { state, subscribe, putJob, bookLabel } from "./store.js";
 
 const DEFAULTS = {
   group: "239.192.2.1:10000", name: "", source: "file", file: "", tone: 440,
@@ -130,23 +130,27 @@ function sourceFields() {
   }
 }
 
-// Groups to suggest: announced streams and ones paged before.
+// Groups to suggest: phonebook names, announced streams and ones paged before.
 function groupOptions() {
+  const named = new Set(state.phonebook.map((e) => e.group));
+  const book = state.phonebook.map((e) => h("option", { value: e.name, label: bookLabel(e) }));
   const groups = new Set([
     ...state.streams.map((s) => s.audio?.group).filter(Boolean),
     ...[...state.jobs.values()].filter((j) => j.kind === "send").map((j) => j.group).filter(Boolean),
   ]);
-  return [...groups].map((g) => h("option", { value: g }));
+  return [...book, ...[...groups].filter((g) => !named.has(g)).map((g) => h("option", { value: g }))];
 }
 
-function render() {
-  values = form ? read() : values;
+// `keep`: render `values` as they are, instead of first reading the form
+// (for changes made from outside it).
+function render(keep = false) {
+  if (form && !keep) values = read();
   const radio = (v, label) => h("label", { class: "check" },
     h("input", { type: "radio", name: "source", value: v, checked: values.source === v,
-      onchange: render }), ` ${label}`);
+      onchange: () => render() }), ` ${label}`);
   replace(form,
     h("div", { class: "row" },
-      field("Group", bind("group", { list: "known-groups", required: true, placeholder: "239.192.2.1:10000" })),
+      field("Group", bind("group", { list: "known-groups", required: true, placeholder: "239.192.2.1:10000 or a phonebook name" })),
       field("Name", bind("name", { placeholder: "announced via SAP" }))),
     h("datalist", { id: "known-groups" }, groupOptions()),
     h("fieldset", {}, h("legend", {}, "Source"),
@@ -173,10 +177,17 @@ function render() {
       h("button", { type: "submit", name: "chime-only", title: "Send just the chime to the group (the default chime if both are off)" }, "🔔 Chime")));
 }
 
+// Pick a group from elsewhere (the Phonebook's "Page").
+export function useGroup(group) {
+  values = { ...read(), group };
+  render(true);
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 // Pick a media file from elsewhere (the Media panel's "Page this").
 export function useFile(name) {
   values = { ...read(), source: "file", file: name };
-  render();
+  render(true);
   form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -188,6 +199,6 @@ export function mount(el) {
   // leave the inputs alone when only the suggestions changed.
   subscribe((what) => {
     if (what === "media" || what === "devices") render();
-    if (what === "streams") replace(form.querySelector("#known-groups"), groupOptions());
+    if (what === "streams" || what === "phonebook") replace(form.querySelector("#known-groups"), groupOptions());
   });
 }

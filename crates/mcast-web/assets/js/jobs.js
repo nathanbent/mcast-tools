@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, replace, seconds, ago, toast } from "./dom.js";
-import { state, subscribe, putJob } from "./store.js";
+import { state, subscribe, putJob, bookName } from "./store.js";
 
 const RECENT = 8;
 const ACTIVE = new Set(["starting", "running", "stopping"]);
@@ -40,7 +40,8 @@ const VERBS = { send: "Paging", recv: "Playing", text: "Text", file_send: "Sendi
 
 function title(job) {
   const verb = VERBS[job.kind] ?? job.kind;
-  return `${verb} ${job.name ? `“${job.name}”` : job.group ?? ""}`;
+  const book = job.group && bookName(job.group);
+  return `${verb} ${job.name ? `“${job.name}”` : book ? `“${book}” (${job.group})` : job.group ?? ""}`;
 }
 
 function activeCard(job) {
@@ -87,5 +88,5 @@ export function mount(el) {
     if (d) d.open = open;
   };
   update();
-  subscribe((what) => what === "jobs" && update());
+  subscribe((what) => (what === "jobs" || what === "phonebook") && update());
 }
