@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "mcast"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -606,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "socket2",
@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-monitor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mcast-audio",
  "mcast-core",
