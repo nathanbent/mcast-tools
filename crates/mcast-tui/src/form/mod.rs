@@ -1,6 +1,7 @@
 //! Forms: fields edited from the keyboard, and the request each builds.
 //! No drawing here. Each form's fields and request live in its own module.
 
+mod book;
 mod files;
 mod page;
 mod text;
@@ -70,6 +71,8 @@ pub enum FormKind {
     Text,
     SendFiles,
     ReceiveFiles,
+    /// A phonebook entry (saved, not started).
+    Book,
 }
 
 impl FormKind {
@@ -79,6 +82,7 @@ impl FormKind {
             FormKind::Text => "Join a text channel",
             FormKind::SendFiles => "Send a file",
             FormKind::ReceiveFiles => "Receive files",
+            FormKind::Book => "Phonebook entry",
         }
     }
 
@@ -88,6 +92,7 @@ impl FormKind {
             FormKind::Text => "joins",
             FormKind::SendFiles => "sends",
             FormKind::ReceiveFiles => "starts receiving",
+            FormKind::Book => "saves",
         }
     }
 }
@@ -97,6 +102,8 @@ pub struct Form {
     pub fields: Vec<Field>,
     /// Index into `visible()`.
     pub selected: usize,
+    /// Phonebook names, offered by ←→ on the Group field.
+    pub book: Vec<String>,
 }
 
 impl Form {
@@ -106,11 +113,13 @@ impl Form {
             FormKind::Text => text::fields(),
             FormKind::SendFiles => files::send_fields(),
             FormKind::ReceiveFiles => files::receive_fields(),
+            FormKind::Book => book::fields(),
         };
         Self {
             kind,
             fields,
             selected: 0,
+            book: Vec::new(),
         }
     }
 
@@ -121,6 +130,7 @@ impl Form {
             FormKind::Text => text::request(self),
             FormKind::SendFiles => files::send_request(self),
             FormKind::ReceiveFiles => files::receive_request(self),
+            FormKind::Book => book::request(self),
         }
     }
 
@@ -169,8 +179,31 @@ impl Form {
         self.selected = (self.selected as isize + delta).rem_euclid(n) as usize;
     }
 
-    /// Left/right on a choice or toggle.
+    /// Whether ←→ on the current field steps through phonebook names.
+    pub fn picks_from_book(&mut self) -> bool {
+        let has_book = !self.book.is_empty();
+        let f = self.current();
+        has_book && f.key == "group" && f.kind == Kind::Text
+    }
+
+    /// Left/right on a choice or toggle, or through the phonebook on Group.
     pub fn cycle(&mut self, delta: isize) {
+        if self.picks_from_book() {
+            let names = self.book.clone();
+            let f = self.current();
+            let n = names.len() as isize;
+            let next = match names
+                .iter()
+                .position(|b| b.eq_ignore_ascii_case(f.value.trim()))
+            {
+                Some(i) => (i as isize + delta).rem_euclid(n),
+                // Not a name yet: start at whichever end the key points to.
+                None if delta > 0 => 0,
+                None => n - 1,
+            };
+            f.value = names[next as usize].clone();
+            return;
+        }
         let f = self.current();
         match &f.kind {
             Kind::Choice(opts) if !opts.is_empty() => {
@@ -243,6 +276,7 @@ pub struct Forms {
     pub text: Form,
     pub send: Form,
     pub receive: Form,
+    pub book: Form,
 }
 
 impl Default for Forms {
@@ -252,6 +286,7 @@ impl Default for Forms {
             text: Form::new(FormKind::Text),
             send: Form::new(FormKind::SendFiles),
             receive: Form::new(FormKind::ReceiveFiles),
+            book: Form::new(FormKind::Book),
         }
     }
 }
@@ -263,6 +298,7 @@ impl Forms {
             FormKind::Text => &self.text,
             FormKind::SendFiles => &self.send,
             FormKind::ReceiveFiles => &self.receive,
+            FormKind::Book => &self.book,
         }
     }
 
@@ -272,6 +308,19 @@ impl Forms {
             FormKind::Text => &mut self.text,
             FormKind::SendFiles => &mut self.send,
             FormKind::ReceiveFiles => &mut self.receive,
+            FormKind::Book => &mut self.book,
+        }
+    }
+
+    /// Offer these phonebook names in every Group field.
+    pub fn set_book(&mut self, names: Vec<String>) {
+        for f in [
+            &mut self.page,
+            &mut self.text,
+            &mut self.send,
+            &mut self.receive,
+        ] {
+            f.book = names.clone();
         }
     }
 
@@ -295,4 +344,34 @@ pub fn is_audio(name: &str) -> bool {
         ext.as_str(),
         "wav" | "mp3" | "flac" | "ogg" | "oga" | "m4a" | "aac" | "mp4" | "alac"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrows_on_group_step_through_the_phonebook() {
+        let mut f = Form::new(FormKind::Text);
+        // No phonebook: the group is plain text.
+        f.cycle(1);
+        assert_eq!(f.get("group"), "239.69.1.1:5004");
+        f.book = vec!["lobby".into(), "zone-1".into()];
+        f.cycle(1);
+        assert_eq!(f.get("group"), "lobby");
+        f.cycle(1);
+        assert_eq!(f.get("group"), "zone-1");
+        f.cycle(1);
+        assert_eq!(f.get("group"), "lobby");
+        f.set("group", "ZONE-1");
+        f.cycle(-1);
+        assert_eq!(f.get("group"), "lobby");
+        f.set("group", "239.1.1.1:5");
+        f.cycle(-1);
+        assert_eq!(f.get("group"), "zone-1");
+        // Other fields are unaffected.
+        f.move_by(2);
+        f.cycle(1);
+        assert_eq!(f.get("listen"), "true");
+    }
 }

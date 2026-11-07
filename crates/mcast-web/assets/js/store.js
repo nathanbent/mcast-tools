@@ -10,7 +10,18 @@ export const state = {
   devices: [],
   monitor: null,     // null: not loaded; false: monitor is off
   texts: new Map(),  // text job id -> lines, oldest first
+  phonebook: [],     // { name, group, description }, sorted by name
 };
+
+// The phonebook name saved for a group address, if any.
+export function bookName(group) {
+  return state.phonebook.find((e) => e.group === group)?.name ?? null;
+}
+
+// How a phonebook entry is shown next to its name in suggestions.
+export function bookLabel(e) {
+  return e.description ? `${e.group} · ${e.description}` : e.group;
+}
 
 const MAX_LINES = 200;
 
@@ -36,6 +47,9 @@ export async function refresh(what) {
     case "media":
       state.media = await api("GET", "/media");
       break;
+    case "phonebook":
+      state.phonebook = await api("GET", "/phonebook");
+      break;
     case "devices":
       state.devices = (await api("GET", "/devices")).devices;
       break;
@@ -52,7 +66,7 @@ export async function refresh(what) {
 }
 
 export function refreshAll() {
-  return Promise.all(["jobs", "streams", "media", "devices", "monitor"].map(refresh));
+  return Promise.all(["jobs", "streams", "media", "devices", "monitor", "phonebook"].map(refresh));
 }
 
 export function putJob(job) {
@@ -100,6 +114,9 @@ export function apply(event) {
     case "file_received":
       refresh("media");
       changed({ received: event.file });
+      break;
+    case "phonebook_changed":
+      refresh("phonebook");
       break;
     case "lagged":
       refreshAll();

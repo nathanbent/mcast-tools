@@ -51,7 +51,7 @@ function render() {
   // Drop picks for files that are gone.
   const names = new Set(state.media.map((m) => m.name));
   picked = new Set([...picked].filter((n) => names.has(n)));
-  const group = h("input", { value: opts.group, placeholder: DEFAULT_GROUP });
+  const group = h("input", { value: opts.group, placeholder: DEFAULT_GROUP, list: "phonebook-groups" });
   const rate = h("input", { type: "number", min: 50, step: 50, value: opts.rate });
   const loop = h("input", { type: "checkbox", checked: opts.loop });
   const button = h("button", { type: "submit", class: "primary" }, "Send files");
@@ -62,7 +62,7 @@ function render() {
             onchange: (e) => (e.target.checked ? picked.add(m.name) : picked.delete(m.name)) }),
           ` ${m.name} `, h("span", { class: "muted small" }, bytes(m.bytes))))))
     : h("p", { class: "muted" }, "Upload files under Media first.");
-  const recvGroup = h("input", { placeholder: DEFAULT_GROUP, "aria-label": "Receive on group" });
+  const recvGroup = h("input", { placeholder: DEFAULT_GROUP, "aria-label": "Receive on group", list: "phonebook-groups" });
   replace(root,
     h("form", { onsubmit: (e) => {
         e.preventDefault();

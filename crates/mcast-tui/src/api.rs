@@ -104,6 +104,13 @@ impl Client {
             .into_json()?)
     }
 
+    pub fn put(&self, path: &str, body: &Value) -> ApiResult<Value> {
+        Ok(self
+            .request(&self.agent, "PUT", path)
+            .send_json(body)?
+            .into_json()?)
+    }
+
     pub fn delete(&self, path: &str) -> ApiResult<()> {
         self.request(&self.agent, "DELETE", path).call()?;
         Ok(())

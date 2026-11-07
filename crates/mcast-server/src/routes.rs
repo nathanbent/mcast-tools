@@ -83,9 +83,9 @@ pub(crate) async fn stop_job(
 
 pub(crate) async fn start_sender(
     State(s): State<AppState>,
-    body: Result<Json<SendRequest>, JsonRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<mcast_control::JobInfo>)> {
-    let Json(mut req) = body?;
+    let mut req: SendRequest = s.named(body)?;
     let shown = req.clone();
     if req.render.is_some() {
         return Err(ApiError::bad(
@@ -106,9 +106,9 @@ pub(crate) async fn start_sender(
 
 pub(crate) async fn start_receiver(
     State(s): State<AppState>,
-    body: Result<Json<RecvRequest>, JsonRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<mcast_control::JobInfo>)> {
-    let Json(req) = body?;
+    let req: RecvRequest = s.named(body)?;
     if matches!(req.sink, SinkRequest::Wav { .. }) {
         return Err(ApiError::bad(
             "recording to WAV is only available from the command line",

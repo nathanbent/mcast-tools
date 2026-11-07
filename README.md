@@ -376,6 +376,51 @@ audio send
 -L 800
 ```
 
+### Phonebook
+
+Save the groups you use under a name and a description, then use the name
+wherever a group goes:
+
+```bash
+mcast book add zone-1 239.192.2.1:10000 -d "Ground floor paging speakers (G.711)"
+mcast book add "Lobby music" 239.69.0.31:5004 -d "Background music"
+mcast book                                     # list them
+mcast audio send -g zone-1 -e g711u -p --file page.wav
+mcast audio recv -g "lobby music"              # names match without regard to case
+mcast monitor zone-1 "Lobby music"             # named in the STREAM column
+```
+
+```
+NAME         GROUP              DESCRIPTION
+Lobby music  239.69.0.31:5004   Background music
+zone-1       239.192.2.1:10000  Ground floor paging speakers (G.711)
+```
+
+| Command | Does |
+|---|---|
+| `mcast book [list [TEXT]]` (`ls`) | List entries, or those whose name, group or description contains TEXT |
+| `mcast book add NAME GROUP [-d DESCRIPTION]` | Add an entry (`--force` replaces one of the same name) |
+| `mcast book edit NAME [-g GROUP] [-d DESCRIPTION] [--rename NEW]` | Change one |
+| `mcast book remove NAME` (`rm`) | Remove one |
+
+Names are letters, digits, spaces, `-`, `_` and `.`. Presets can use them too
+(`mcast preset create page --group zone-1 ...`); the name is looked up each
+time the preset runs, so moving `zone-1` to a new group moves the preset with
+it. The phonebook lives in `~/.config/mcast/phonebook.conf` (`$XDG_CONFIG_HOME`,
+`%APPDATA%` on Windows; `MCAST_PHONEBOOK=FILE` overrides) and can be edited by
+hand:
+
+```
+[zone-1]
+group = 239.192.2.1:10000
+description = Ground floor paging speakers (G.711)
+```
+
+`mcast serve` shares it: the web GUI has a Phonebook panel for adding,
+editing and removing entries, suggests the names in every group field, and
+shows them next to addresses; `mcast tui` has a Phonebook tab, and ←→ on a
+form's Group field picks a name; API requests accept a name for `group` too.
+
 ### Discovery details
 
 - Senders announce every 5 s (`--sap-interval`) on 239.255.255.255:9875, the
@@ -638,7 +683,8 @@ The GUI pages from uploaded files, live input, a test tone or the chord pad;
 chats on real-time text channels; sends files and pictures and receives them
 into its media list (with thumbnails); shows what's playing with a stop
 button; lists announced streams with Listen, Join and Receive buttons; and
-shows the monitor with level meters. It asks for the token if one is set.
+shows the monitor with level meters; and keeps the phonebook of named groups.
+It asks for the token if one is set.
 `--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
 the GUI's files from disk, so edits show up on reload without rebuilding.
 
@@ -649,10 +695,12 @@ ssh pager mcast tui                                  # the server on that box
 MCAST_TOKEN=change-me mcast tui --url http://pager:8650
 ```
 
-Tabs for what's playing, text chat, announced streams, the monitor and
-media (send and receive files there too); `p` opens the page form, `?`
-lists the keys. Like the web GUI, it's a client of the
-API: it needs `mcast serve` running, and every client sees the same jobs.
+Tabs for what's playing, text chat, announced streams, the monitor,
+media (send and receive files there too) and the phonebook (add, edit and
+remove entries; Enter pages one); `p` opens the page form, `?` lists the
+keys. In any form, ←→ on the Group field steps through phonebook names.
+Like the web GUI, it's a client of the API: it needs `mcast serve` running,
+and every client sees the same jobs.
 
 ## Layout
 

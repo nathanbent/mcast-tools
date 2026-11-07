@@ -47,7 +47,7 @@ async function say(id, input) {
 }
 
 function joinForm() {
-  const group = h("input", { value: join.group, placeholder: DEFAULT_GROUP });
+  const group = h("input", { value: join.group, placeholder: DEFAULT_GROUP, list: "phonebook-groups" });
   const name = h("input", { value: join.name, placeholder: "your name (host name if blank)" });
   const listen = h("input", { type: "checkbox", checked: join.listen });
   return h("form", {

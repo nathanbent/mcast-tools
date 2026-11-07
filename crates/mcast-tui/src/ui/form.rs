@@ -24,21 +24,39 @@ pub fn draw(f: &mut Frame, app: &App, kind: FormKind) {
                 Kind::Text | Kind::Number if on => value.push('▏'),
                 _ => {}
             }
+            // A phonebook name in a Group field: show where it goes.
+            let note = (field.key == "group" && kind != FormKind::Book)
+                .then(|| app.book_entry(&field.value))
+                .flatten()
+                .map(|e| format!("  → {}", e.group));
             let label = Span::raw(format!("{:>20}  ", field.label));
             let value = Span::raw(value);
-            if on {
+            let mut line = if on {
                 Line::from(vec![label.fg(Color::Cyan).bold(), value.bold()])
             } else {
                 Line::from(vec![label.dim(), value])
+            };
+            if let Some(n) = note {
+                line.push_span(Span::raw(n).fg(Color::Green));
             }
+            line
         })
         .collect();
     lines.push(Line::from(""));
+    let on_group = form
+        .fields
+        .get(visible[selected])
+        .is_some_and(|f| f.key == "group" && f.kind == Kind::Text);
+    let arrows = if on_group && !form.book.is_empty() {
+        "←→ phonebook"
+    } else {
+        "←→ choices"
+    };
     lines.push(if app.busy {
         Line::from("Starting…").fg(Color::Yellow)
     } else {
         Line::from(format!(
-            "Enter {} · ↑↓ fields · ←→ choices · Esc closes",
+            "Enter {} · ↑↓ fields · {arrows} · Esc closes",
             kind.submit()
         ))
         .dim()

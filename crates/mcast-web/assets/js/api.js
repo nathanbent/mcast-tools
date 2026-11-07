@@ -66,7 +66,7 @@ export function mediaUrl(name) {
 const EVENT_TYPES = [
   "job_started", "job_updated", "job_ended",
   "stream_added", "stream_changed", "stream_removed",
-  "monitor", "text_line", "file_received", "lagged",
+  "monitor", "text_line", "file_received", "phonebook_changed", "lagged",
 ];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch lists then: events

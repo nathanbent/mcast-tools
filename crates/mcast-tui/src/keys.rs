@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Shown by `?`: (keys, what they do). An empty description starts a section.
 pub const HELP: &[(&str, &str)] = &[
-    ("1-5, Tab", "switch tab"),
+    ("1-6, Tab", "switch tab"),
     ("↑↓ / j k", "select"),
     ("p", "page (open the page form)"),
     (
@@ -33,9 +33,15 @@ pub const HELP: &[(&str, &str)] = &[
     ("u", "upload a local file"),
     ("d", "delete the selected file"),
     ("", ""),
+    ("Phonebook tab", ""),
+    ("Enter", "page the selected group"),
+    ("a / e", "add an entry / edit the selected one"),
+    ("d", "remove the selected entry"),
+    ("", ""),
     ("Forms", ""),
     ("↑↓ / Tab", "move between fields"),
     ("←→ / Space", "change a choice or checkbox"),
+    ("←→ on Group", "pick a phonebook name"),
     ("Enter", "start · Esc closes"),
 ];
 
@@ -61,6 +67,12 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         Mode::ConfirmDelete(name) => {
             if matches!(key.code, KeyCode::Char('y' | 'Y')) {
                 app.delete_media(name);
+            }
+            app.mode = Mode::Normal;
+        }
+        Mode::ConfirmRemove(name) => {
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                app.remove_entry(name);
             }
             app.mode = Mode::Normal;
         }
@@ -90,7 +102,7 @@ fn normal(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
         KeyCode::Char('?') => app.mode = Mode::Help,
-        KeyCode::Char(c @ '1'..='5') => app.tab = Tab::ALL[c as usize - '1' as usize],
+        KeyCode::Char(c @ '1'..='6') => app.tab = Tab::ALL[c as usize - '1' as usize],
         KeyCode::Tab => app.tab = Tab::ALL[(app.tab.index() + 1) % Tab::ALL.len()],
         KeyCode::BackTab => {
             app.tab = Tab::ALL[(app.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()]
@@ -160,6 +172,23 @@ fn tab_key(app: &mut App, key: KeyEvent) -> bool {
         }
         (Tab::Media, KeyCode::Char('r')) => open(app, FormKind::ReceiveFiles),
         (Tab::Media, KeyCode::Char('u')) => app.mode = Mode::Upload(String::new()),
+        (Tab::Book, KeyCode::Enter) => {
+            if let Some(e) = app.phonebook.get(i).map(|e| e.name.clone()) {
+                app.forms.page.set("group", &e);
+                open(app, FormKind::Page);
+            }
+        }
+        (Tab::Book, KeyCode::Char('a')) => app.edit_entry(None),
+        (Tab::Book, KeyCode::Char('e')) => {
+            if let Some(e) = app.phonebook.get(i).cloned() {
+                app.edit_entry(Some(e));
+            }
+        }
+        (Tab::Book, KeyCode::Char('d') | KeyCode::Delete) => {
+            if let Some(e) = app.phonebook.get(i) {
+                app.mode = Mode::ConfirmRemove(e.name.clone());
+            }
+        }
         (Tab::Media, KeyCode::Char('d') | KeyCode::Delete) => {
             if let Some(m) = app.media.get(i) {
                 app.mode = Mode::ConfirmDelete(m.name.clone());

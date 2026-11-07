@@ -1,5 +1,6 @@
 //! Drawing. One module per tab, plus the overlays (forms, prompts, help).
 
+mod book;
 mod form;
 mod jobs;
 mod media;
@@ -30,6 +31,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Streams => streams::draw(f, app, inner),
         Tab::Monitor => monitor::draw(f, app, inner),
         Tab::Media => media::draw(f, app, inner),
+        Tab::Book => book::draw(f, app, inner),
     }
     draw_footer(f, app, footer);
     match &app.mode {
@@ -54,6 +56,13 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Delete \"{name}\" from the server? (y/n)"
             ))],
         ),
+        Mode::ConfirmRemove(name) => prompt(
+            f,
+            "Remove",
+            vec![Line::from(format!(
+                "Remove \"{name}\" from the phonebook? (y/n)"
+            ))],
+        ),
         Mode::Help => help(f),
         // Typed on the Text tab itself.
         Mode::Normal | Mode::Compose(_) => {}
@@ -66,22 +75,35 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Ok(()) => (Span::raw("● ").fg(Color::Green), "live".to_string()),
         Err(why) => (Span::raw("● ").fg(Color::Red), why.clone()),
     };
-    let conn = Line::from(vec![
-        dot,
-        Span::raw(text),
+    let titles: Vec<String> = Tab::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, t)| format!("{} {}", i + 1, t.title()))
+        .collect();
+    // Tabs are separated by " │ " and padded by a space each side.
+    let tabs_width = titles.iter().map(|t| t.chars().count() + 3).sum::<usize>() as u16;
+    let mut conn = Line::from(vec![
+        dot.clone(),
+        Span::raw(text.clone()),
         Span::raw(format!("  {} ", app.client.base())).dim(),
     ]);
+    // Leave the server's address out before cutting the tabs short.
+    if 7 + tabs_width + conn.width() as u16 > top.width {
+        conn = Line::from(vec![dot, Span::raw(format!("{text} "))]);
+    }
+    // Then the title (an 80-column terminal fits the tabs and status).
+    let title = if 7 + tabs_width + conn.width() as u16 > top.width {
+        0
+    } else {
+        7
+    };
     let [name, tabs_area, conn_area] = Layout::horizontal([
-        Constraint::Length(7),
+        Constraint::Length(title),
         Constraint::Min(10),
         Constraint::Length(conn.width() as u16),
     ])
     .areas(top);
     f.render_widget(Paragraph::new(Span::raw(" mcast").bold()), name);
-    let titles = Tab::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, t)| format!("{} {}", i + 1, t.title()));
     let tabs = Tabs::new(titles)
         .select(app.tab.index())
         .highlight_style(Style::new().bold().fg(Color::Cyan));
@@ -113,6 +135,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 Tab::Streams => "Enter listen/join/receive · o output",
                 Tab::Monitor => "",
                 Tab::Media => "Enter page · f send · r receive · u upload · d delete",
+                Tab::Book => "Enter page · a add · e edit · d remove",
             };
             let mut keys = vec!["p page", tab, "? help", "q quit"];
             keys.retain(|k| !k.is_empty());
