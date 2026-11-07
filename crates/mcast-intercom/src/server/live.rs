@@ -136,8 +136,11 @@ async fn talk(s: AppState, cfg: crate::model::Config, id: String, mut socket: We
 
     let mut check = tokio::time::interval(CHECK);
     let mut heard = Instant::now();
+    let mut closing = s.0.closing.clone();
     let reason = loop {
         tokio::select! {
+            // The panel is shutting down: end the page rather than hold it up.
+            _ = closing.wait_for(|c| *c) => break Some("the panel is shutting down".to_string()),
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Binary(audio))) => {
                     heard = Instant::now();
