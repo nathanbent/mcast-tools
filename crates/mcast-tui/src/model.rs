@@ -215,6 +215,17 @@ pub struct MonitorRow {
     pub idle_ms: f64,
 }
 
+/// A built-in chime the server can play.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct Chime {
+    pub name: String,
+    pub category: String,
+    pub description: String,
+    /// Hidden from lists (but still playable).
+    pub hidden: bool,
+}
+
 /// A phonebook entry: a group saved under a name.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]

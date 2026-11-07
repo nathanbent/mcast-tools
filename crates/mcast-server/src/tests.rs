@@ -27,6 +27,7 @@ fn harness(token: Option<&str>) -> Harness {
         monitor: None,
         max_upload: 1 << 20,
         phonebook: dir.join("phonebook.conf"),
+        chimes: dir.join("chimes.json"),
     };
     let (_tx, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
@@ -263,6 +264,7 @@ async fn refuses_to_listen_publicly_without_a_token() {
         monitor: None,
         max_upload: 0,
         phonebook: PathBuf::from("phonebook.conf"),
+        chimes: PathBuf::from("chimes.json"),
     };
     let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
     assert!(err.to_string().contains("without a token"));
@@ -519,6 +521,115 @@ async fn files_over_http_land_in_media() {
         )
         .await;
     }
+}
+
+#[tokio::test]
+async fn chimes_can_be_hidden_and_previewed() {
+    let h = harness(None);
+    let (status, list) = call(&h, "GET", "/api/v1/chimes", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), mcast_audio::chime::BuiltIn::ALL.len());
+    assert_eq!(list[0]["name"], "rising");
+    assert_eq!(list[0]["category"], "chime");
+    assert!(list.iter().all(|c| c["hidden"] == false));
+
+    let mut events = h.state.0.events.subscribe();
+    let (status, c) = call(
+        &h,
+        "PUT",
+        "/api/v1/chimes/klaxon",
+        Some(json!({"hidden": true})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(c["hidden"], true);
+    assert!(matches!(events.try_recv(), Ok(Event::ChimesChanged)));
+    let (_, list) = call(&h, "GET", "/api/v1/chimes", None, None).await;
+    let hidden: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["hidden"] == true)
+        .collect();
+    assert_eq!(hidden.len(), 1);
+    assert_eq!(hidden[0]["name"], "klaxon");
+    assert!(std::fs::read_to_string(h.dir.join("chimes.json"))
+        .unwrap()
+        .contains("klaxon"));
+
+    // A hidden chime still plays.
+    let req: mcast_control::SendRequest =
+        serde_json::from_value(json!({"chime": "klaxon"})).unwrap();
+    assert!(req.chime().is_some());
+
+    let (status, c) = call(
+        &h,
+        "PUT",
+        "/api/v1/chimes/klaxon",
+        Some(json!({"hidden": false})),
+        None,
+    )
+    .await;
+    assert_eq!((status, &c["hidden"]), (StatusCode::OK, &json!(false)));
+    let (status, _) = call(
+        &h,
+        "PUT",
+        "/api/v1/chimes/foghorn",
+        Some(json!({"hidden": true})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &h,
+        "PUT",
+        "/api/v1/chimes/bell",
+        Some(json!({"hide": true})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (status, list) = call(
+        &h,
+        "PUT",
+        "/api/v1/chimes",
+        Some(json!({"hidden": ["cowbell", "Buzzer"]})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let hidden: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["hidden"] == true)
+        .map(|c| c["name"].clone())
+        .collect();
+    assert_eq!(hidden, [json!("cowbell"), json!("buzzer")]);
+    let (status, _) = call(
+        &h,
+        "PUT",
+        "/api/v1/chimes",
+        Some(json!({"hidden": ["foghorn"]})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let req = Request::builder()
+        .uri("/api/v1/chimes/ding-dong/preview")
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "audio/wav");
+    let wav = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&wav[..4], b"RIFF");
 }
 
 #[tokio::test(flavor = "multi_thread")]

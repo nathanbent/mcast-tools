@@ -11,6 +11,7 @@ export const state = {
   monitor: null,     // null: not loaded; false: monitor is off
   texts: new Map(),  // text job id -> lines, oldest first
   phonebook: [],     // { name, group, description }, sorted by name
+  chimes: [],        // built-in chimes: { name, category, description, hidden }
 };
 
 // The phonebook name saved for a group address, if any.
@@ -50,6 +51,9 @@ export async function refresh(what) {
     case "phonebook":
       state.phonebook = await api("GET", "/phonebook");
       break;
+    case "chimes":
+      state.chimes = await api("GET", "/chimes");
+      break;
     case "devices":
       state.devices = (await api("GET", "/devices")).devices;
       break;
@@ -66,7 +70,7 @@ export async function refresh(what) {
 }
 
 export function refreshAll() {
-  return Promise.all(["jobs", "streams", "media", "devices", "monitor", "phonebook"].map(refresh));
+  return Promise.all(["jobs", "streams", "media", "devices", "monitor", "phonebook", "chimes"].map(refresh));
 }
 
 export function putJob(job) {
@@ -117,6 +121,9 @@ export function apply(event) {
       break;
     case "phonebook_changed":
       refresh("phonebook");
+      break;
+    case "chimes_changed":
+      refresh("chimes");
       break;
     case "lagged":
       refreshAll();

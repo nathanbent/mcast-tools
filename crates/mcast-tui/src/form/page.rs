@@ -1,19 +1,57 @@
 //! The page form: what to send, where, and how it's processed.
 
 use super::{choices, Field, Form, Kind};
+use crate::model::Chime;
 use serde_json::{json, Value};
 
-/// Chime choices: off, the server's default, or a built-in.
+/// Chime choices until the server's list arrives: off, the server's
+/// default, or one of the built-ins every version has.
 const CHIMES: [(&str, &str); 8] = [
     ("none", "Off"),
     ("default", "Default"),
-    ("rising", "Rising (C-E-G)"),
-    ("falling", "Falling (G-E-C)"),
-    ("ding-dong", "Ding-dong"),
+    ("rising", "Rising"),
+    ("falling", "Falling"),
+    ("ding-dong", "Ding dong"),
     ("arpeggio", "Arpeggio"),
     ("bell", "Bell"),
     ("alert", "Alert"),
 ];
+
+/// Chime choices from the server's list: off, the default, then the
+/// built-ins it doesn't hide, plus `current` if it's hidden (so a choice made
+/// before it was hidden isn't lost).
+pub(super) fn chime_choices(chimes: &[Chime], current: &str) -> Vec<(String, String)> {
+    let mut opts: Vec<(String, String)> = CHIMES[..2]
+        .iter()
+        .map(|(v, l)| (v.to_string(), l.to_string()))
+        .collect();
+    opts.extend(
+        chimes
+            .iter()
+            .filter(|c| !c.hidden || c.name == current)
+            .map(|c| (c.name.clone(), chime_label(c))),
+    );
+    if !opts.iter().any(|(v, _)| v == current) && !current.is_empty() {
+        opts.push((current.to_string(), current.to_string()));
+    }
+    opts
+}
+
+/// "Church bell (bells)": the name, readable, and its category.
+fn chime_label(c: &Chime) -> String {
+    let mut name = c.name.replace('-', " ");
+    if let Some(first) = name.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    let category = match c.category.as_str() {
+        "chime" => "chimes",
+        "bell" => "bells",
+        "tone" => "tones",
+        "alert" => "alerts",
+        other => other,
+    };
+    format!("{name} ({category})")
+}
 
 fn chime(f: &Form, key: &str) -> Value {
     match f.get(key) {
@@ -171,6 +209,41 @@ mod tests {
             "{keys:?}"
         );
         assert_eq!(f.request().unwrap()["source"], json!({"type": "pad"}));
+    }
+
+    #[test]
+    fn server_chimes_replace_the_list_but_keep_a_hidden_choice() {
+        let chime = |name: &str, category: &str, hidden: bool| Chime {
+            name: name.into(),
+            category: category.into(),
+            description: String::new(),
+            hidden,
+        };
+        let list = [
+            chime("rising", "chime", false),
+            chime("church-bell", "bell", false),
+            chime("klaxon", "alert", true),
+            chime("cowbell", "bell", true),
+        ];
+        let mut forms = super::super::Forms::default();
+        forms.page.set("end_chime", "klaxon");
+        forms.set_chimes(&list);
+        let Kind::Choice(opts) = &forms
+            .page
+            .fields
+            .iter()
+            .find(|f| f.key == "chime")
+            .unwrap()
+            .kind
+        else {
+            panic!("chime is a choice")
+        };
+        let values: Vec<_> = opts.iter().map(|(v, _)| v.as_str()).collect();
+        assert_eq!(values, ["none", "default", "rising", "church-bell"]);
+        assert_eq!(opts[3].1, "Church bell (bells)");
+        assert_eq!(forms.page.get("chime"), "default");
+        // Hidden, but already chosen: still offered, still chosen.
+        assert_eq!(forms.page.get("end_chime"), "klaxon");
     }
 
     #[test]

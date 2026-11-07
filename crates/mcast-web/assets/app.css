@@ -278,6 +278,24 @@ dialog {
   width: min(400px, calc(100vw - 32px));
   padding: 20px;
 }
+dialog.wide { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dialog-head h2 { margin: 0; }
+.close { border: none; background: none; font-size: 20px; padding: 0 6px; color: var(--muted); }
+
+/* Chimes */
+
+.with-button { display: flex; gap: 6px; align-items: stretch; }
+.with-button > select { flex: 1; }
+button.icon { padding: 4px 10px; font-size: 13px; line-height: 1; }
+form .chimes + p { margin: -6px 0 0; }
+.chime-body { display: flex; flex-direction: column; gap: 12px; }
+.chime-list { display: flex; flex-direction: column; gap: 6px; }
+.chime-row { display: flex; align-items: flex-start; gap: 8px; }
+.chime-row .check { align-items: flex-start; }
+.chime-row .check input { margin-top: 3px; }
+.chime-row .check > span { display: flex; flex-direction: column; }
+
 dialog::backdrop { background: rgb(0 0 0 / 0.4); }
 dialog h2 { font-size: 18px; text-transform: none; letter-spacing: 0; color: var(--text); }
 

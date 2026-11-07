@@ -355,6 +355,64 @@ pub(super) async fn phonebook(State(s): State<AppState>) -> ApiResult<Json<Vec<E
         .map_err(bad_gateway)
 }
 
+/// Errors from the mcast server: its own status for "no such chime" and
+/// "bad request", else 502.
+fn passed_on(e: crate::BackendError) -> ApiError {
+    match e.status {
+        404 | 422 => ApiError::new(StatusCode::from_u16(e.status).unwrap(), e.message),
+        _ => bad_gateway(e),
+    }
+}
+
+/// The mcast server's built-in chimes, with which are hidden from lists.
+pub(super) async fn chimes(State(s): State<AppState>) -> ApiResult<Json<Vec<Value>>> {
+    let b = s.0.backend.clone();
+    tokio::task::spawn_blocking(move || b.chimes())
+        .await?
+        .map(Json)
+        .map_err(bad_gateway)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HideChimes {
+    hidden: Vec<String>,
+}
+
+/// `{"hidden": [names]}`: hide exactly these chimes from lists, on the mcast
+/// server (so in its own GUI and TUI too).
+pub(super) async fn put_chimes(
+    State(s): State<AppState>,
+    body: Result<Json<HideChimes>, JsonRejection>,
+) -> ApiResult<Json<Vec<Value>>> {
+    let Json(req) = body?;
+    let b = s.0.backend.clone();
+    tokio::task::spawn_blocking(move || b.hide_chimes(&req.hidden))
+        .await?
+        .map(Json)
+        .map_err(passed_on)
+}
+
+/// A built-in chime as a WAV file, to listen to in the browser.
+pub(super) async fn chime_preview(
+    State(s): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+    let b = s.0.backend.clone();
+    let wav = tokio::task::spawn_blocking(move || b.chime_preview(&name))
+        .await?
+        .map_err(passed_on)?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "audio/wav"),
+            (axum::http::header::CACHE_CONTROL, "max-age=3600"),
+        ],
+        wav,
+    )
+        .into_response())
+}
+
 // ---- schedules ----
 
 #[derive(serde::Deserialize)]

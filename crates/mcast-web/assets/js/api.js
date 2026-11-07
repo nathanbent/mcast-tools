@@ -63,10 +63,16 @@ export function mediaUrl(name) {
   return `/api/v1/media/${encodeURIComponent(name)}${t ? `?access_token=${encodeURIComponent(t)}` : ""}`;
 }
 
+// URL of a built-in chime as a WAV file, for <audio> (which can't send headers).
+export function chimeUrl(name) {
+  const t = token();
+  return `/api/v1/chimes/${encodeURIComponent(name)}/preview${t ? `?access_token=${encodeURIComponent(t)}` : ""}`;
+}
+
 const EVENT_TYPES = [
   "job_started", "job_updated", "job_ended",
   "stream_added", "stream_changed", "stream_removed",
-  "monitor", "text_line", "file_received", "phonebook_changed", "lagged",
+  "monitor", "text_line", "file_received", "phonebook_changed", "chimes_changed", "lagged",
 ];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch lists then: events

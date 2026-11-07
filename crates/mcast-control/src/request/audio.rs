@@ -751,7 +751,7 @@ mod tests {
             );
         }
         for bad in [
-            r#"{"chime": "klaxon"}"#,
+            r#"{"chime": "foghorn"}"#,
             r#"{"chime": {"file": "a.wav", "x": 1}}"#,
         ] {
             assert!(serde_json::from_str::<SendRequest>(bad).is_err(), "{bad}");

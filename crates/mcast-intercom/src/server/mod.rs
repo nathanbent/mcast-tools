@@ -205,6 +205,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}", get(get_run).delete(stop_run))
         .route("/media", get(media))
         .route("/phonebook", get(phonebook))
+        .route("/chimes", get(chimes).put(put_chimes))
+        .route("/chimes/{name}/preview", get(chime_preview))
         .route("/events", get(events))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))

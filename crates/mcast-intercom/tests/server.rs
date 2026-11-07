@@ -44,6 +44,7 @@ fn server() -> Server {
         monitor: None,
         max_upload: 1 << 20,
         phonebook: dir.join("phonebook.conf"),
+        chimes: dir.join("chimes.json"),
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -186,11 +187,13 @@ fn check_reports_missing_media_and_names() {
     let mut cfg = config();
     cfg.announcements[0].audio = Audio::Media("lunch.wav".into());
     cfg.zones[1].targets[0].group = "attic".into();
+    cfg.announcements[0].end_chime = Some(json!("foghorn"));
     mcast_intercom::store::save(&path, &cfg).unwrap();
     let e = mcast_intercom::cli::check(&path, &backend).unwrap_err();
-    assert!(e.to_string().contains("2 problem(s)"), "{e}");
+    assert!(e.to_string().contains("3 problem(s)"), "{e}");
 
     cfg.announcements[0].audio = Audio::ChimeOnly;
+    cfg.announcements[0].end_chime = Some(json!("church-bell"));
     cfg.zones[1].targets[0].group = "zone-1".into();
     mcast_intercom::store::save(&path, &cfg).unwrap();
     mcast_intercom::cli::check(&path, &backend).unwrap();

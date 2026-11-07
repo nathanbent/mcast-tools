@@ -34,21 +34,28 @@ pub struct Entry {
 /// in the mcast config directory (`$XDG_CONFIG_HOME/mcast`,
 /// `~/.config/mcast`, or `%APPDATA%\mcast` on Windows).
 pub fn default_path() -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os("MCAST_PHONEBOOK").filter(|v| !v.is_empty()) {
+        return Ok(p.into());
+    }
+    let dir = config_dir()
+        .context("can't find a config directory; set MCAST_PHONEBOOK to a file path")?;
+    Ok(dir.join("phonebook.conf"))
+}
+
+/// The mcast config directory: `$XDG_CONFIG_HOME/mcast`, `~/.config/mcast`,
+/// or `%APPDATA%\mcast` on Windows.
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let var = |k: &str| {
         std::env::var_os(k)
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
     };
-    if let Some(p) = var("MCAST_PHONEBOOK") {
-        return Ok(p);
-    }
     let dir = if cfg!(windows) {
         var("APPDATA")
     } else {
         var("XDG_CONFIG_HOME").or_else(|| var("HOME").map(|h| h.join(".config")))
     };
-    let dir = dir.context("can't find a config directory; set MCAST_PHONEBOOK to a file path")?;
-    Ok(dir.join("mcast").join("phonebook.conf"))
+    dir.map(|d| d.join("mcast"))
 }
 
 /// Names go in `[...]` headers and stand in for groups, so they can't look

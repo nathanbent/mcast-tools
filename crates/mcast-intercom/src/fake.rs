@@ -17,7 +17,12 @@ pub(crate) struct FakeState {
     pub(crate) quiet: bool,
     /// Unreachable: the phonebook and media lists fail.
     pub(crate) down: bool,
+    /// Hidden built-in chimes.
+    pub(crate) hidden_chimes: Vec<String>,
 }
+
+/// The fake's built-in chimes.
+const CHIMES: [(&str, &str); 3] = [("rising", "chime"), ("bell", "bell"), ("klaxon", "alert")];
 
 #[derive(Default)]
 pub(crate) struct Fake {
@@ -100,6 +105,45 @@ impl Backend for Fake {
     fn media(&self) -> BackendResult<Vec<String>> {
         self.reachable()?;
         Ok(vec!["lunch.wav".into()])
+    }
+
+    fn chimes(&self) -> BackendResult<Vec<Value>> {
+        self.reachable()?;
+        let st = self.st.lock().unwrap();
+        Ok(CHIMES
+            .iter()
+            .map(|(name, category)| {
+                serde_json::json!({
+                    "name": name, "category": category, "description": "",
+                    "hidden": st.hidden_chimes.iter().any(|h| h == name),
+                })
+            })
+            .collect())
+    }
+
+    fn hide_chimes(&self, hidden: &[String]) -> BackendResult<Vec<Value>> {
+        self.reachable()?;
+        if let Some(bad) = hidden.iter().find(|h| !CHIMES.iter().any(|(n, _)| n == h)) {
+            return Err(BackendError {
+                status: 422,
+                message: format!("unknown chime '{bad}'"),
+                job: None,
+            });
+        }
+        self.st.lock().unwrap().hidden_chimes = hidden.to_vec();
+        self.chimes()
+    }
+
+    fn chime_preview(&self, name: &str) -> BackendResult<Vec<u8>> {
+        self.reachable()?;
+        if !CHIMES.iter().any(|(n, _)| *n == name) {
+            return Err(BackendError {
+                status: 404,
+                message: format!("unknown chime '{name}'"),
+                job: None,
+            });
+        }
+        Ok(b"RIFF fake wav".to_vec())
     }
 
     fn start_sender(&self, request: &Value) -> BackendResult<Job> {

@@ -80,6 +80,13 @@ pub trait Backend: Send + Sync + 'static {
     fn phonebook(&self) -> BackendResult<Vec<Entry>>;
     /// Names of the files in the server's media directory.
     fn media(&self) -> BackendResult<Vec<String>>;
+    /// The server's built-in chimes, as its API lists them: `name`,
+    /// `category`, `description` and `hidden`.
+    fn chimes(&self) -> BackendResult<Vec<Value>>;
+    /// Hide exactly these built-in chimes from lists; returns the new list.
+    fn hide_chimes(&self, hidden: &[String]) -> BackendResult<Vec<Value>>;
+    /// A built-in chime as a WAV file, to listen to.
+    fn chime_preview(&self, name: &str) -> BackendResult<Vec<u8>>;
     /// Start a sender from a send request (the API's JSON).
     fn start_sender(&self, request: &Value) -> BackendResult<Job>;
     /// Stop a job; returns once it has wound down (or the server gave up waiting).
@@ -179,6 +186,33 @@ impl Backend for HttpBackend {
         Ok(files.into_iter().map(|f| f.name).collect())
     }
 
+    fn chimes(&self) -> BackendResult<Vec<Value>> {
+        self.get("/chimes")
+    }
+
+    fn hide_chimes(&self, hidden: &[String]) -> BackendResult<Vec<Value>> {
+        Ok(self
+            .request(&self.agent, "PUT", "/chimes")
+            .send_json(serde_json::json!({ "hidden": hidden }))?
+            .into_json()?)
+    }
+
+    fn chime_preview(&self, name: &str) -> BackendResult<Vec<u8>> {
+        use std::io::Read;
+        // A chime is a few seconds; a preview is well under this.
+        const MAX: u64 = 4 << 20;
+        let resp = self
+            .request(
+                &self.agent,
+                "GET",
+                &format!("/chimes/{}/preview", encode(name)),
+            )
+            .call()?;
+        let mut wav = Vec::new();
+        resp.into_reader().take(MAX).read_to_end(&mut wav)?;
+        Ok(wav)
+    }
+
     fn start_sender(&self, request: &Value) -> BackendResult<Job> {
         Ok(self
             .request(&self.agent, "POST", "/senders")
@@ -235,6 +269,18 @@ impl Backend for HttpBackend {
             std::thread::sleep(Duration::from_secs(2));
         });
     }
+}
+
+/// A path segment, percent-encoded (chime names are plain, but be safe).
+fn encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// The events the panel cares about.
