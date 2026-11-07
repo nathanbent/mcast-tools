@@ -46,6 +46,7 @@ Errors are JSON: `{"error": "message"}`.
 | POST | `/senders` | Start sending (body: send request). `201` with the job |
 | POST | `/receivers` | Start receiving (body: receive request). `201` with the job |
 | POST | `/texts` | Join a text channel (body: text request). `201` with the job |
+| POST | `/jobs/{id}/live` | For a sender with a `live` source: the request body, as it arrives, is the page's audio, 16-bit little-endian PCM at the source's rate and channels (send it chunked). When the body ends, the page plays what's left, then its end chime and tail, and finishes. Returns `{"bytes"}` then, or `409` if the job was stopped first |
 | POST | `/jobs/{id}/text` | `{"text": "..."}`: send on a text channel, a line per line. Returns the lines |
 | GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
 | POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
@@ -100,7 +101,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_mode` | follows `mode` | `voice` or `music` |
 | `opus_bandwidth` | | `nb`, `wb`, `swb`, `fb` |
 | `opus_fec` | `true` | |
-| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, or `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set) |
+| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | |
 | `chime` | | Chime before the audio: `"default"` (`rising`, or `$MCAST_CHIME`), a built-in (any name `GET /chimes` lists, such as `"ding-dong"`, `"westminster"`, `"church-bell"`, `"beep"` or `"siren-wail"`), or `{"file": "NAME"}` |
@@ -119,6 +120,18 @@ Every field is optional; the defaults match `mcast audio send`.
 
 File and chime paths are names of uploaded media files, with their folders (`bells/lunch.wav`). `render` exists in
 the request type but is only available from the CLI.
+
+A live page: start a sender with a `live` source, then stream audio into
+it. Audio that arrives during the opening chime is kept and played after it.
+Gaps are filled with silence; if nothing arrives for 20 s the page ends.
+
+```bash
+curl -s -H "Authorization: Bearer $MCAST_TOKEN" http://127.0.0.1:8650/api/v1/senders \
+  -d '{"group": "239.192.2.1:10000", "encoding": "g711u", "mode": "voice", "chime": "default",
+       "end_chime": "default", "source": {"type": "live", "rate": 16000}}'
+arecord -q -f S16_LE -r 16000 -c 1 | curl -s -T - -X POST -H "Authorization: Bearer $MCAST_TOKEN" \
+  http://127.0.0.1:8650/api/v1/jobs/ID/live
+```
 
 A page from an uploaded file, with a chime and voice processing for phones:
 

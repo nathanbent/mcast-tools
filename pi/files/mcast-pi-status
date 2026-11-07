@@ -56,9 +56,13 @@ if [ -f /etc/systemd/system/mcast-intercom.service ]; then
     if systemctl is-active --quiet mcast-intercom.service; then
         # shellcheck source=/dev/null
         listen=$(. /etc/mcast/intercom.env 2>/dev/null; echo "${MCAST_INTERCOM_LISTEN:-}")
+        # shellcheck source=/dev/null
+        tls=$(. /etc/mcast/intercom.env 2>/dev/null; echo "${MCAST_INTERCOM_TLS_SELF_SIGNED:-}${MCAST_INTERCOM_TLS_CERT:-}")
+        scheme=http
+        [ -n "$tls" ] && [ "$tls" != false ] && scheme=https
         port=${listen##*:}
-        printf '  intercom   %srunning%s  http://%s.local:%s/\n' \
-            "$green" "$reset" "$(hostname)" "${port:-8651}"
+        printf '  intercom   %srunning%s  %s://%s.local:%s/\n' \
+            "$green" "$reset" "$scheme" "$(hostname)" "${port:-8651}"
     else
         printf '  intercom   %s%s%s  %s(journalctl -u mcast-intercom)%s\n' \
             "$red" "$(systemctl is-active mcast-intercom.service)" "$reset" "$dim" "$reset"

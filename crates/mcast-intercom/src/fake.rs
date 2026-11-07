@@ -23,6 +23,8 @@ pub(crate) struct FakeState {
     /// them; until then, just `lunch.wav`.
     files: Option<BTreeMap<String, u64>>,
     folders: BTreeSet<String>,
+    /// Live audio streamed into each job, once its stream ended.
+    pub(crate) live_bytes: HashMap<u64, usize>,
 }
 
 impl FakeState {
@@ -331,6 +333,18 @@ impl Backend for Fake {
                 message: format!("no job {id}"),
                 job: None,
             })
+    }
+
+    fn stream_live(
+        &self,
+        job: u64,
+        chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    ) -> BackendResult<()> {
+        let bytes: usize = chunks.iter().map(|c| c.len()).sum();
+        self.st.lock().unwrap().live_bytes.insert(job, bytes);
+        // Like the real thing: the page ends when its audio does.
+        self.end(job, "finished");
+        Ok(())
     }
 
     fn follow(&self, on: FeedFn) {

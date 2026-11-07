@@ -8,6 +8,7 @@
 mod chimes;
 mod events;
 mod files;
+mod live;
 mod media;
 mod phonebook;
 mod routes;
@@ -223,6 +224,7 @@ pub fn router(state: AppState) -> Router {
         .route("/media-move", post(move_media))
         .route("/texts", post(start_text))
         .route("/jobs/{id}/text", get(text_history).post(send_text))
+        .route("/jobs/{id}/live", post(live::stream_live))
         .route("/file-senders", post(start_file_sender))
         .route("/file-receivers", post(start_file_receiver))
         .route("/phonebook", get(list_phonebook))

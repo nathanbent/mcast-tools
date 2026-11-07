@@ -25,14 +25,14 @@ mcast intercom play lunch      # by id or name; Ctrl-C stops it
 
 ```bash
 mcast intercom serve                                          # open http://127.0.0.1:8651/
-MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651
+MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651 --tls-self-signed
 ```
 
 A page with a tab for each part:
 
 | Tab | |
 |---|---|
-| **Panel** | A big button for each announcement, what's playing now (with Stop) and what's next. *All stop* in the header stops everything |
+| **Panel** | A big button for each announcement, what's playing now (with Stop) and what's next. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
 | **History** | Recent plays, and how each group fared |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
@@ -54,6 +54,40 @@ server, but repeats still to come are dropped.
 
 On a Raspberry Pi, `ENABLE_INTERCOM=yes` in `pi/pi.conf` sets it up as a
 service next to `mcast serve` ([pi/README.md](../../pi/README.md#the-intercom-panel)).
+
+### Push to talk
+
+An announcement whose audio is **Live** ("Talk to everyone", "Talk
+upstairs") pages with the browser's microphone. **Hold** its button to talk
+and let go to end, or **tap** it to talk hands-free and tap again to end;
+with the keyboard, Enter or Space starts and ends. While you talk, the
+button shows *On air* and the microphone's level.
+
+It plays like any other announcement: to its zones, with its priority,
+chimes before and after (the defaults' unless it sets its own), processing
+and volume; it shows under *Now playing*, and Stop and *All stop* end it.
+You can talk straight away: what you say during the opening chime plays
+after it, so listeners hear you a chime's length late. When you let go, the
+rest plays out, then the end chime.
+
+Browsers only allow the microphone on **HTTPS** pages (and on
+`http://localhost`). Serve the panel over HTTPS with either:
+
+- `--tls-self-signed`: the panel makes a certificate the first time and
+  keeps it beside the config (`intercom-cert.pem`, `intercom-key.pem`). It
+  names this machine (host name, `NAME.local`, its address) and
+  `localhost`; add more with `--tls-name`. Browsers warn about it once;
+  accept it to go on. Delete the two files to make a new one.
+- `--tls-cert FILE --tls-key FILE`: your own certificate (PEM). It wins over
+  `--tls-self-signed`.
+
+They can also come from `$MCAST_INTERCOM_TLS_SELF_SIGNED` (`true`),
+`$MCAST_INTERCOM_TLS_CERT` and `$MCAST_INTERCOM_TLS_KEY`. Without HTTPS,
+live buttons say so instead of talking.
+
+The audio goes from the browser to the panel over a WebSocket, as 48 kHz
+mono, and on to `mcast serve` as one live sender per group. Live
+announcements can't be scheduled, and play once.
 
 `--web-dir crates/mcast-intercom/assets` serves the page from disk, so a
 reload picks up edits; `--no-web` serves the API alone.
@@ -107,7 +141,7 @@ out to use the server's default. `site`: the site it's at, if any.
 
 | Field | Default | |
 |---|---|---|
-| `audio` | | `{"media": "NAME"}`, a file uploaded to the server, or `"chime_only"` |
+| `audio` | | `{"media": "NAME"}`, a file uploaded to the server, `"chime_only"`, or `"live"` (push to talk from the panel's page) |
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
 | `mode` | the defaults' | `voice`, `music` or `none` |
 | `volume_db`, `lead_in_ms` | the defaults' | |
@@ -231,7 +265,8 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 | `GET`, `POST /schedule-groups`, `GET`, `PUT`, `DELETE /schedule-groups/{id}` | The same; switch one with `PUT` and `"enabled"`. One with schedules can't be deleted |
 | `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
 | `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
-| `POST /announcements/{id}/play` | Play it now; returns the run (`201`) |
+| `POST /announcements/{id}/play` | Play it now; returns the run (`201`). Not for live announcements (`422`) |
+| `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
@@ -268,8 +303,8 @@ time it was due. Run `state` is `playing`, `waiting` (between repeats), `stoppin
 | `runner.rs` | Plays announcements: fan-out, priorities, repeats, stop |
 | `scheduler.rs` | When schedules are due (time zones, clock changes), and the thread that plays them |
 | `cli.rs` | `mcast intercom list`, `check`, `play` |
-| `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`) and the web page (`web.rs`) |
-| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `sounds.js`, `settings.js`), and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
+| `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`, `library.rs` for Sounds), push to talk (`live.rs`), HTTPS (`tls.rs`) and the web page (`web.rs`) |
+| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `sounds.js`, `settings.js`); `talk.js` and `mic-worklet.js` are push to talk, and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
 
 `cargo test -p mcast-intercom` runs the runner and the API against a fake
 backend and, in `tests/server.rs`, against a real in-process `mcast serve`.

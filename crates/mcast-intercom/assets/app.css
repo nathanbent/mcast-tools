@@ -383,3 +383,16 @@ tr.section td { background: var(--bg); padding: 6px 8px; }
 .group-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .check.switch { font-size: 13px; }
 .upcoming.with-site { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+
+/* Push to talk */
+
+.tile.live > button.talk { touch-action: none; user-select: none; -webkit-user-select: none; }
+.tile.live .talk-hint { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--accent); font-weight: 600; }
+.tile.live.on-air { border-color: var(--bad); border-top-color: var(--bad); box-shadow: 0 0 0 2px var(--bad); }
+.tile.live.on-air > button.talk { background: color-mix(in srgb, var(--bad) 10%, var(--panel)); }
+.tile.live.on-air .talk-hint { color: var(--bad); }
+.tile.live .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .tile.live .dot { animation: none; } }
+.tile.live .meter { display: block; width: 100%; height: 6px; border-radius: 3px; background: var(--meter); overflow: hidden; }
+.tile.live .meter-fill { display: block; height: 100%; width: 0; background: var(--meter-fill); transition: width 60ms linear; }

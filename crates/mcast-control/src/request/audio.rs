@@ -82,6 +82,23 @@ pub enum SourceRequest {
     /// No audio, just the chime: the default chime unless `chime` or
     /// `end_chime` says otherwise.
     Chime,
+    /// Audio streamed in as it happens (`POST /jobs/{id}/live`), as 16-bit
+    /// little-endian PCM at `rate` with `channels`. Ends, with the end
+    /// chime, when the stream does.
+    Live {
+        #[serde(default = "default_live_rate")]
+        rate: u32,
+        #[serde(default = "one_channel")]
+        channels: u16,
+    },
+}
+
+fn default_live_rate() -> u32 {
+    48_000
+}
+
+fn one_channel() -> u16 {
+    1
 }
 
 fn default_tone() -> f32 {
@@ -336,6 +353,14 @@ impl SendRequest {
             SourceRequest::Pad { level_dbfs } => sender::Source::Pad {
                 amplitude: 10f32.powf(*level_dbfs / 20.0),
             },
+            SourceRequest::Live { rate, channels } => {
+                if !(8_000..=96_000).contains(rate) || !(1..=2).contains(channels) {
+                    bail!("a live source needs a rate of 8000 to 96000 and 1 or 2 channels");
+                }
+                sender::Source::Live {
+                    feed: mcast_audio::live::LiveFeed::new(*rate, *channels),
+                }
+            }
         };
         // Like mcast-play.sh: Opus tuning follows the content; with no mode,
         // band-limited Opus (its "opuswb") is treated as speech.

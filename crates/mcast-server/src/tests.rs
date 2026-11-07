@@ -836,3 +836,47 @@ async fn media_folders_moves_and_pages_by_path() {
     assert_eq!(folders, json!([]));
     let _ = std::fs::remove_dir_all(&h.dir);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn streams_live_audio_into_a_sender() {
+    let h = harness(None);
+    let (s, job) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(
+            json!({"group": "239.255.77.24:5004", "sap": false, "tail_ms": 0,
+                    "source": {"type": "live", "rate": 16000}}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{job}");
+    let id = job["id"].as_u64().unwrap();
+    // A quarter of a second of 16-bit tone; the body ending ends the page.
+    let pcm: Vec<u8> = (0..4000)
+        .flat_map(|i| (((i as f32 / 6.0).sin() * 9000.0) as i16).to_le_bytes())
+        .collect();
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/jobs/{id}/live"))
+        .body(Body::from(pcm))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let (_, j) = call(&h, "GET", &format!("/api/v1/jobs/{id}"), None, None).await;
+        if j["state"] != "running" || std::time::Instant::now() > deadline {
+            break j;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(done["state"], "finished", "{done}");
+    assert!(done["stats"]["seconds"].as_f64().unwrap() >= 0.2, "{done}");
+    // Again, now it's over; and a job that isn't live.
+    let (s, _) = call(&h, "POST", &format!("/api/v1/jobs/{id}/live"), None, None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = call(&h, "POST", "/api/v1/jobs/999/live", None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}

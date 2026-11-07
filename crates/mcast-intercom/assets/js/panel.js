@@ -4,6 +4,11 @@ import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow } from "./store.js";
 import { runCard, runState, stopRun } from "./runs.js";
+import { onTalk, pushToTalk, micProblem } from "./talk.js";
+
+let talkState = null;
+// The level meter of the tile being talked on, updated in place.
+let meter = null;
 
 async function play(a) {
   try {
@@ -15,10 +20,41 @@ async function play(a) {
   }
 }
 
+// A live announcement: hold to talk, or tap for hands-free.
+function liveTile(a, run, meta) {
+  const mine = talkState?.id === a.id ? talkState : null;
+  const hint = !mine
+    ? micProblem() ? "Needs HTTPS for the microphone" : "Hold to talk · tap for hands-free"
+    : { starting: "Connecting…", ending: "Finishing…" }[mine.phase]
+      ?? (mine.latched ? "On air · tap to end" : "On air · let go to end");
+  const bar = h("span", { class: "meter-fill" });
+  if (mine) meter = bar;
+  const button = h("button", {
+    class: "play talk",
+    "data-talk": a.id,
+    // Someone else is talking on it from another page.
+    disabled: !!run && !mine,
+    title: "Hold to talk and let go to end, or tap to talk hands-free and tap again to end",
+    "aria-pressed": String(!!mine),
+  },
+    h("span", { class: "name" }, a.name),
+    h("span", { class: "meta" }, meta),
+    h("span", { class: "talk-hint" }, mine?.phase === "live" && h("span", { class: "dot", "aria-hidden": "true" }), hint),
+    mine && h("span", { class: "meter", "aria-hidden": "true" }, bar),
+    a.priority && a.priority !== "normal" && h("span", { class: `badge ${a.priority}` }, a.priority));
+  pushToTalk(button, a.id, a.name);
+  return h("div", { class: `tile live ${a.priority ?? "normal"}${run ? " active" : ""}${mine ? " on-air" : ""}` },
+    button,
+    run && h("div", { class: "playing" },
+      h("span", {}, runState(run)),
+      h("button", { class: "danger", onclick: () => stopRun(run) }, "Stop")));
+}
+
 function tile(a) {
   const run = activeRun(a.id);
   const zones = a.zones.map(zoneName).join(", ");
   const meta = [zones, a.repeat > 1 && `${a.repeat}×`].filter(Boolean).join(" · ");
+  if (a.audio === "live") return liveTile(a, run, meta);
   return h("div", { class: `tile ${a.priority ?? "normal"}${run ? " active" : ""}` },
     h("button", {
       class: "play",
@@ -41,6 +77,8 @@ export function mount(el) {
       return;
     }
     const anns = state.config.announcements;
+    // A redraw replaces the buttons: keep the keyboard on the one it was on.
+    const focused = document.activeElement?.dataset?.talk;
     const active = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
     const next = state.upcoming.fires[0];
     replace(el,
@@ -53,7 +91,17 @@ export function mount(el) {
         : h("p", { class: "muted" }, "No announcements yet: add zones, then announcements, from the tabs above."),
       active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
       active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
+    if (focused) el.querySelector(`[data-talk="${CSS.escape(focused)}"]`)?.focus();
   };
   subscribe(["config", "runs", "upcoming"], render);
+  onTalk((t) => {
+    const changed = t?.id !== talkState?.id || t?.phase !== talkState?.phase || t?.latched !== talkState?.latched;
+    talkState = t;
+    if (changed) {
+      meter = null;
+      render();
+    }
+    if (meter && t) meter.style.width = `${Math.round(Math.min(1, t.level * 1.5) * 100)}%`;
+  });
   render();
 }

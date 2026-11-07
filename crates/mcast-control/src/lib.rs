@@ -12,7 +12,8 @@ pub mod watch;
 
 pub use announcements::{Announced, Announcements};
 pub use jobs::{
-    JobId, JobInfo, JobKind, JobState, Jobs, ReceivedFile, StartError, TextError, TextLine,
+    JobId, JobInfo, JobKind, JobState, Jobs, LiveError, ReceivedFile, StartError, TextError,
+    TextLine,
 };
 pub use phonebook::Phonebook;
 pub use request::{FileRecvRequest, FileSendRequest, RecvRequest, SendRequest, TextRequest};

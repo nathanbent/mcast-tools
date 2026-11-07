@@ -8,6 +8,7 @@ mod audio;
 mod file;
 mod text;
 
+pub use audio::LiveError;
 pub use file::ReceivedFile;
 pub use text::{TextError, TextLine};
 
@@ -180,6 +181,8 @@ struct Job {
     sends_to: Option<SocketAddr>,
     /// Text channels: where typed text goes, and recent lines.
     text: Option<text::Channel>,
+    /// Live senders: where streamed audio goes.
+    live: Option<mcast_audio::live::LiveFeed>,
     /// Sender progress, and frames per packet and sample rate to turn it into seconds.
     progress: Option<(Arc<Progress>, u64, u32)>,
     thread: Option<JoinHandle<()>>,
@@ -261,6 +264,7 @@ impl Shared {
                 stop,
                 sends_to,
                 text: None,
+                live: None,
                 progress: None,
                 thread: None,
             },
@@ -392,6 +396,10 @@ impl Jobs {
         let job = st.jobs.get_mut(&id)?;
         if job.info.state.is_active() {
             job.stop.store(true, Ordering::Relaxed);
+            // Anyone still streaming in hears that it's over.
+            if let Some(feed) = &job.live {
+                feed.close();
+            }
             job.info.state = JobState::Stopping;
             let info = job.info.clone();
             drop(st);

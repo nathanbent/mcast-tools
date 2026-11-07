@@ -39,6 +39,7 @@ pub fn list(path: &Path) -> Result<()> {
         let audio = match &a.audio {
             Audio::Media(m) => m.clone(),
             Audio::ChimeOnly => "chime only".into(),
+            Audio::Live => "live (push to talk)".into(),
         };
         let mut extras = Vec::new();
         // As it plays, with the defaults: say which chimes are those.
@@ -259,7 +260,7 @@ fn server_problems(
         let what = format!("announcement \"{}\"", a.id);
         let media = match &a.audio {
             Audio::Media(m) => Some(m.as_str()),
-            Audio::ChimeOnly => None,
+            Audio::ChimeOnly | Audio::Live => None,
         };
         uses.push((what, media, [&a.chime, &a.end_chime]));
     }
@@ -289,6 +290,12 @@ fn server_problems(
 /// stops it. An error if it played to no group.
 pub fn play(path: &Path, backend: Arc<dyn Backend>, which: &str, stop: &AtomicBool) -> Result<()> {
     let cfg = store::load(path)?;
+    if cfg
+        .announcement(which)
+        .is_some_and(|a| a.audio == Audio::Live)
+    {
+        bail!("\"{which}\" is live: talk on it from the panel's page");
+    }
     // Notifications can arrive out of order, so they only say when to look.
     let (tx, rx) = mpsc::channel::<()>();
     let runner = Runner::new(backend, move |_| {

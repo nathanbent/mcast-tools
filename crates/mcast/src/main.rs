@@ -583,6 +583,30 @@ struct IntercomServeArgs {
     /// (for working on crates/mcast-intercom/assets)
     #[arg(long, value_name = "DIR", conflicts_with = "no_web")]
     web_dir: Option<PathBuf>,
+    /// Serve HTTPS with this certificate (PEM, with its chain); needs --tls-key.
+    /// Browsers only allow push to talk's microphone on HTTPS pages (or localhost)
+    #[arg(
+        long,
+        value_name = "FILE",
+        env = "MCAST_INTERCOM_TLS_CERT",
+        requires = "tls_key"
+    )]
+    tls_cert: Option<PathBuf>,
+    /// The certificate's private key (PEM)
+    #[arg(
+        long,
+        value_name = "FILE",
+        env = "MCAST_INTERCOM_TLS_KEY",
+        requires = "tls_cert"
+    )]
+    tls_key: Option<PathBuf>,
+    /// Serve HTTPS with a self-signed certificate, made once and kept beside the
+    /// config (browsers warn about it the first time). --tls-cert wins over it
+    #[arg(long, env = "MCAST_INTERCOM_TLS_SELF_SIGNED")]
+    tls_self_signed: bool,
+    /// Another name or address for the self-signed certificate (repeatable)
+    #[arg(long = "tls-name", value_name = "NAME", requires = "tls_self_signed")]
+    tls_names: Vec<String>,
 }
 
 fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
@@ -599,7 +623,17 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
             mcast_intercom::cli::play(&path, Arc::new(backend), &announcement, &stop)
         }
         IntercomCommand::Serve(s) => {
+            use mcast_intercom::server::tls;
+            let tls = match (s.tls_cert, s.tls_key) {
+                (Some(cert), Some(key)) => Some(tls::TlsFiles { cert, key }),
+                _ if s.tls_self_signed => {
+                    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+                    Some(tls::self_signed(dir, s.listen, &s.tls_names)?)
+                }
+                _ => None,
+            };
             let cfg = mcast_intercom::server::ServeConfig {
+                tls,
                 listen: s.listen,
                 token: s.panel_token,
                 config: path,

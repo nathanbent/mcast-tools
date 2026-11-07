@@ -379,6 +379,7 @@ async fn wont_listen_on_the_network_without_a_token() {
         config: PathBuf::from("unused.json"),
         web: true,
         web_dir: None,
+        tls: None,
     };
     let e = serve(cfg, Arc::new(Fake::default()), async {})
         .await
@@ -747,4 +748,41 @@ async fn sites_and_schedule_groups() {
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+#[tokio::test]
+async fn live_announcements_are_talked_on_not_played_or_scheduled() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/announcements",
+            Some(json!({"name": "Talk", "audio": "live", "zones": ["hall"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, v) = p.call(Method::POST, "/announcements/talk/play", None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(v["error"].as_str().unwrap().contains("push to talk"), "{v}");
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/schedules",
+            Some(json!({"announcement": "talk", "when": {"once": "2027-01-01T09:00"}})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        v["error"].as_str().unwrap().contains("can't be scheduled"),
+        "{v}"
+    );
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/announcements/talk",
+            Some(json!({"name": "Talk", "audio": "live", "zones": ["hall"], "repeat": 2})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }

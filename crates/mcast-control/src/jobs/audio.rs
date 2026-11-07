@@ -11,7 +11,39 @@ use mcast_audio::{receiver, StreamInfo};
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
 
+/// Why audio can't be streamed into a job.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LiveError {
+    NoJob,
+    /// It isn't a sender with a live source.
+    NotLive,
+    Ended,
+}
+
+impl std::fmt::Display for LiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LiveError::NoJob => "no such job",
+            LiveError::NotLive => "that job doesn't have a live source",
+            LiveError::Ended => "that job has ended",
+        })
+    }
+}
+
+impl std::error::Error for LiveError {}
+
 impl Jobs {
+    /// Where to push audio for a sender with a live source.
+    pub fn live_feed(&self, id: super::JobId) -> Result<mcast_audio::live::LiveFeed, LiveError> {
+        let st = self.shared.lock();
+        let job = st.jobs.get(&id).ok_or(LiveError::NoJob)?;
+        let feed = job.live.clone().ok_or(LiveError::NotLive)?;
+        if !job.info.state.is_active() {
+            return Err(LiveError::Ended);
+        }
+        Ok(feed)
+    }
+
     /// Start sending. Waits until the sender is ready (files opened and
     /// measured), so a bad request fails here rather than in the background.
     pub fn start_sender(&self, req: SendRequest) -> Result<JobInfo, StartError> {
@@ -47,6 +79,11 @@ impl Jobs {
             .shared
             .register(info, stop.clone(), sends.then_some(req.group))?
             .id;
+        if let mcast_audio::sender::Source::Live { feed } = &cfg.source {
+            if let Some(job) = self.shared.lock().jobs.get_mut(&id) {
+                job.live = Some(feed.clone());
+            }
+        }
 
         let (ready_tx, ready_rx) = mpsc::channel();
         let shared = self.shared.clone();

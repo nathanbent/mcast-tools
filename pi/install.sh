@@ -27,6 +27,7 @@ MCAST_EXTRA_ARGS=""
 ENABLE_INTERCOM=no
 INTERCOM_LISTEN="0.0.0.0:8651"
 INTERCOM_TOKEN=""
+INTERCOM_HTTPS=yes
 ENABLE_LLDP=yes
 LLDP_CDP=yes
 LLDP_INTERFACES="eth*,end*,wlan*"
@@ -56,6 +57,7 @@ MCAST_PORT=${MCAST_LISTEN##*:}
 INTERCOM_PORT=${INTERCOM_LISTEN##*:}
 # Set once the intercom service is installed and running.
 INTERCOM_ON=no
+INTERCOM_SCHEME=http
 NOTES=()
 
 on() { [ "${1,,}" = yes ] || [ "${1,,}" = true ] || [ "$1" = 1 ]; }
@@ -235,6 +237,16 @@ install_intercom() {
         note "intercom panel token (also in $env): $INTERCOM_TOKEN"
     fi
     mcast_listen=$(env_value /etc/mcast/mcast.env MCAST_LISTEN)
+    # Browsers only allow push to talk's microphone on HTTPS pages.
+    local https=false
+    if on "$INTERCOM_HTTPS"; then
+        if /usr/local/bin/mcast intercom serve --help 2>/dev/null | grep -q -- --tls-self-signed; then
+            https=true
+            INTERCOM_SCHEME=https
+        else
+            note "Intercom panel over plain HTTP: $(/usr/local/bin/mcast --version) can't serve HTTPS yet (push to talk needs it). Run 'sudo mcast update', then re-run install.sh."
+        fi
+    fi
     umask 027
     cat >"$env" <<EOF
 # Read by mcast-intercom.service. Written by install.sh; edit and
@@ -244,6 +256,10 @@ MCAST_INTERCOM_LISTEN=$INTERCOM_LISTEN
 MCAST_INTERCOM_TOKEN=$INTERCOM_TOKEN
 MCAST_URL=$(local_url "${mcast_listen:-$MCAST_LISTEN}")
 MCAST_INTERCOM=/var/lib/mcast/intercom.json
+# HTTPS with a self-signed certificate (kept in /var/lib/mcast), so push to
+# talk can use the browser's microphone. For a real certificate, set
+# MCAST_INTERCOM_TLS_CERT and MCAST_INTERCOM_TLS_KEY instead.
+MCAST_INTERCOM_TLS_SELF_SIGNED=$https
 EOF
     umask 022
     chown root:mcast "$env"
@@ -254,7 +270,8 @@ EOF
     systemctl enable mcast-intercom.service
     systemctl restart mcast-intercom.service
     INTERCOM_ON=yes
-    note "Intercom panel: http://$(hostname).local:$INTERCOM_PORT/   (its config: /var/lib/mcast/intercom.json)"
+    note "Intercom panel: $INTERCOM_SCHEME://$(hostname).local:$INTERCOM_PORT/   (its config: /var/lib/mcast/intercom.json)"
+    [ $INTERCOM_SCHEME = https ] && note "  Its certificate is self-signed: browsers warn about it once; accept it to go on."
 }
 
 setup_lldp() {
@@ -321,11 +338,11 @@ setup_avahi() {
     step "mDNS"
     if on "$INSTALL_MCAST"; then
         render mcast-http.service /etc/avahi/services/mcast.service 0644 \
-            NAME "mcast on %h" PORT "$MCAST_PORT"
+            NAME "mcast on %h" PORT "$MCAST_PORT" TYPE _http._tcp
     fi
     if [ $INTERCOM_ON = yes ]; then
         render mcast-http.service /etc/avahi/services/mcast-intercom.service 0644 \
-            NAME "Intercom on %h" PORT "$INTERCOM_PORT"
+            NAME "Intercom on %h" PORT "$INTERCOM_PORT" TYPE "_$INTERCOM_SCHEME._tcp"
     else
         rm -f /etc/avahi/services/mcast-intercom.service
     fi
