@@ -238,10 +238,10 @@ install_intercom() {
     fi
     mcast_listen=$(env_value /etc/mcast/mcast.env MCAST_LISTEN)
     # Browsers only allow push to talk's microphone on HTTPS pages.
-    local https=false
+    local tls_line="MCAST_INTERCOM_NO_TLS=true"
     if on "$INTERCOM_HTTPS"; then
         if /usr/local/bin/mcast intercom serve --help 2>/dev/null | grep -q -- --tls-self-signed; then
-            https=true
+            tls_line="MCAST_INTERCOM_TLS_SELF_SIGNED=true"
             INTERCOM_SCHEME=https
         else
             note "Intercom panel over plain HTTP: $(/usr/local/bin/mcast --version) can't serve HTTPS (it needs 0.5.0 or later; push to talk needs HTTPS). Run 'sudo mcast update', then re-run install.sh."
@@ -257,9 +257,10 @@ MCAST_INTERCOM_TOKEN=$INTERCOM_TOKEN
 MCAST_URL=$(local_url "${mcast_listen:-$MCAST_LISTEN}")
 MCAST_INTERCOM=/var/lib/mcast/intercom.json
 # HTTPS with a self-signed certificate (kept in /var/lib/mcast), so push to
-# talk can use the browser's microphone. For a real certificate, set
-# MCAST_INTERCOM_TLS_CERT and MCAST_INTERCOM_TLS_KEY instead.
-MCAST_INTERCOM_TLS_SELF_SIGNED=$https
+# talk can use the browser's microphone; or, with INTERCOM_HTTPS=no, plain
+# HTTP. For your own certificate, set MCAST_INTERCOM_TLS_CERT and
+# MCAST_INTERCOM_TLS_KEY.
+$tls_line
 EOF
     umask 022
     chown root:mcast "$env"

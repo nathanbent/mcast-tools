@@ -57,9 +57,10 @@ if [ -f /etc/systemd/system/mcast-intercom.service ]; then
         # shellcheck source=/dev/null
         listen=$(. /etc/mcast/intercom.env 2>/dev/null; echo "${MCAST_INTERCOM_LISTEN:-}")
         # shellcheck source=/dev/null
-        tls=$(. /etc/mcast/intercom.env 2>/dev/null; echo "${MCAST_INTERCOM_TLS_SELF_SIGNED:-}${MCAST_INTERCOM_TLS_CERT:-}")
-        scheme=http
-        [ -n "$tls" ] && [ "$tls" != false ] && scheme=https
+        notls=$(. /etc/mcast/intercom.env 2>/dev/null; echo "${MCAST_INTERCOM_NO_TLS:-}")
+        scheme=https
+        # Plain HTTP when asked, or when it only listens on this Pi.
+        case "$notls:$listen" in true:* | *:127.* | *:localhost:* | *:\[::1\]:*) scheme=http ;; esac
         port=${listen##*:}
         printf '  intercom   %srunning%s  %s://%s.local:%s/\n' \
             "$green" "$reset" "$scheme" "$(hostname)" "${port:-8651}"

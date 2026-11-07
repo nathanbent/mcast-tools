@@ -3,7 +3,7 @@
 //! mcast-web serves itself, so this crate needs nothing from it.
 
 use axum::extract::Path;
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -20,12 +20,36 @@ pub(super) fn router(dir: Option<PathBuf>) -> Router {
     let dir = Arc::new(dir);
     let index = {
         let dir = dir.clone();
-        move || async move { asset(&dir, "index.html").await }
+        move |headers: HeaderMap| async move { asset(&dir, "index.html", &headers).await }
     };
     Router::new().route("/", get(index)).route(
         "/{*path}",
-        get(move |Path(path): Path<String>| async move { asset(&dir, &path).await }),
+        get(
+            move |Path(path): Path<String>, headers: HeaderMap| async move {
+                asset(&dir, &path, &headers).await
+            },
+        ),
     )
+}
+
+/// The page's Content-Security-Policy. Push to talk's WebSocket goes back
+/// to the page's own host; some browsers don't count `ws:`/`wss:` as
+/// `'self'`, so the host is named too.
+fn policy(headers: &HeaderMap) -> HeaderValue {
+    let base = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    let host = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .filter(|h| {
+            !h.is_empty()
+                && h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c))
+        });
+    let csp = match host {
+        Some(h) => format!("{base}; connect-src 'self' wss://{h} ws://{h}"),
+        None => base.to_string(),
+    };
+    HeaderValue::from_str(&csp).unwrap_or_else(|_| HeaderValue::from_static(base))
 }
 
 /// Paths like "js/app.js": no parent, hidden or absolute parts.
@@ -50,7 +74,7 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-async fn asset(dir: &Option<PathBuf>, path: &str) -> Response {
+async fn asset(dir: &Option<PathBuf>, path: &str, headers: &HeaderMap) -> Response {
     if !valid(path) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -73,10 +97,12 @@ async fn asset(dir: &Option<PathBuf>, path: &str) -> Response {
     // Revalidate so an upgraded binary's files are picked up.
     set(h, header::CACHE_CONTROL, "no-cache");
     // This page can page: keep it out of frames and off other origins' scripts.
+    h.insert(header::CONTENT_SECURITY_POLICY, policy(headers));
+    // It may use the microphone (push to talk), itself only.
     set(
         h,
-        header::CONTENT_SECURITY_POLICY,
-        "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+        "permissions-policy".parse().unwrap(),
+        "microphone=(self)",
     );
     set(h, header::X_FRAME_OPTIONS, "DENY");
     set(h, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
@@ -105,6 +131,32 @@ mod tests {
             "text/html; charset=utf-8"
         );
         assert!(r.headers().contains_key(header::CONTENT_SECURITY_POLICY));
+        // Push to talk's WebSocket back to the page's own host is allowed by name.
+        let req = Request::builder()
+            .uri("/")
+            .header(header::HOST, "pager.example:8651")
+            .body(Body::empty())
+            .unwrap();
+        let r = router(None).oneshot(req).await.unwrap();
+        let csp = r.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("connect-src 'self' wss://pager.example:8651 ws://pager.example:8651"),
+            "{csp}"
+        );
+        assert_eq!(r.headers()["permissions-policy"], "microphone=(self)");
+        // A Host that doesn't look like one isn't copied in.
+        let req = Request::builder()
+            .uri("/")
+            .header(header::HOST, "evil; script-src *")
+            .body(Body::empty())
+            .unwrap();
+        let r = router(None).oneshot(req).await.unwrap();
+        let csp = r.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(!csp.contains("evil"), "{csp}");
         let r = get("/js/main.js").await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(

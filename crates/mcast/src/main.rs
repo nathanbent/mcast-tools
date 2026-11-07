@@ -601,12 +601,17 @@ struct IntercomServeArgs {
     )]
     tls_key: Option<PathBuf>,
     /// Serve HTTPS with a self-signed certificate, made once and kept beside the
-    /// config (browsers warn about it the first time). --tls-cert wins over it
+    /// config (browsers warn about it the first time). The default when
+    /// listening on anything but loopback; --tls-cert wins over it
     #[arg(long, env = "MCAST_INTERCOM_TLS_SELF_SIGNED")]
     tls_self_signed: bool,
     /// Another name or address for the self-signed certificate (repeatable)
-    #[arg(long = "tls-name", value_name = "NAME", requires = "tls_self_signed")]
+    #[arg(long = "tls-name", value_name = "NAME")]
     tls_names: Vec<String>,
+    /// Plain HTTP, even when listening on the network (push to talk then only
+    /// works from http://localhost, or behind a proxy that adds HTTPS)
+    #[arg(long, env = "MCAST_INTERCOM_NO_TLS", conflicts_with_all = ["tls_cert", "tls_self_signed"])]
+    no_tls: bool,
 }
 
 fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
@@ -624,9 +629,12 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
         }
         IntercomCommand::Serve(s) => {
             use mcast_intercom::server::tls;
+            // HTTPS unless asked not to, or only reachable from this machine:
+            // browsers only allow the microphone on HTTPS pages (and localhost).
+            let self_signed = s.tls_self_signed || (!s.no_tls && !s.listen.ip().is_loopback());
             let tls = match (s.tls_cert, s.tls_key) {
                 (Some(cert), Some(key)) => Some(tls::TlsFiles { cert, key }),
-                _ if s.tls_self_signed => {
+                _ if self_signed => {
                     let dir = path.parent().unwrap_or(std::path::Path::new("."));
                     Some(tls::self_signed(dir, s.listen, &s.tls_names)?)
                 }
