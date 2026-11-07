@@ -55,6 +55,117 @@ pub struct Config {
     /// Headings the Panel groups announcements under.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<Category>,
+    /// How the Panel looks, for every screen.
+    #[serde(skip_serializing_if = "PanelLook::is_default")]
+    pub panel: PanelLook,
+}
+
+/// Colors a button or category can have: named, so the page can keep them
+/// readable in light and dark.
+pub const COLORS: [&str; 8] = [
+    "red", "orange", "amber", "green", "teal", "blue", "purple", "grey",
+];
+
+/// Button sizes on the Panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Size {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+/// Buttons as tiles, or one row each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelMode {
+    #[default]
+    Tiles,
+    List,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+/// How the Panel looks. Leaving a field out keeps its default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PanelLook {
+    #[serde(skip_serializing_if = "is_medium")]
+    pub size: Size,
+    #[serde(skip_serializing_if = "is_tiles")]
+    pub mode: PanelMode,
+    /// The zones and repeat count under each name.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_details: bool,
+    /// The "Next:" line.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_next: bool,
+    /// The "Now playing" list.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_playing: bool,
+    /// Ask before playing an emergency announcement.
+    #[serde(skip_serializing_if = "is_false")]
+    pub confirm_emergency: bool,
+}
+
+impl Default for PanelLook {
+    fn default() -> Self {
+        Self {
+            size: Size::Medium,
+            mode: PanelMode::Tiles,
+            show_details: yes(),
+            show_next: yes(),
+            show_playing: yes(),
+            confirm_emergency: false,
+        }
+    }
+}
+
+impl PanelLook {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Every field, defaults too (the file leaves those out).
+    pub fn full(&self) -> Value {
+        json!({
+            "size": self.size,
+            "mode": self.mode,
+            "show_details": self.show_details,
+            "show_next": self.show_next,
+            "show_playing": self.show_playing,
+            "confirm_emergency": self.confirm_emergency,
+        })
+    }
+}
+
+fn is_medium(s: &Size) -> bool {
+    *s == Size::Medium
+}
+
+fn is_tiles(m: &PanelMode) -> bool {
+    *m == PanelMode::Tiles
+}
+
+/// Longest icon (an emoji or a few characters), in characters.
+pub const MAX_ICON: usize = 4;
+
+fn check_look(what: &str, color: &Option<String>, icon: &Option<String>) -> Result<()> {
+    if let Some(c) = color {
+        if !COLORS.contains(&c.as_str()) {
+            bail!("{what}: no color \"{c}\" (use {})", COLORS.join(", "));
+        }
+    }
+    if let Some(i) = icon {
+        let n = i.chars().count();
+        if n == 0 || n > MAX_ICON || i.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            bail!("{what}: an icon is an emoji or up to {MAX_ICON} characters, no spaces");
+        }
+    }
+    Ok(())
 }
 
 /// Most things a layout lists (sections, categories, buttons).
@@ -68,6 +179,12 @@ pub const MAX_TAGS: usize = 20;
 pub struct Category {
     pub id: String,
     pub name: String,
+    /// Its buttons' color, unless one sets its own (one of [`COLORS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Its buttons' size, instead of the Panel's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
 }
 
 /// Most items in a playlist.
@@ -559,6 +676,15 @@ pub struct Announcement {
     /// For filtering the Panel.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Its button's color, instead of its category's (one of [`COLORS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// An emoji (or a few characters) on its button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Ask "are you sure?" before playing it from the Panel.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub confirm: bool,
 }
 
 /// An announcement's chime with the default filled in: `None` for no chime.
@@ -907,6 +1033,7 @@ impl Config {
                     bail!("{what}: no category \"{c}\"");
                 }
             }
+            check_look(&what, &a.color, &a.icon)?;
             if a.tags.len() > MAX_TAGS {
                 bail!("{what}: at most {MAX_TAGS} tags");
             }
@@ -1010,6 +1137,7 @@ impl Config {
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
         for c in &self.categories {
+            check_look(&format!("category \"{}\"", c.id), &c.color, &None)?;
             check_id("category", &c.id)?;
             check_name("category", &c.name)?;
             if !ids.insert(c.id.as_str()) {

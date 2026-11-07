@@ -448,3 +448,58 @@ ol.arrange { margin: 8px 0 14px; }
 .panel-group + .panel-group { margin-top: 18px; }
 h3.group-head { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
 dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 4px; }
+
+/* Panel customization: a palette of named colors (readable in both themes),
+   button sizes, and a compact list. */
+:root {
+  --c-red: #dc2626; --c-orange: #ea580c; --c-amber: #d97706; --c-green: #16a34a;
+  --c-teal: #0d9488; --c-blue: #2563eb; --c-purple: #7c3aed; --c-grey: #6b7280;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --c-red: #f87171; --c-orange: #fb923c; --c-amber: #fbbf24; --c-green: #4ade80;
+    --c-teal: #2dd4bf; --c-blue: #60a5fa; --c-purple: #a78bfa; --c-grey: #9ca3af;
+  }
+}
+.color-red { --c: var(--c-red); } .color-orange { --c: var(--c-orange); } .color-amber { --c: var(--c-amber); }
+.color-green { --c: var(--c-green); } .color-teal { --c: var(--c-teal); } .color-blue { --c: var(--c-blue); }
+.color-purple { --c: var(--c-purple); } .color-grey { --c: var(--c-grey); }
+.tile.colored { border-color: color-mix(in srgb, var(--c) 45%, var(--line)); background: color-mix(in srgb, var(--c) 9%, var(--panel)); }
+/* Priority keeps its top border; a color takes it otherwise. */
+.tile.colored.normal { border-top-color: var(--c); }
+.tile.colored.high { border-top-color: var(--warn); }
+.tile.colored.emergency { border-top-color: var(--bad); }
+.tiles.mode-list > .tile.colored.high { border-left-color: var(--warn); }
+.tiles.mode-list > .tile.colored.emergency { border-left-color: var(--bad); }
+.tile.colored > button.play:hover:not(:disabled) { background: color-mix(in srgb, var(--c) 16%, var(--panel)); }
+.tile .icon-big { font-size: 26px; line-height: 1; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: var(--c); vertical-align: middle; margin-right: 6px; }
+
+.tiles.size-small { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.tiles.size-small > .tile > button.play { min-height: 72px; padding: 10px 12px; gap: 3px; }
+.tiles.size-small .name { font-size: 15px; }
+.tiles.size-small .icon-big { font-size: 20px; }
+.tiles.size-large { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px; }
+.tiles.size-large > .tile > button.play { min-height: 160px; padding: 22px; }
+.tiles.size-large .name { font-size: 24px; }
+.tiles.size-large .icon-big { font-size: 38px; }
+
+/* One row per button. */
+.tiles.mode-list { grid-template-columns: 1fr; gap: 6px; }
+.tiles.mode-list > .tile { flex-direction: row; align-items: stretch; border-top-width: 1px; border-left: 5px solid var(--accent); }
+.tiles.mode-list > .tile.high { border-left-color: var(--warn); }
+.tiles.mode-list > .tile.emergency { border-left-color: var(--bad); }
+.tiles.mode-list > .tile.colored.normal { border-left-color: var(--c); border-top-color: color-mix(in srgb, var(--c) 45%, var(--line)); }
+.tiles.mode-list > .tile > button.play { flex-direction: row; align-items: center; min-height: 52px; padding: 8px 14px; gap: 12px; }
+.tiles.mode-list.size-small > .tile > button.play { min-height: 40px; padding: 4px 12px; }
+.tiles.mode-list.size-large > .tile > button.play { min-height: 72px; }
+.tiles.mode-list .meta { margin-left: auto; }
+.tiles.mode-list .playing { border-top: none; border-left: 1px solid var(--line); }
+
+/* Collapsible category headings. */
+button.group-head { all: unset; cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 13px; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); font-weight: 600; margin: 0 0 8px; }
+button.group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.group-head .count { text-transform: none; letter-spacing: 0; font-weight: 400; }
+select.has-swatch { border-left: 6px solid var(--c); }
+input.icon-input { font-size: 18px; }

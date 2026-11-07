@@ -85,6 +85,9 @@ fn config() -> Config {
         parts: Vec::new(),
         category: None,
         tags: Vec::new(),
+        color: None,
+        icon: None,
+        confirm: false,
     };
     Config {
         zones: vec![
@@ -336,6 +339,9 @@ fn talks_live_to_two_groups() {
         parts: Vec::new(),
         category: None,
         tags: Vec::new(),
+        color: None,
+        icon: None,
+        confirm: false,
     });
     std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));

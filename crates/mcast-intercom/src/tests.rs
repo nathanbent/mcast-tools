@@ -35,6 +35,9 @@ fn announcement(id: &str, zones: &[&str]) -> Announcement {
         parts: Vec::new(),
         category: None,
         tags: Vec::new(),
+        color: None,
+        icon: None,
+        confirm: false,
     }
 }
 

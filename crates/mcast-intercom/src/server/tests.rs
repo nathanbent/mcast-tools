@@ -2091,3 +2091,85 @@ async fn categories_and_tags_organize_announcements() {
         .await;
     assert_eq!(s, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn the_panel_look_colors_icons_and_confirming() {
+    let p = panel(None);
+    p.set_up().await;
+    let (_, v) = p.call(Method::GET, "/settings", None).await;
+    assert_eq!(
+        v["panel"],
+        json!({"size": "medium", "mode": "tiles", "show_details": true, "show_next": true,
+               "show_playing": true, "confirm_emergency": false})
+    );
+    let look =
+        json!({"size": "large", "mode": "list", "show_next": false, "confirm_emergency": true});
+    let (s, v) = p
+        .call(Method::PUT, "/settings", Some(json!({"panel": look})))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["panel"]["size"], "large");
+    assert_eq!(v["panel"]["show_details"], true, "left out: its default");
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert_eq!(
+        cfg["panel"],
+        json!({"size": "large", "mode": "list", "show_next": false, "confirm_emergency": true})
+    );
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"panel": {"size": "huge"}})),
+        )
+        .await;
+    assert!(s.is_client_error());
+
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/categories",
+            Some(json!({"name": "Alarms", "color": "red", "size": "small"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/categories",
+            Some(json!({"name": "Pink", "color": "pink"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let ann = |extra: Value| {
+        let mut a = json!({"name": "Bell", "audio": "chime_only", "zones": ["hall"]});
+        a.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/announcements/bell",
+            Some(ann(
+                json!({"category": "alarms", "color": "teal", "icon": "🔔", "confirm": true}),
+            )),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["icon"].clone(), v["confirm"].clone()),
+        (json!("🔔"), json!(true))
+    );
+    for bad in [
+        json!({"color": "#ff0000"}),
+        json!({"icon": "a b"}),
+        json!({"icon": "toolong"}),
+        json!({"icon": ""}),
+    ] {
+        let (s, _) = p
+            .call(Method::PUT, "/announcements/bell", Some(ann(bad.clone())))
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    }
+}

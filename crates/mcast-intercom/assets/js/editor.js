@@ -131,3 +131,18 @@ export function mountEditor(el, spec) {
   // For views that change what's listed.
   return { render };
 }
+
+// The Panel's palette (as in the panel's config): [value, label] pairs.
+export const COLORS = ["red", "orange", "amber", "green", "teal", "blue", "purple", "grey"];
+export const SIZES = [["small", "Small"], ["medium", "Medium"], ["large", "Large"]];
+
+// A color choice: `none` is the label for no color of its own.
+export function colorSelect(value, none) {
+  const el = select([["", none], ...COLORS.map((c) => [c, c[0].toUpperCase() + c.slice(1)])], value ?? "");
+  const show = () => {
+    el.className = el.value ? `color-${el.value} has-swatch` : "";
+  };
+  el.addEventListener("change", show);
+  show();
+  return el;
+}

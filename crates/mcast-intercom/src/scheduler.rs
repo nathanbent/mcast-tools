@@ -447,6 +447,9 @@ mod tests {
                     parts: Vec::new(),
                     category: None,
                     tags: Vec::new(),
+                    color: None,
+                    icon: None,
+                    confirm: false,
                 })
                 .collect(),
             schedules,

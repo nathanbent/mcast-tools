@@ -607,6 +607,7 @@ fn settings(c: &Config) -> Value {
         "defaults": c.defaults,
         "schedules_paused": c.schedules_paused,
         "days_off": c.days_off,
+        "panel": c.panel.full(),
     })
 }
 
@@ -638,6 +639,9 @@ pub(super) struct Settings {
     schedules_paused: Option<bool>,
     #[serde(default)]
     days_off: Option<Vec<DayOff>>,
+    /// How the Panel looks, replaced whole.
+    #[serde(default)]
+    panel: Option<crate::model::PanelLook>,
 }
 
 pub(super) async fn put_settings(
@@ -657,6 +661,9 @@ pub(super) async fn put_settings(
         }
         if let Some(days) = new.days_off {
             c.days_off = days;
+        }
+        if let Some(look) = new.panel {
+            c.panel = look;
         }
         Ok(settings(c))
     })

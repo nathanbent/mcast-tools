@@ -183,7 +183,21 @@ Admins drag the sections of a tab into the order they want. The layout is kept i
 - **Tags:** an announcement can have any number (`tags`), shown as filter chips on the Panel. The chosen chip is remembered per screen.
 - **Arranging:** *Arrange the Panel…* (admins) orders the categories and the buttons inside each, through the layout (`panel`, `panel-buttons`). Every screen shows the same.
 
-### 9b. Panel customization (planned)
+### 9b. Panel customization
+
+**Built.**
+- **Settings → Panel** (stored as `panel`): button size (small, medium or large), tiles or a one-row-per-button list, and whether to show the details line, "Next:" and "Now playing". Also asking before playing emergency announcements.
+- **Categories:** a color and a button size.
+- **Announcements:**
+  - A color, overriding the category's.
+  - An icon (an emoji).
+  - "Ask before playing".
+- **Colors** come from a fixed palette with separate light and dark shades. High and emergency keep their amber or red edge whatever the color.
+- **Per screen:** categories fold away, remembered on that screen.
+
+**Still to do:** per-screen views (an operator token limited to some categories) and a kiosk mode.
+
+The plan:
 
 A plan to review before building. It's the same for every screen unless "per screen" says otherwise.
 

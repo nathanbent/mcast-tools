@@ -7,11 +7,24 @@ import { ordered, sortableList, saveLayouts, arrangeDialog } from "./layout.js";
 import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
 
+// How the Panel looks (Settings → Panel), with the defaults filled in.
+export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, confirm_emergency: false };
+const look = () => ({ ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) });
+
+const categoryOf = (a) => (state.config.categories ?? []).find((c) => c.id === a.category);
+const colorOf = (a) => a.color ?? categoryOf(a)?.color ?? null;
+// Classes for a tile: priority, and its color if it has one.
+const tileClass = (a, extra = "") => [
+  "tile", a.priority ?? "normal", colorOf(a) && `colored color-${colorOf(a)}`, extra,
+].filter(Boolean).join(" ");
+
 let talkState = null;
 // The level meter of the tile being talked on, updated in place.
 let meter = null;
 
 async function play(a) {
+  const ask = a.confirm || (look().confirm_emergency && a.priority === "emergency");
+  if (ask && !confirm(`Play "${a.name}"?`)) return;
   try {
     const run = await api("POST", `/announcements/${encodeURIComponent(a.id)}/play`);
     const busy = run.targets.filter((t) => t.state === "busy").length;
@@ -38,13 +51,14 @@ function liveTile(a, run, meta) {
     title: "Hold to talk and let go to end, or tap to talk hands-free and tap again to end",
     "aria-pressed": String(!!mine),
   },
+    a.icon && h("span", { class: "icon-big", "aria-hidden": "true" }, a.icon),
     h("span", { class: "name" }, a.name),
-    h("span", { class: "meta" }, meta),
+    meta && h("span", { class: "meta" }, meta),
     h("span", { class: "talk-hint" }, mine?.phase === "live" && h("span", { class: "dot", "aria-hidden": "true" }), hint),
     mine && h("span", { class: "meter", "aria-hidden": "true" }, bar),
     a.priority && a.priority !== "normal" && h("span", { class: `badge ${a.priority}` }, a.priority));
   pushToTalk(button, a.id, a.name);
-  return h("div", { class: `tile live ${a.priority ?? "normal"}${run ? " active" : ""}${mine ? " on-air" : ""}` },
+  return h("div", { class: tileClass(a, `live${run ? " active" : ""}${mine ? " on-air" : ""}`) },
     button,
     run && h("div", { class: "playing" },
       h("span", {}, runState(run)),
@@ -53,18 +67,19 @@ function liveTile(a, run, meta) {
 
 function tile(a) {
   const run = activeRun(a.id);
-  const zones = a.zones.map(zoneName).join(", ");
-  const meta = [zones, a.repeat > 1 && `${a.repeat}×`].filter(Boolean).join(" · ");
+  const zones = [a.zones, ...(a.parts ?? []).map((p) => p.zones)].flat().map(zoneName).join(", ");
+  const meta = look().show_details ? [zones, a.repeat > 1 && `${a.repeat}×`].filter(Boolean).join(" · ") : "";
   if (a.audio === "live") return liveTile(a, run, meta);
-  return h("div", { class: `tile ${a.priority ?? "normal"}${run ? " active" : ""}` },
+  return h("div", { class: tileClass(a, run ? "active" : "") },
     h("button", {
       class: "play",
       disabled: !!run,
       title: run ? "Playing" : `Play "${a.name}"`,
       onclick: () => play(a),
     },
+      a.icon && h("span", { class: "icon-big", "aria-hidden": "true" }, a.icon),
       h("span", { class: "name" }, a.name),
-      h("span", { class: "meta" }, meta),
+      meta && h("span", { class: "meta" }, meta),
       a.priority && a.priority !== "normal" && h("span", { class: `badge ${a.priority}` }, a.priority)),
     run && h("div", { class: "playing" },
       h("span", {}, runState(run)),
@@ -73,6 +88,8 @@ function tile(a) {
 
 // The tag the Panel is filtered to, per screen ("" for all).
 let filter = saved.get("panel.tag", "");
+// Categories folded away on this screen.
+const collapsed = new Set(saved.get("panel.collapsed", []));
 const OTHER = "other"; // announcements in no category
 
 // Categories in the Panel's order, each with its announcements in order:
@@ -135,7 +152,7 @@ export function mount(el) {
     const active = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
     const next = state.upcoming.fires[0];
     replace(el,
-      next && h("p", { class: "next" },
+      look().show_next && next && h("p", { class: "next" },
         h("span", { class: "muted" }, "Next: "), h("strong", {}, next.name),
         next.site && ` at ${siteName(next.site)}`,
         ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
@@ -143,12 +160,20 @@ export function mount(el) {
       anns.length
         ? groups(anns.filter((a) => !filter || (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase())))
           .filter((g) => g.anns.length)
-          .map((g) => h("section", { class: "panel-group" },
-            g.name && h("h3", { class: "group-head" }, g.name),
-            h("div", { class: "tiles" }, g.anns.map(tile))))
+          .map((g) => {
+            const shut = collapsed.has(g.id);
+            const size = (state.config.categories ?? []).find((c) => c.id === g.id)?.size ?? look().size;
+            return h("section", { class: "panel-group" },
+              g.name && h("button", {
+                class: "group-head", "aria-expanded": String(!shut),
+                onclick: () => { shut ? collapsed.delete(g.id) : collapsed.add(g.id); saved.set("panel.collapsed", [...collapsed]); render(); },
+              }, h("span", { "aria-hidden": "true" }, shut ? "▸" : "▾"), h("span", {}, g.name),
+              shut && h("span", { class: "count" }, `(${g.anns.length})`)),
+              !shut && h("div", { class: `tiles size-${size} mode-${look().mode}` }, g.anns.map(tile)));
+          })
         : h("p", { class: "muted" }, "No announcements yet: add zones, then announcements, from the tabs above."),
-      active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
-      active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
+      look().show_playing && active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
+      look().show_playing && active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
     if (focused) el.querySelector(`[data-talk="${CSS.escape(focused)}"]`)?.focus();
   };
   renderPanel = render;
