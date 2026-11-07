@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
 use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
+use mcast_audio::process::{Mode, ProcessOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
 use mcast_core::sap::{self, Directory, DirectoryEvent};
 use mcast_core::{Interface, MulticastOptions};
@@ -137,9 +138,10 @@ struct SendArgs {
     /// Opus bitrate in kbit/s
     #[arg(long, default_value_t = 64)]
     bitrate: u32,
-    /// Opus tuning: voice or music
-    #[arg(long, default_value = "music")]
-    opus_mode: OpusMode,
+    /// Opus tuning: voice or music [default: follows --mode; voice for
+    /// wideband/narrowband Opus with no mode, else music]
+    #[arg(long)]
+    opus_mode: Option<OpusMode>,
     /// Opus maximum audio bandwidth: nb (4 kHz), wb (8 kHz), swb (12 kHz), fb (20 kHz)
     #[arg(long)]
     opus_bandwidth: Option<OpusBandwidth>,
@@ -162,9 +164,27 @@ struct SendArgs {
     /// Capture from an input device (substring of its name, or "default")
     #[arg(long, group = "source", num_args = 0..=1, default_missing_value = "default")]
     capture: Option<String>,
-    /// Stop after this many seconds
-    #[arg(short, long)]
+    /// Processing tuned for the content and codec: voice, music or none
+    #[arg(short, long, default_value = "none")]
+    mode: Mode,
+    /// Shortcut for --mode voice
+    #[arg(short = 'p', long = "voice", conflicts_with = "mode")]
+    voice: bool,
+    /// Volume change in dB after processing, e.g. -6 or 3 (limited to avoid clipping)
+    #[arg(short, long, allow_negative_numbers = true)]
+    volume: Option<f64>,
+    /// Lead-in silence in ms, so the first word isn't clipped
+    #[arg(short = 'L', long, default_value_t = 0.0)]
+    lead_in: f64,
+    /// Start this many seconds into the WAV file (adds a short fade-in)
+    #[arg(short, long, requires = "wav")]
+    start: Option<f64>,
+    /// Send this many seconds of the source (adds a short fade-out), then stop
+    #[arg(short, long, short_alias = 't')]
     duration: Option<f64>,
+    /// Render to a WAV of exactly what a receiver would decode, instead of sending
+    #[arg(short = 'o', long, value_name = "FILE")]
+    render: Option<PathBuf>,
     /// Stream name announced to receivers [default: "<hostname> audio"]
     #[arg(short, long)]
     name: Option<String>,
@@ -263,6 +283,11 @@ fn hostname() -> String {
 }
 
 fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
+    let mode = if a.voice { Mode::Voice } else { a.mode };
+    let endless = (a.wav.is_none() || a.looped) && a.duration.is_none();
+    if a.render.is_some() && endless {
+        bail!("--render needs an end: a WAV file without --loop, or --duration");
+    }
     let source = if let Some(path) = a.wav {
         sender::Source::Wav {
             path,
@@ -278,7 +303,16 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
             amplitude: 10f32.powf(a.level / 20.0),
         }
     };
-    let announce = (!a.no_sap).then(|| sender::Announce {
+    // Like mcast-play.sh: Opus tuning follows the content; with no mode,
+    // band-limited Opus (its "opuswb") is treated as speech.
+    let opus_mode = a
+        .opus_mode
+        .or(mode.opus_mode())
+        .unwrap_or(match a.opus_bandwidth {
+            Some(OpusBandwidth::Narrow | OpusBandwidth::Wide) => OpusMode::Voice,
+            _ => OpusMode::Music,
+        });
+    let announce = (!a.no_sap && a.render.is_none()).then(|| sender::Announce {
         name: a
             .name
             .clone()
@@ -295,14 +329,21 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
         ptime: a.ptime.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
         payload_type: a.pt,
         opus: OpusOptions {
-            mode: a.opus_mode,
+            mode: opus_mode,
             bitrate: a.bitrate * 1000,
             max_bandwidth: a.opus_bandwidth,
             fec: !a.no_fec,
             ..OpusOptions::default()
         },
+        process: ProcessOptions {
+            mode,
+            volume_db: a.volume,
+        },
         source,
+        start: a.start.map(Duration::from_secs_f64),
         duration: a.duration.map(Duration::from_secs_f64),
+        lead_in: Duration::from_secs_f64(a.lead_in.max(0.0) / 1000.0),
+        render: a.render.clone(),
         announce,
     })?;
     if let Some(path) = &a.sdp {
@@ -316,12 +357,40 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
     } else {
         String::new()
     };
-    eprintln!(
-        "sending {spec} to {} (pt {}, {} ms packets{conversion}). Ctrl-C to stop.",
-        a.group,
+    let destination = match &a.render {
+        Some(path) => format!("rendering to {}", path.display()),
+        None => format!("sending to {}", a.group),
+    };
+    let mut details = format!(
+        "pt {}, {} ms packets{conversion}",
         s.payload_type(),
-        s.ptime().as_secs_f64() * 1000.0,
+        s.ptime().as_secs_f64() * 1000.0
     );
+    if mode != Mode::None {
+        details += &format!(", {mode} processing");
+    }
+    if let Some(v) = a.volume {
+        details += &format!(", {v:+} dB");
+    }
+    eprintln!("{spec} {destination} ({details})");
+    if let Some(l) = s.loudness() {
+        match l.measured {
+            Some(m) => eprintln!(
+                "loudness: measured {m:.1} LUFS after processing; {:+.1} dB to reach {} LUFS",
+                l.gain_db, l.target
+            ),
+            None => eprintln!("loudness: source is silent; no normalisation"),
+        }
+    }
+    if a.render.is_some() {
+        let stats = s.run(stop)?;
+        eprintln!(
+            "rendered {:.1}s of audio",
+            stats.frames as f64 / spec.sample_rate as f64
+        );
+        return Ok(());
+    }
+    eprintln!("Ctrl-C to stop.");
     match s.sap_group() {
         Some(g) => eprintln!(
             "announcing \"{}\" via SAP on {g}; receive with: mcast audio recv",

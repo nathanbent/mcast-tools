@@ -82,6 +82,50 @@ mcast audio recv -g 239.192.2.1:10000 --wav page.wav
 
 Lost Opus packets are rebuilt from the next packet's FEC data, or concealed by libopus.
 
+### Voice and music processing
+
+`mcast audio send` can process audio before encoding, tuned for the content and
+the codec (a port of the `mcast-play.sh` paging script):
+
+```bash
+mcast audio send --wav announcement.wav -e g711u -m voice -L 500 -g 239.192.2.1:10000 --no-sap --tos 184
+mcast audio send --wav song.wav -e g722 -m music -v -6
+mcast audio send --wav song.wav -e g711u -m music -o preview.wav   # hear what the phone will decode
+```
+
+| Mode | Chain |
+|---|---|
+| `voice` (`-p`) | high-pass (250 Hz G.711 / 120 Hz wideband), noise reduction (10 dB, floor -40 dBFS), compressor 4:1 at -20 dB, de-esser, presence EQ (+3 dB at 2.5 kHz / +2 dB at 3 kHz), loudness -16 LUFS |
+| `music` | high-pass (150 / 60 Hz), compressor 2:1 at -24 dB, on G.711 a mid EQ (-2 dB at 300 Hz, +2 dB at 1.8 kHz), loudness -18 LUFS |
+| `none` (default) | nothing |
+
+With voice or music, a low-pass at the codec's band edge (3.4 kHz G.711,
+7 kHz G.722 and wideband Opus) runs before loudness normalisation, and the
+true peak is held at -2 dBTP. Opus tuning follows the mode.
+
+| `mcast-play.sh` | `mcast audio send` |
+|---|---|
+| `-c g711u / g711a / g722 / opus` | `-e g711u / g711a / g722 / opus` |
+| `-c opuswb` | `-e opus --opus-bandwidth wb --bitrate 32` |
+| `-m voice` / `-p` / `-m music` | `-m voice` / `-p` / `-m music` |
+| `-v DB`, `-L MS`, `-s SECS`, `-t SECS` | same |
+| `-l` | `--loop` |
+| `-g GROUP -P PORT` | `-g GROUP:PORT` |
+| `-T PT` | `--pt PT` |
+| `-o FILE` | `-o FILE` (`--render`) |
+| (always `tos=184`, no SAP) | add `--tos 184 --no-sap` |
+
+How it compares with the script (measured on the same speech and music
+renders): timing, compressor and spectral balance match closely (the
+compressor is a direct port and agrees with ffmpeg's to 0.01 dB; octave-band
+balance is within about 1 dB). Two parts are re-implementations rather than
+ports, and sound similar but not identical: noise reduction (calibrated
+against ffmpeg's `afftdn`) and the de-esser. Loudness is normalised more
+accurately: files are measured first (two passes, EBU R128), so output lands
+near the target, where ffmpeg's single-pass `loudnorm` often falls short. Expect
+`mcast` to be about 2 dB louder than the script for voice; use `-v` to taste.
+Live input (`--capture`) uses a slow automatic gain control instead.
+
 ### Discovery details
 
 - Senders announce every 5 s (`--sap-interval`) on 239.255.255.255:9875, the
@@ -110,7 +154,7 @@ Network options:
 | Crate | Purpose |
 |---|---|
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
-| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
+| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
 | `crates/mcast` | The `mcast` CLI |
 
 New tool families go in their own crate (e.g. `crates/mcast-<thing>`) and get a
@@ -118,6 +162,6 @@ subcommand in the CLI.
 
 ## Roadmap ideas
 
-- Audio: PTP-aligned timestamps (AES67), resampling on playback, voice processing (filters/loudness) like mcast-play.sh
+- Audio: PTP-aligned timestamps (AES67), resampling on playback
 - Monitor: join groups and show rate, loss, jitter
 - Other: file transfer, chat, ping/latency, relay/bridge between interfaces

@@ -1,24 +1,33 @@
 //! Multicast RTP audio sender.
 //!
-//! Pipeline: source (tone / WAV / capture) → [`Converter`] (channels and
-//! sample rate) → [`Packetizer`] (codec + RTP) → socket.
+//! Pipeline: source (tone / WAV / capture) → fades → channel mapping →
+//! [`Processor`] (voice/music processing, at the source rate) →
+//! [`Converter`] (sample rate) → [`Packetizer`] (codec + RTP) → socket,
+//! or, when rendering, back through the codec's decoder into a WAV file.
 
-use crate::codec::{Codec, OpusOptions, StreamSpec};
-use crate::convert::Converter;
+use crate::codec::{Codec, Decoder, OpusOptions, StreamSpec};
+use crate::convert::{map_channels, Converter};
 use crate::device;
 use crate::packetizer::Packetizer;
+use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
 use anyhow::{anyhow, bail, Context, Result};
 use mcast_core::net::{open_sender, MulticastOptions};
 use mcast_core::random_u32;
+use mcast_core::rtp;
 use mcast_core::sap::{self, Announcer};
 use mcast_core::sdp::SessionDescription;
 use std::fs::File;
-use std::io::BufReader;
-use std::net::{SocketAddr, UdpSocket};
+use std::io::{BufReader, BufWriter};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// Silence added after file and tone sources so the last word isn't cut off.
+const TAIL: Duration = Duration::from_millis(300);
+const FADE_IN: Duration = Duration::from_millis(50);
+const FADE_OUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone)]
 pub enum Source {
@@ -42,9 +51,16 @@ pub struct SenderConfig {
     /// RTP payload type; `None` uses the codec's static type, or 96 / 107.
     pub payload_type: Option<u8>,
     pub opus: OpusOptions,
+    pub process: ProcessOptions,
     pub source: Source,
-    /// Stop after this much audio has been sent.
+    /// Start this far into a WAV file (with a short fade-in).
+    pub start: Option<Duration>,
+    /// Send this much of the source (with a short fade-out), then stop.
     pub duration: Option<Duration>,
+    /// Silence before the audio, so the first word isn't clipped.
+    pub lead_in: Duration,
+    /// Write what a receiver would decode to this WAV file instead of sending.
+    pub render: Option<PathBuf>,
     /// Announce the stream with SAP so receivers can find it.
     pub announce: Option<Announce>,
 }
@@ -65,6 +81,16 @@ pub struct SenderStats {
     pub send_errors: u64,
 }
 
+/// Result of measuring a file's loudness before sending.
+#[derive(Debug, Clone, Copy)]
+pub struct LoudnessInfo {
+    /// Integrated loudness after processing, before normalisation (LUFS).
+    pub measured: Option<f64>,
+    /// Gain applied to reach the mode's target.
+    pub gain_db: f64,
+    pub target: f64,
+}
+
 enum Input {
     Tone {
         step: f32,
@@ -75,54 +101,176 @@ enum Input {
         reader: hound::WavReader<BufReader<File>>,
         looped: bool,
     },
-    Capture {
-        device: Option<String>,
+}
+
+/// A paced source (tone or WAV) with start offset, length limit and fades.
+struct Reader {
+    input: Input,
+    channels: usize,
+    /// Frames delivered so far.
+    pos: u64,
+    limit: Option<u64>,
+    fade_in: Option<u64>,
+    fade_out: Option<(u64, u64)>,
+}
+
+impl Reader {
+    fn open(
+        source: &Source,
+        rate: u32,
+        channels: u16,
+        start: Option<Duration>,
+        duration: Option<Duration>,
+    ) -> Result<Self> {
+        let input = match source {
+            Source::Tone {
+                frequency,
+                amplitude,
+            } => Input::Tone {
+                step: std::f32::consts::TAU * frequency / rate as f32,
+                phase: 0.0,
+                amplitude: *amplitude,
+            },
+            Source::Wav { path, looped } => {
+                let mut reader = hound::WavReader::open(path)
+                    .with_context(|| format!("opening {}", path.display()))?;
+                if let Some(s) = start {
+                    let frame = (s.as_secs_f64() * rate as f64) as u32;
+                    if frame >= reader.duration() {
+                        bail!(
+                            "--start {:.1}s is past the end of {}",
+                            s.as_secs_f64(),
+                            path.display()
+                        );
+                    }
+                    reader.seek(frame)?;
+                }
+                Input::Wav {
+                    reader,
+                    looped: *looped,
+                }
+            }
+            Source::Capture { .. } => unreachable!("capture isn't read through Reader"),
+        };
+        let frames = |d: Duration| (d.as_secs_f64() * rate as f64).round() as u64;
+        let limit = duration.map(frames);
+        Ok(Self {
+            input,
+            channels: channels as usize,
+            pos: 0,
+            limit,
+            fade_in: start.map(|_| frames(FADE_IN)),
+            fade_out: limit.map(|l| {
+                let len = frames(FADE_OUT).min(l);
+                (l - len, len)
+            }),
+        })
+    }
+
+    /// Fill `out` (interleaved); returns samples written, fewer only at the end.
+    fn fill(&mut self, out: &mut [f32]) -> Result<usize> {
+        let mut want = out.len();
+        if let Some(l) = self.limit {
+            want = want.min((l.saturating_sub(self.pos)) as usize * self.channels);
+        }
+        let out = &mut out[..want];
+        let n = match &mut self.input {
+            Input::Tone {
+                step,
+                phase,
+                amplitude,
+            } => {
+                for frame in out.chunks_exact_mut(self.channels) {
+                    frame.fill(phase.sin() * *amplitude);
+                    *phase = (*phase + *step) % std::f32::consts::TAU;
+                }
+                out.len()
+            }
+            Input::Wav { reader, looped } => {
+                let spec = reader.spec();
+                let mut written = 0;
+                while written < out.len() {
+                    let got = read_wav(reader, spec, &mut out[written..])?;
+                    written += got;
+                    if got == 0 {
+                        if !*looped || reader.duration() == 0 {
+                            break;
+                        }
+                        reader.seek(0)?;
+                    }
+                }
+                written
+            }
+        };
+        // Fades.
+        for (i, frame) in out[..n].chunks_exact_mut(self.channels).enumerate() {
+            let p = self.pos + i as u64;
+            let mut g = 1.0f32;
+            if let Some(len) = self.fade_in {
+                if p < len {
+                    g *= p as f32 / len as f32;
+                }
+            }
+            if let Some((start, len)) = self.fade_out {
+                if p >= start && len > 0 {
+                    g *= 1.0 - ((p - start) as f32 / len as f32).min(1.0);
+                }
+            }
+            if g < 1.0 {
+                frame.iter_mut().for_each(|s| *s *= g);
+            }
+        }
+        self.pos += (n / self.channels) as u64;
+        Ok(n)
+    }
+}
+
+enum Target {
+    Network(UdpSocket),
+    Render {
+        decoder: Box<dyn Decoder>,
+        writer: hound::WavWriter<BufWriter<File>>,
+        samples: Vec<f32>,
     },
 }
 
 pub struct Sender {
-    socket: UdpSocket,
+    /// Taken by `run`.
+    target: Option<Target>,
     spec: StreamSpec,
     ptime: Duration,
     packetizer: Packetizer,
     converter: Converter,
+    processor: Processor,
     /// Rate and channels the source produces.
     source_format: (u32, u16),
-    input: Input,
+    source: Source,
+    reader: Option<Reader>,
     duration: Option<Duration>,
+    lead_in: Duration,
+    loudness: Option<LoudnessInfo>,
     sdp: SessionDescription,
     announce: Option<(MulticastOptions, Duration)>,
 }
 
 impl Sender {
-    /// Open the source and socket. Inspect `spec()` before calling `run`.
+    /// Open the source and socket (or render file), and measure a file's
+    /// loudness if processing needs it. Inspect `spec()` before calling `run`.
     pub fn new(cfg: SenderConfig) -> Result<Self> {
         let mut spec = cfg.stream;
-        let (input, source_format) = match cfg.source {
-            Source::Tone {
-                frequency,
-                amplitude,
-            } => (
-                Input::Tone {
-                    step: std::f32::consts::TAU * frequency / spec.sample_rate as f32,
-                    phase: 0.0,
-                    amplitude,
-                },
-                (spec.sample_rate, spec.channels),
-            ),
-            Source::Wav { path, looped } => {
-                let reader = hound::WavReader::open(&path)
-                    .with_context(|| format!("opening {}", path.display()))?;
-                let ws = reader.spec();
+        let source_format = match &cfg.source {
+            Source::Tone { .. } => (spec.sample_rate, spec.channels),
+            Source::Wav { path, .. } => {
+                let ws = hound::WavReader::open(path)
+                    .with_context(|| format!("opening {}", path.display()))?
+                    .spec();
                 if cfg.match_wav_format && spec.codec.pcm_encoding().is_some() {
                     spec = StreamSpec::new(spec.codec, ws.sample_rate, ws.channels);
                 }
-                (Input::Wav { reader, looped }, (ws.sample_rate, ws.channels))
+                (ws.sample_rate, ws.channels)
             }
             Source::Capture { device } => {
-                let dev = device::input_device(device.as_deref())?;
-                let format = device::input_format(&dev)?;
-                (Input::Capture { device }, format)
+                device::input_format(&device::input_device(device.as_deref())?)?
             }
         };
         if spec.channels == 0
@@ -131,6 +279,14 @@ impl Sender {
             || source_format.1 == 0
         {
             bail!("invalid audio format {spec}");
+        }
+        // Tones are generated at the stream rate.
+        let source_format = match cfg.source {
+            Source::Tone { .. } => (spec.sample_rate, spec.channels),
+            _ => source_format,
+        };
+        if cfg.start.is_some() && !matches!(cfg.source, Source::Wav { .. }) {
+            bail!("--start only applies to WAV files");
         }
 
         let ptime = cfg.ptime.unwrap_or_else(|| spec.default_ptime());
@@ -142,10 +298,39 @@ impl Sender {
             Codec::G722 => frames / 2,
             Codec::Opus => 0, // compressed; always small
         };
-        let max_payload = 1472 - 12; // fits a 1500-byte Ethernet MTU over IPv4
-        if payload_bytes > max_payload {
-            bail!("{payload_bytes} byte packets exceed the MTU; lower --ptime");
+        if payload_bytes > 1472 - 12 {
+            bail!("{payload_bytes} byte packets exceed a 1500-byte MTU; lower --ptime");
         }
+
+        // Processing runs at the source rate on the stream's channel count.
+        let band = Band::for_stream(&spec, &cfg.opus);
+        let (rate, channels) = (source_format.0, spec.channels);
+        let reader = match cfg.source {
+            Source::Capture { .. } => None,
+            _ => Some(Reader::open(
+                &cfg.source,
+                rate,
+                source_format.1,
+                cfg.start,
+                cfg.duration,
+            )?),
+        };
+        let mut loudness_info = None;
+        let loudness = match (&cfg.source, cfg.process.mode.loudness_target()) {
+            (_, None) => Loudness::Dynamic, // unused
+            (Source::Wav { .. }, Some(target)) => {
+                let measured = measure(&cfg, rate, source_format.1, channels, band)?;
+                let gain_db = measured.map_or(0.0, |m| (target - m).clamp(-30.0, 30.0));
+                loudness_info = Some(LoudnessInfo {
+                    measured,
+                    gain_db,
+                    target,
+                });
+                Loudness::Static { gain_db }
+            }
+            _ => Loudness::Dynamic,
+        };
+        let processor = Processor::new(cfg.process, band, loudness, rate, channels as usize);
 
         let pt = cfg
             .payload_type
@@ -153,9 +338,29 @@ impl Sender {
         let encoder = spec
             .encoder(&cfg.opus)
             .map_err(|e| anyhow!("creating {} encoder: {e}", spec.codec))?;
-        let socket = open_sender(&cfg.net)
-            .with_context(|| format!("opening multicast sender for {}", cfg.net.group))?;
-        let origin = socket.local_addr()?.ip();
+        let (target, origin) = match &cfg.render {
+            Some(path) => {
+                let wav = hound::WavSpec {
+                    channels: spec.channels,
+                    sample_rate: spec.sample_rate,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                };
+                let target = Target::Render {
+                    decoder: spec.decoder().map_err(|e| anyhow!(e))?,
+                    writer: hound::WavWriter::create(path, wav)
+                        .with_context(|| format!("creating {}", path.display()))?,
+                    samples: Vec::new(),
+                };
+                (target, IpAddr::V4(Ipv4Addr::LOCALHOST))
+            }
+            None => {
+                let socket = open_sender(&cfg.net)
+                    .with_context(|| format!("opening multicast sender for {}", cfg.net.group))?;
+                let origin = socket.local_addr()?.ip();
+                (Target::Network(socket), origin)
+            }
+        };
         let name = cfg
             .announce
             .as_ref()
@@ -170,7 +375,7 @@ impl Sender {
             spec.output_format().duration_of(frames),
             cfg.opus.fec,
         );
-        let announce = cfg.announce.map(|a| {
+        let announce = cfg.announce.filter(|_| cfg.render.is_none()).map(|a| {
             let mut net = cfg.net.clone();
             net.group = a
                 .sap_group
@@ -180,19 +385,18 @@ impl Sender {
             (net, a.interval)
         });
         Ok(Self {
-            socket,
+            target: Some(target),
             spec,
             ptime,
             packetizer: Packetizer::new(spec, encoder, frames, pt, random_u32()),
-            converter: Converter::new(
-                source_format.0,
-                source_format.1,
-                spec.sample_rate,
-                spec.channels,
-            ),
+            converter: Converter::new(rate, channels, spec.sample_rate, spec.channels),
+            processor,
             source_format,
-            input,
+            source: cfg.source,
+            reader,
             duration: cfg.duration,
+            lead_in: cfg.lead_in,
+            loudness: loudness_info,
             sdp,
             announce,
         })
@@ -210,6 +414,11 @@ impl Sender {
     /// Rate and channels of the source, before conversion.
     pub fn source_format(&self) -> (u32, u16) {
         self.source_format
+    }
+
+    /// Loudness measurement for file sources with processing on.
+    pub fn loudness(&self) -> Option<LoudnessInfo> {
+        self.loudness
     }
 
     pub fn payload_type(&self) -> u8 {
@@ -245,61 +454,65 @@ impl Sender {
             ),
             None => None,
         };
-        let limit = self
-            .duration
-            .map(|d| (d.as_secs_f64() / self.ptime.as_secs_f64()).ceil() as u64);
-        let capture = matches!(self.input, Input::Capture { .. });
+        let capture = matches!(self.source, Source::Capture { .. });
+        let target = self.target.take().expect("run consumes the sender");
         let mut out = Output {
-            socket: self.socket.try_clone()?,
-            paced: !capture,
+            paced: !capture && matches!(target, Target::Network(_)),
+            target,
             start: Instant::now(),
             ptime: self.ptime,
-            limit,
+            // Paced sources stop on their own; capture stops after `duration`.
+            limit: self
+                .duration
+                .filter(|_| capture)
+                .map(|d| (d.as_secs_f64() / self.ptime.as_secs_f64()).ceil() as u64),
             stats: SenderStats::default(),
             fatal: None,
         };
-        let mut converted = Vec::new();
+        let (rate, src_channels) = self.source_format;
+        let spec = self.spec;
+        let silence = |d: Duration| {
+            vec![
+                0.0f32;
+                (d.as_secs_f64() * spec.sample_rate as f64).round() as usize
+                    * spec.channels as usize
+            ]
+        };
+        let encoding = |e: String| anyhow!("encoding: {e}");
 
-        if let Input::Capture { device } = &self.input {
+        if !self.lead_in.is_zero() {
+            self.packetizer
+                .push(&silence(self.lead_in), |p| out.send(p))
+                .map_err(encoding)?;
+            out.check()?;
+        }
+
+        let mut stages = Stages::default();
+        if let Source::Capture { device } = &self.source {
             let dev = device::input_device(device.as_deref())?;
             let (tx, rx) = mpsc::sync_channel(64);
             let _stream = device::capture(&dev, tx)?;
             while !stop.load(Ordering::Relaxed) && !out.done() {
                 match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(chunk) => {
-                        converted.clear();
-                        self.converter.process(&chunk, &mut converted);
-                        self.packetizer
-                            .push(&converted, |p| out.send(p))
-                            .map_err(|e| anyhow!("encoding: {e}"))?;
-                        out.check()?;
-                    }
+                    Ok(chunk) => stages.run(&mut self, &chunk, false, &mut out)?,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         } else {
             // Read roughly one packet of source audio at a time.
-            let (rate, channels) = self.source_format;
             let chunk_frames = ((rate as f64 * self.ptime.as_secs_f64()).ceil() as usize).max(64);
-            let mut buf = vec![0.0f32; chunk_frames * channels as usize];
-            let mut ended = false;
+            let mut buf = vec![0.0f32; chunk_frames * src_channels as usize];
+            let mut reader = self.reader.take().expect("paced sources have a reader");
             while !stop.load(Ordering::Relaxed) && !out.done() {
-                let n = self.fill(&mut buf)?;
-                converted.clear();
-                self.converter.process(&buf[..n], &mut converted);
-                if n < buf.len() {
-                    self.converter.flush(&mut converted);
-                    ended = true;
-                }
-                self.packetizer
-                    .push(&converted, |p| out.send(p))
-                    .map_err(|e| anyhow!("encoding: {e}"))?;
-                out.check()?;
-                if ended {
+                let n = reader.fill(&mut buf)?;
+                let last = n < buf.len();
+                stages.run(&mut self, &buf[..n], last, &mut out)?;
+                if last {
                     self.packetizer
-                        .finish(|p| out.send(p))
-                        .map_err(|e| anyhow!("encoding: {e}"))?;
+                        .push(&silence(TAIL), |p| out.send(p))
+                        .map_err(encoding)?;
+                    self.packetizer.finish(|p| out.send(p)).map_err(encoding)?;
                     out.check()?;
                     break;
                 }
@@ -307,54 +520,101 @@ impl Sender {
         }
         let mut stats = out.stats;
         stats.frames = stats.packets * self.packetizer.frames_per_packet() as u64;
-        Ok(stats)
-    }
-
-    /// Fill `out` from a paced source; returns the number of samples written
-    /// (fewer than `out.len()` only at the end of the source).
-    fn fill(&mut self, out: &mut [f32]) -> Result<usize> {
-        let channels = self.source_format.1 as usize;
-        match &mut self.input {
-            Input::Tone {
-                step,
-                phase,
-                amplitude,
-            } => {
-                for frame in out.chunks_exact_mut(channels) {
-                    frame.fill(phase.sin() * *amplitude);
-                    *phase = (*phase + *step) % std::f32::consts::TAU;
-                }
-                Ok(out.len())
-            }
-            Input::Wav { reader, looped } => {
-                let spec = reader.spec();
-                let mut written = 0;
-                while written < out.len() {
-                    let got = read_wav(reader, spec, &mut out[written..])?;
-                    written += got;
-                    if got == 0 {
-                        if !*looped || reader.duration() == 0 {
-                            break;
-                        }
-                        reader.seek(0)?;
-                    }
-                }
-                Ok(written)
-            }
-            Input::Capture { .. } => unreachable!("capture is not a paced source"),
+        if let Target::Render { writer, .. } = out.target {
+            writer.finalize()?;
         }
+        Ok(stats)
     }
 }
 
-/// Sends packets, pacing them in real time for file and tone sources.
+/// Scratch buffers for source chunk → channels → processing → resampling → packets.
+#[derive(Default)]
+struct Stages {
+    mapped: Vec<f32>,
+    processed: Vec<f32>,
+    converted: Vec<f32>,
+}
+
+impl Stages {
+    fn run(&mut self, s: &mut Sender, chunk: &[f32], last: bool, out: &mut Output) -> Result<()> {
+        self.mapped.clear();
+        map_channels(
+            chunk,
+            s.source_format.1 as usize,
+            s.spec.channels as usize,
+            &mut self.mapped,
+        );
+        self.processed.clear();
+        s.processor.process(&self.mapped, &mut self.processed);
+        if last {
+            s.processor.flush(&mut self.processed);
+        }
+        self.converted.clear();
+        s.converter.process(&self.processed, &mut self.converted);
+        if last {
+            s.converter.flush(&mut self.converted);
+        }
+        s.packetizer
+            .push(&self.converted, |p| out.send(p))
+            .map_err(|e| anyhow!("encoding: {e}"))?;
+        out.check()
+    }
+}
+
+/// First pass over a WAV file: run the processing chain up to loudness
+/// normalisation and measure the integrated loudness.
+fn measure(
+    cfg: &SenderConfig,
+    rate: u32,
+    src_channels: u16,
+    channels: u16,
+    band: Band,
+) -> Result<Option<f64>> {
+    let mut reader = Reader::open(&cfg.source, rate, src_channels, cfg.start, cfg.duration)?;
+    // With looping and no duration, one pass of the file is representative.
+    if let Input::Wav { looped, .. } = &mut reader.input {
+        if cfg.duration.is_none() {
+            *looped = false;
+        }
+    }
+    let mut p = Processor::new(
+        cfg.process,
+        band,
+        Loudness::Measure,
+        rate,
+        channels as usize,
+    );
+    let mut buf = vec![0.0f32; rate as usize * src_channels as usize];
+    let (mut mapped, mut sink) = (Vec::new(), Vec::new());
+    loop {
+        let n = reader.fill(&mut buf)?;
+        mapped.clear();
+        map_channels(
+            &buf[..n],
+            src_channels as usize,
+            channels as usize,
+            &mut mapped,
+        );
+        sink.clear();
+        p.process(&mapped, &mut sink);
+        if n < buf.len() {
+            p.flush(&mut sink);
+            break;
+        }
+    }
+    Ok(p.measured_loudness())
+}
+
+/// Sends packets (paced in real time for file and tone sources), or decodes
+/// them into a WAV file when rendering.
 struct Output {
-    socket: UdpSocket,
+    target: Target,
     paced: bool,
     start: Instant,
     ptime: Duration,
     limit: Option<u64>,
     stats: SenderStats,
-    fatal: Option<std::io::Error>,
+    fatal: Option<anyhow::Error>,
 }
 
 impl Output {
@@ -376,22 +636,48 @@ impl Output {
                 std::thread::sleep(wait);
             }
         }
-        match self.socket.send(pkt) {
-            Ok(_) => self.stats.packets += 1,
-            // Transient conditions (full buffers, no route yet) shouldn't kill a stream.
-            Err(e)
-                if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
-                    || e.raw_os_error() == Some(105) /* ENOBUFS */ =>
-            {
-                self.stats.send_errors += 1
+        match &mut self.target {
+            Target::Network(socket) => match socket.send(pkt) {
+                Ok(_) => self.stats.packets += 1,
+                // Transient conditions (full buffers, no route yet) shouldn't kill a stream.
+                Err(e)
+                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
+                        || e.raw_os_error() == Some(105) /* ENOBUFS */ =>
+                {
+                    self.stats.send_errors += 1
+                }
+                Err(e) => self.fatal = Some(anyhow::Error::from(e).context("sending packet")),
+            },
+            Target::Render {
+                decoder,
+                writer,
+                samples,
+            } => {
+                let result = rtp::parse(pkt)
+                    .map_err(|e| anyhow!("{e}"))
+                    .and_then(|p| {
+                        samples.clear();
+                        decoder
+                            .decode(p.payload, samples)
+                            .map_err(|e| anyhow!("decoding: {e}"))
+                    })
+                    .and_then(|_| {
+                        for &s in samples.iter() {
+                            writer.write_sample((s.clamp(-1.0, 1.0) * 32767.0).round() as i16)?;
+                        }
+                        Ok(())
+                    });
+                match result {
+                    Ok(()) => self.stats.packets += 1,
+                    Err(e) => self.fatal = Some(e.context("rendering")),
+                }
             }
-            Err(e) => self.fatal = Some(e),
         }
     }
 
     fn check(&mut self) -> Result<()> {
         match self.fatal.take() {
-            Some(e) => Err(e).context("sending packet"),
+            Some(e) => Err(e),
             None => Ok(()),
         }
     }
@@ -419,4 +705,15 @@ fn read_wav(
         }
     }
     Ok(n)
+}
+
+impl Mode {
+    /// The Opus tuning that suits this content (`mcast-play.sh` behaviour).
+    pub fn opus_mode(self) -> Option<crate::codec::OpusMode> {
+        match self {
+            Mode::Voice => Some(crate::codec::OpusMode::Voice),
+            Mode::Music => Some(crate::codec::OpusMode::Music),
+            Mode::None => None,
+        }
+    }
 }

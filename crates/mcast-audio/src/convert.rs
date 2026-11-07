@@ -50,7 +50,7 @@ impl Converter {
 }
 
 /// Downmix to mono by averaging; otherwise output channel `c` takes input `c % n`.
-fn map_channels(input: &[f32], from: usize, to: usize, out: &mut Vec<f32>) {
+pub fn map_channels(input: &[f32], from: usize, to: usize, out: &mut Vec<f32>) {
     if from == to {
         out.extend_from_slice(input);
         return;
