@@ -37,7 +37,7 @@ enum Command {
     /// Save options for `audio send`, `recv`, `discover`, `monitor` or `update` under a name; run with `mcast @NAME`
     #[command(subcommand)]
     Preset(PresetCommand),
-    /// Update mcast to the latest version (rebuilds it with cargo)
+    /// Update mcast: download the latest release, or rebuild it with cargo
     Update(update::UpdateArgs),
 }
 
