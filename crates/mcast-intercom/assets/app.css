@@ -442,3 +442,9 @@ ol.playlist-items .handle { color: var(--muted); }
 /* Arranging a tab */
 .arrange-bar { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
 ol.arrange { margin: 8px 0 14px; }
+
+/* Panel groups */
+.panel-bar { margin-bottom: 14px; }
+.panel-group + .panel-group { margin-top: 18px; }
+h3.group-head { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; }
+dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 4px; }

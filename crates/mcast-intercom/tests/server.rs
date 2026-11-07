@@ -83,6 +83,8 @@ fn config() -> Config {
         zones: vec![zone.into()],
         priority,
         parts: Vec::new(),
+        category: None,
+        tags: Vec::new(),
     };
     Config {
         zones: vec![
@@ -332,6 +334,8 @@ fn talks_live_to_two_groups() {
         zones: vec!["both".into()],
         priority: Priority::Normal,
         parts: Vec::new(),
+        category: None,
+        tags: Vec::new(),
     });
     std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));

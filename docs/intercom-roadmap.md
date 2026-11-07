@@ -176,6 +176,28 @@ The plan:
 
 Admins drag the sections of a tab into the order they want. The layout is kept in `intercom.json` and every screen shows it (good for wall tablets), with a way to reset it. Start with one tab (Settings, which has the most sections), then roll out to the Panel's buttons and the other tabs if it works well.
 
+### 9a. Organizing the Panel (requested)
+
+**Built: categories and tags.**
+- **Categories:** each announcement can be in one (`category`), and each category is a heading on the Panel, with "Other" last. Categories are managed below the announcements list, which is grouped the same way.
+- **Tags:** an announcement can have any number (`tags`), shown as filter chips on the Panel. The chosen chip is remembered per screen.
+- **Arranging:** *Arrange the Panel…* (admins) orders the categories and the buttons inside each, through the layout (`panel`, `panel-buttons`). Every screen shows the same.
+
+### 9b. Panel customization (planned)
+
+A plan to review before building. It's the same for every screen unless "per screen" says otherwise.
+
+- **Button size:** small, medium or large, for the whole Panel with an override per category. Medium is today's. Small fits about twice as many on a tablet; large is for touch kiosks.
+- **Button color:** per category, with an override per announcement. Colors come from a fixed palette (about 8 named colors such as red, orange, amber, green, teal, blue, purple, grey), so text stays readable in light and dark themes. A free color picker would make unreadable combinations easy. The top border keeps showing priority unless a color is set; emergency stays red regardless.
+- **Icon or emoji** on a button (a bell, a siren, a door), chosen from a short built-in set or any emoji.
+- **Compact list mode:** one row per announcement instead of tiles, for screens with many announcements.
+- **What a button shows:** turn the zones line, repeat count and priority badge on or off.
+- **Panel extras:** show or hide "Next:" and "Now playing", and collapse categories (remembered per screen).
+- **Confirm before playing:** per announcement, or for every emergency one ("Play Lockdown to all zones?").
+- **Per-screen views** (later, with tokens): an operator token limited to some categories, so a reception tablet shows only its buttons; a kiosk URL that hides the tabs and header.
+
+Storage would be a `panel` object in `intercom.json` (size, mode, what to show), plus `color` and `icon` on categories and announcements. The arrange dialog would become the place to set them.
+
 ## v0.6.0: observe and harden
 
 ### 10. Monitor page

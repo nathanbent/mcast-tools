@@ -36,10 +36,10 @@ A page with a tab for each part:
 
 | Tab | |
 |---|---|
-| **Panel** | A big button for each announcement, what's playing now (with Stop) and what's next. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
+| **Panel** | A big button for each announcement, under its **category**'s heading, what's playing now (with Stop) and what's next. **Tag** chips show just one tag's buttons (remembered per screen). Admins set the order of categories and buttons with *Arrange the Panel…*, for every screen. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
 | **History** | Recent plays, and how each group fared |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
-| **Announcements** | Each one in sections: General (name, audio: a sound, a playlist, chime only or live), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
+| **Announcements** | Listed under their categories, with the **categories** themselves below. Each one in sections: General (name, audio: a sound, a playlist, chime only or live), On the Panel (category, tags), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
 | **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
@@ -237,6 +237,8 @@ out to use the server's default. `site`: the site it's at, if any.
 | Field | Default | |
 |---|---|---|
 | `audio` | | `{"media": "NAME"}`, a file uploaded to the server, `{"playlist": "ID"}`, `"chime_only"`, or `"live"` (push to talk from the panel's page) |
+| `category` | none | The Panel heading it's under (a category's id); none puts it under "Other" |
+| `tags` | none | For filtering the Panel: up to 20, each up to 32 characters, no commas |
 | `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ...}]`, `audio` as above but not live. A zone can be in only one place: the announcement's own `zones` or one part |
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
 | `mode` | the defaults' | `voice`, `music` or `none` |
@@ -244,6 +246,10 @@ out to use the server's default. `site`: the site it's at, if any.
 | `repeat` | `1` | Times to play it (up to 20); each repeat has its chimes |
 | `repeat_gap_s` | `2` | Seconds between repeats |
 | `priority` | `normal` | What happens to a group something else is already sending to (below) |
+
+**Categories.** `[{"id", "name"}]`: headings on the Panel. Their order, and
+the buttons' order, are in `layout` (`panel` and `panel-buttons`), set with
+*Arrange the Panel…*. One with announcements in it can't be deleted.
 
 **Playlists.** `[{"id", "name", "items", "gap_ms"}]`: sounds that play one
 after another, as one stream, with the announcement's chimes before and
@@ -382,8 +388,9 @@ only their runs.
 | `GET`, `POST /schedules`, `GET`, `PUT`, `DELETE /schedules/{id}` | The same; without `id` or `name`, the id comes from the announcement |
 | `GET`, `POST /sites`, `GET`, `PUT`, `DELETE /sites/{id}` | The same; a site with zones or schedules can't be deleted (`409`) |
 | `GET`, `POST /schedule-groups`, `GET`, `PUT`, `DELETE /schedule-groups/{id}` | The same; switch one with `PUT` and `"enabled"`. One with schedules can't be deleted |
+| `GET`, `POST /categories`, `GET`, `PUT`, `DELETE /categories/{id}` | As zones; one with announcements in it can't be deleted (`409`) |
 | `GET`, `POST /playlists`, `GET`, `PUT`, `DELETE /playlists/{id}` | As zones; one an announcement plays can't be deleted (`409`) |
-| `PUT /layout/{tab}`, `DELETE /layout/{tab}` | Admins: `{"order": [section ids]}` arranges a tab's sections for everyone (kept in `intercom.json` as `layout`; sections left out follow in their usual order); `DELETE` goes back to the usual order. Returns the whole layout. So far the Settings tab (`settings`: `defaults`, `time-zone`, `sites`, `chimes`, `tokens`, `other-systems`, `connection`) |
+| `PUT /layout/{tab}`, `DELETE /layout/{tab}` | Admins: `{"order": [section ids]}` arranges a tab's sections for everyone (kept in `intercom.json` as `layout`; sections left out follow in their usual order); `DELETE` goes back to the usual order. Returns the whole layout. So far the Settings tab (`settings`: `defaults`, `time-zone`, `sites`, `chimes`, `tokens`, `other-systems`, `connection`), and the Panel: `panel` (category ids) and `panel-buttons` (announcement ids) |
 | `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
 | `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`). Not for live announcements (`422`) |

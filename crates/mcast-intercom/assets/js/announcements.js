@@ -86,6 +86,11 @@ const part = (legend, ...children) => h("fieldset", { class: "part" }, h("legend
 function form(a, save, cancel) {
   const d = state.config.defaults ?? {};
   const name = h("input", { value: a?.name ?? "", required: true, maxLength: 64 });
+  const cats = state.config.categories ?? [];
+  const category = select([["", "None (Other)"], ...cats.map((c) => [c.id, c.name])], a?.category ?? "");
+  const allTags = [...new Set(state.config.announcements.flatMap((x) => x.tags ?? []))].sort();
+  const tagList = h("datalist", { id: "announcement-tags" }, allTags.map((t) => h("option", { value: t })));
+  const tags = h("input", { value: (a?.tags ?? []).join(", "), list: "announcement-tags", placeholder: "e.g. Building A, daily" });
   const audio = audioSelect(a?.audio ?? "chime_only");
   const parts = partsEditor(a?.parts ?? []);
   const partsSection = part("Parts",
@@ -134,12 +139,19 @@ function form(a, save, cancel) {
       repeat_gap_s: num(gap) ?? 0,
       zones: [...chosen, ...unknown],
       priority: priority.value,
+      category: category.value || null,
+      tags: [...new Map(tags.value.split(",").map((t) => t.trim()).filter(Boolean).map((t) => [t.toLowerCase(), t])).values()],
     });
   };
 
   return h("form", { onsubmit: submit },
     part("General",
       h("div", { class: "row" }, field("Name", name), h("div", { class: "field" }, field("Audio", audio, "Upload or record sounds on the Sounds tab"), mediaFilter(audio)))),
+    part("On the Panel",
+      h("div", { class: "row" },
+        field("Category", category, cats.length ? "The heading it's under on the Panel" : "Add categories below the list"),
+        field("Tags", tags, "Separate them with commas; the Panel can show just one tag's buttons")),
+      tagList),
     part("Chimes",
       h("div", { class: "row" }, chime.el, endChime.el),
       h("p", { class: "small muted" },
@@ -167,10 +179,40 @@ function form(a, save, cancel) {
 }
 
 export function mount(el) {
-  mountEditor(el, {
+  const list = h("div");
+  const catsBox = h("div");
+  el.replaceChildren(list, h("h2", { style: { marginTop: "28px" } }, "Categories"), catsBox);
+  mountEditor(catsBox, {
+    kind: "category",
+    plural: "categories",
+    path: "/categories",
+    items: () => state.config.categories ?? [],
+    before: () => h("p", { class: "muted" }, "Categories are the headings on the Panel. Put an announcement in one from its editor, and set their order with Arrange the Panel."),
+    columns: [
+      ["Name", (c) => c.name],
+      ["Announcements", (c) => String(state.config.announcements.filter((a) => a.category === c.id).length)],
+    ],
+    form: (c, save, cancel) => {
+      const name = h("input", { value: c?.name ?? "", required: true, maxLength: 64, placeholder: "e.g. Daily bells" });
+      return h("form", { onsubmit: (e) => { e.preventDefault(); save({ name: name.value.trim() }); } },
+        field("Name", name),
+        h("div", { class: "buttons" },
+          h("button", { type: "submit", class: "primary" }, "Save"),
+          h("button", { type: "button", onclick: cancel }, "Cancel")));
+    },
+  });
+  const cats = () => state.config.categories ?? [];
+  mountEditor(list, {
     kind: "announcement",
     path: "/announcements",
     items: () => state.config.announcements,
+    // Under their categories, as on the Panel, when there are any.
+    sections: (items) => {
+      if (!cats().length) return [{ head: null, items }];
+      const known = (a) => cats().some((c) => c.id === a.category);
+      return [...cats().map((c) => ({ head: c.name, items: items.filter((a) => a.category === c.id) })),
+        { head: "Other", items: items.filter((a) => !known(a)) }].filter((g) => g.items.length);
+    },
     columns: [
       ["Name", (a) => a.name],
       ["Audio", audioLabel, true],
@@ -178,6 +220,7 @@ export function mount(el) {
       ["Zones", (a) => [a.zones, ...(a.parts ?? []).map((p) => p.zones)].flat().map(zoneName).join(", ")],
       ["Plays", (a) => (a.repeat > 1 ? `${a.repeat}×` : "once"), true],
       ["Priority", (a) => a.priority ?? "normal", true],
+      ["Tags", (a) => (a.tags ?? []).join(", ") || h("span", { class: "muted" }, "—"), true],
     ],
     form,
   });

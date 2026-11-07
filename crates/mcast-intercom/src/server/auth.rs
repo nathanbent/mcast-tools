@@ -289,7 +289,9 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/settings"
         | "/chimes"
         | "/playlists"
-        | "/playlists/{id}" => {
+        | "/playlists/{id}"
+        | "/categories"
+        | "/categories/{id}" => {
             if get {
                 Read
             } else {

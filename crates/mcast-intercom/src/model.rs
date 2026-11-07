@@ -52,10 +52,23 @@ pub struct Config {
     /// order. Sections left out follow in their usual order.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub layout: BTreeMap<String, Vec<String>>,
+    /// Headings the Panel groups announcements under.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<Category>,
 }
 
-/// Most sections a tab's layout lists.
-pub const MAX_LAYOUT: usize = 50;
+/// Most things a layout lists (sections, categories, buttons).
+pub const MAX_LAYOUT: usize = 500;
+/// Most tags on an announcement.
+pub const MAX_TAGS: usize = 20;
+
+/// A heading on the Panel: announcements in it are shown together.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Category {
+    pub id: String,
+    pub name: String,
+}
 
 /// Most items in a playlist.
 pub const MAX_PLAYLIST: usize = 100;
@@ -540,6 +553,12 @@ pub struct Announcement {
     /// Other audio to other zones, played alongside, in the same run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<Part>,
+    /// The Panel heading it's under (a category's id); none for "Other".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// For filtering the Panel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// An announcement's chime with the default filled in: `None` for no chime.
@@ -883,6 +902,23 @@ impl Config {
             if !names.insert(a.name.to_lowercase()) {
                 bail!("two announcements are called \"{}\"", a.name);
             }
+            if let Some(c) = &a.category {
+                if !self.categories.iter().any(|x| x.id == *c) {
+                    bail!("{what}: no category \"{c}\"");
+                }
+            }
+            if a.tags.len() > MAX_TAGS {
+                bail!("{what}: at most {MAX_TAGS} tags");
+            }
+            let mut tags = HashSet::new();
+            for t in &a.tags {
+                if clean_tag(t).as_deref() != Some(t.as_str()) {
+                    bail!("{what}: \"{t}\" isn't a tag (up to {MAX_TAG} characters, no commas)");
+                }
+                if !tags.insert(t.to_lowercase()) {
+                    bail!("{what}: the tag \"{t}\" is there twice");
+                }
+            }
             if a.zones.is_empty() {
                 bail!("{what} has no zones");
             }
@@ -969,6 +1005,18 @@ impl Config {
                 if !seen.insert(id.as_str()) {
                     bail!("layout \"{tab}\": \"{id}\" is listed twice");
                 }
+            }
+        }
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for c in &self.categories {
+            check_id("category", &c.id)?;
+            check_name("category", &c.name)?;
+            if !ids.insert(c.id.as_str()) {
+                bail!("two categories have the id \"{}\"", c.id);
+            }
+            if !names.insert(c.name.to_lowercase()) {
+                bail!("two categories are called \"{}\"", c.name);
             }
         }
         let mut ids = HashSet::new();

@@ -120,7 +120,7 @@ export function mountEditor(el, spec) {
                 h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
                   h("button", { onclick: () => open(item) }, "Edit"),
                   h("button", { class: "danger", onclick: () => remove(item) }, "Delete")))))))))
-        : h("p", { class: "muted" }, `No ${spec.kind}s yet.`),
+        : h("p", { class: "muted" }, `No ${spec.plural ?? `${spec.kind}s`} yet.`),
       h("div", { class: "buttons", style: { marginTop: "12px" } },
         h("button", { class: "primary", onclick: () => open(null) }, `Add ${spec.kind}`)));
   };

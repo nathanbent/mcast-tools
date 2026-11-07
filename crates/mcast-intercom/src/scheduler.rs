@@ -445,6 +445,8 @@ mod tests {
                     zones: vec!["z".into()],
                     priority: Priority::Normal,
                     parts: Vec::new(),
+                    category: None,
+                    tags: Vec::new(),
                 })
                 .collect(),
             schedules,

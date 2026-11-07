@@ -33,6 +33,8 @@ fn announcement(id: &str, zones: &[&str]) -> Announcement {
         zones: zones.iter().map(|z| z.to_string()).collect(),
         priority: Priority::Normal,
         parts: Vec::new(),
+        category: None,
+        tags: Vec::new(),
     }
 }
 

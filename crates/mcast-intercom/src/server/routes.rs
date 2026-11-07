@@ -4,7 +4,7 @@
 use super::{ApiError, ApiResult, AppState, Caller, Event};
 use crate::backend::Entry;
 use crate::model::{
-    Announcement, Config, DayOff, Defaults, Playlist, Schedule, ScheduleGroup, Site, Zone,
+    Announcement, Category, Config, DayOff, Defaults, Playlist, Schedule, ScheduleGroup, Site, Zone,
 };
 use crate::runner::{PlayError, Run};
 use crate::scheduler;
@@ -158,6 +158,33 @@ impl Item for ScheduleGroup {
                 "schedule group \"{id}\" has {n} schedule{}; move or delete {} first",
                 if n == 1 { "" } else { "s" },
                 if n == 1 { "it" } else { "them" }
+            )
+        })
+    }
+}
+
+impl Item for Category {
+    const KIND: &'static str = "category";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn all(c: &Config) -> &Vec<Self> {
+        &c.categories
+    }
+    fn all_mut(c: &mut Config) -> &mut Vec<Self> {
+        &mut c.categories
+    }
+    fn in_use(c: &Config, id: &str) -> Option<String> {
+        let users: Vec<&str> = c
+            .announcements
+            .iter()
+            .filter(|a| a.category.as_deref() == Some(id))
+            .map(|a| a.name.as_str())
+            .collect();
+        (!users.is_empty()).then(|| {
+            format!(
+                "category \"{id}\" has {}; move them out first",
+                users.join(", ")
             )
         })
     }

@@ -860,6 +860,11 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/schedule-groups/{id}"),
     ("PUT", "/schedule-groups/{id}"),
     ("DELETE", "/schedule-groups/{id}"),
+    ("GET", "/categories"),
+    ("POST", "/categories"),
+    ("GET", "/categories/{id}"),
+    ("PUT", "/categories/{id}"),
+    ("DELETE", "/categories/{id}"),
     ("GET", "/playlists"),
     ("POST", "/playlists"),
     ("GET", "/playlists/{id}"),
@@ -2022,4 +2027,67 @@ async fn admins_arrange_a_tab_for_everyone() {
     assert_eq!((s, v), (StatusCode::OK, json!({})));
     let (_, cfg) = p.call_with(Method::GET, "/config", None, admin).await;
     assert!(cfg.get("layout").is_none(), "{cfg}");
+}
+
+#[tokio::test]
+async fn categories_and_tags_organize_announcements() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/categories",
+            Some(json!({"name": "Daily bells"})),
+        )
+        .await;
+    assert_eq!(
+        (s, v["id"].clone()),
+        (StatusCode::CREATED, json!("daily-bells"))
+    );
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/announcements/bell",
+            Some(
+                json!({"name": "Bell", "audio": "chime_only", "zones": ["hall"],
+                "category": "daily-bells", "tags": ["Building A", "school"]}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["tags"], json!(["Building A", "school"]));
+    for bad in [
+        json!({"category": "nope"}),
+        json!({"tags": ["a,b"]}),
+        json!({"tags": ["x", "X"]}),
+    ] {
+        let mut body = json!({"name": "Bell", "audio": "chime_only", "zones": ["hall"]});
+        body.as_object_mut()
+            .unwrap()
+            .extend(bad.as_object().unwrap().clone());
+        let (s, _) = p.call(Method::PUT, "/announcements/bell", Some(body)).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    }
+    // A category with announcements in it stays until they move.
+    let (s, v) = p
+        .call(Method::DELETE, "/categories/daily-bells", None)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    // The Panel's order: categories, then buttons, through the layout.
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/layout/panel",
+            Some(json!({"order": ["daily-bells"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/layout/panel-buttons",
+            Some(json!({"order": ["bell"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
 }
