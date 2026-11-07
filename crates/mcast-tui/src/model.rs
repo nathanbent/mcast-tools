@@ -19,6 +19,7 @@ pub struct Job {
     pub ended_ms: Option<u64>,
     pub error: Option<String>,
     pub stats: Value,
+    pub request: Value,
 }
 
 impl Job {
@@ -30,11 +31,23 @@ impl Job {
         self.stats[key].as_f64().unwrap_or(0.0)
     }
 
+    /// Whether the job sends text that can be typed into.
+    pub fn text_sender(&self) -> bool {
+        self.kind == "text" && self.request["send"].as_bool() != Some(false)
+    }
+
+    fn text(&self, key: &str) -> String {
+        self.stats[key].as_str().unwrap_or("").to_string()
+    }
+
     pub fn title(&self) -> String {
-        let verb = if self.kind == "send" {
-            "Paging"
-        } else {
-            "Playing"
+        let verb = match self.kind.as_str() {
+            "send" => "Paging",
+            "recv" => "Playing",
+            "text" => "Text",
+            "file_send" => "Sending files",
+            "file_recv" => "Receiving files",
+            other => other,
         };
         match (&self.name, &self.group) {
             (Some(n), _) => format!("{verb} \"{n}\""),
@@ -44,6 +57,53 @@ impl Job {
     }
 
     pub fn stats_line(&self) -> String {
+        match self.kind.as_str() {
+            "text" => {
+                return format!(
+                    "{} sent · {} received · {} others heard",
+                    self.stat("lines_sent"),
+                    self.stat("lines_received"),
+                    self.stat("senders")
+                )
+            }
+            "file_send" => {
+                let file = self.text("file");
+                if file.is_empty() {
+                    return "starting".into();
+                }
+                let count = self.stat("count") as u64;
+                let of = if count > 1 {
+                    format!(" ({} of {count})", self.stat("index"))
+                } else {
+                    String::new()
+                };
+                let progress = match self.stats["total"].as_f64() {
+                    _ if self.stats["looping"].as_bool() == Some(true) => " · looping".to_string(),
+                    Some(t) if t > 0.0 => {
+                        format!(" · {:.0} %", (self.stat("sent") * 100.0 / t).min(100.0))
+                    }
+                    _ => String::new(),
+                };
+                return format!("{file}{of}{progress} · {} packets", self.stat("sent"));
+            }
+            "file_recv" => {
+                let now = match self.stats["receiving"].as_str() {
+                    Some(f) => format!("receiving {f} ({} %)", self.stat("percent")),
+                    None => "waiting for files".into(),
+                };
+                let failed = self.stat("failed");
+                return format!(
+                    "{now} · {} saved{}",
+                    self.stat("received"),
+                    if failed > 0.0 {
+                        format!(" · {failed} failed")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+            _ => {}
+        }
         if self.kind == "send" {
             let s = self.stat("seconds") as u64;
             let mut line = format!(
@@ -77,6 +137,34 @@ pub struct Stream {
     pub name: String,
     pub origin: String,
     pub audio: Option<Audio>,
+    pub text: Option<TextStream>,
+    pub file: Option<FileStream>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TextStream {
+    pub group: String,
+    pub t140_pt: u8,
+    pub red_pt: Option<u8>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FileStream {
+    pub group: String,
+    pub payload_type: u8,
+}
+
+/// A line on a text channel.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct TextLine {
+    pub job: u64,
+    pub from: String,
+    pub text: String,
+    pub own: bool,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
