@@ -1,5 +1,5 @@
 //! Named presets: saved options for `mcast audio send`, `mcast audio recv`,
-//! `mcast audio discover` and `mcast monitor`.
+//! `mcast audio discover`, `mcast monitor` and `mcast update`.
 //!
 //! A preset is stored as the options it adds, one per line, in a small text
 //! file (`~/.config/mcast/presets.conf`, or `$MCAST_PRESETS`):
@@ -17,6 +17,7 @@
 //! first, minus any that the command line sets again or conflicts with, so
 //! options typed on the command line always win.
 
+use crate::update::UpdateArgs;
 use crate::{DiscoverArgs, MonitorArgs, RecvArgs, SendArgs};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::parser::ValueSource;
@@ -32,6 +33,7 @@ pub enum Kind {
     Recv,
     Discover,
     Monitor,
+    Update,
 }
 
 impl Kind {
@@ -42,6 +44,7 @@ impl Kind {
             Kind::Recv => &["audio", "recv"],
             Kind::Discover => &["audio", "discover"],
             Kind::Monitor => &["monitor"],
+            Kind::Update => &["update"],
         }
     }
 
@@ -51,6 +54,7 @@ impl Kind {
             ["audio", "recv"] | ["recv"] => Some(Kind::Recv),
             ["audio", "discover"] | ["discover"] => Some(Kind::Discover),
             ["monitor"] => Some(Kind::Monitor),
+            ["update"] => Some(Kind::Update),
             _ => None,
         }
     }
@@ -62,6 +66,7 @@ impl Kind {
             Kind::Recv => "mcast audio recv",
             Kind::Discover => "mcast audio discover",
             Kind::Monitor => "mcast monitor",
+            Kind::Update => "mcast update",
         };
         let c = Command::new(name).no_binary_name(true);
         let mut c = match self {
@@ -69,6 +74,7 @@ impl Kind {
             Kind::Recv => RecvArgs::augment_args(c),
             Kind::Discover => DiscoverArgs::augment_args(c),
             Kind::Monitor => MonitorArgs::augment_args(c),
+            Kind::Update => UpdateArgs::augment_args(c),
         };
         c.build();
         c
@@ -313,7 +319,7 @@ fn scan(cmd: &Command, tokens: &[OsString]) -> (Vec<String>, Vec<String>) {
 
 /// Rewrite the command line if it uses presets: `mcast @NAME ...`,
 /// `mcast preset run NAME ...`, or `--preset NAME` on `mcast audio send`,
-/// `mcast audio recv`, `mcast audio discover` or `mcast monitor`.
+/// `mcast audio recv`, `mcast audio discover`, `mcast monitor` or `mcast update`.
 /// Other command lines are returned unchanged.
 pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
     let word = |i: usize| argv.get(i).and_then(|a| a.to_str());
@@ -333,6 +339,8 @@ pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
         }
     } else if word(1) == Some("monitor") {
         (None, Some(Kind::Monitor), 2)
+    } else if word(1) == Some("update") {
+        (None, Some(Kind::Update), 2)
     } else {
         return Ok(argv);
     };
@@ -460,7 +468,7 @@ fn parse_file(text: &str) -> Result<Vec<Preset>> {
             p.options.push(line.to_string());
         } else {
             bail!(
-                "line {}: expected \"audio send\", \"audio recv\", \"audio discover\", \"monitor\" or an option, got \"{line}\"",
+                "line {}: expected \"audio send\", \"audio recv\", \"audio discover\", \"monitor\", \"update\" or an option, got \"{line}\"",
                 n + 1
             );
         }
@@ -749,6 +757,12 @@ mod tests {
             &os(&["--sap-group", "239.195.255.255:9875", "--sdp"]),
         )
         .unwrap();
+        s.create(
+            "dev",
+            Kind::Update,
+            &os(&["-b", "dev", "--path", "/src/mcast-tools"]),
+        )
+        .unwrap();
         s.save().unwrap();
 
         let run = |args: &[&str]| -> Vec<String> {
@@ -837,6 +851,19 @@ mod tests {
             ]
         );
         assert!(expand(os(&["mcast", "audio", "discover", "-P", "lobby"])).is_err());
+        // --repo conflicts with the preset's --path, so it replaces it.
+        assert_eq!(
+            run(&["@dev", "--check", "--repo", "https://example.com/x.git"]),
+            [
+                "mcast",
+                "update",
+                "--branch=dev",
+                "--check",
+                "--repo",
+                "https://example.com/x.git"
+            ]
+        );
+        assert!(expand(os(&["mcast", "update", "-P", "zones"])).is_err());
         assert!(expand(os(&["mcast", "audio", "recv", "-P", "page"])).is_err());
         assert!(expand(os(&["mcast", "@missing"])).is_err());
 
