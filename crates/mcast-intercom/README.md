@@ -74,6 +74,11 @@ You can talk straight away: what you say during the opening chime plays
 after it, so listeners hear you a chime's length late. When you let go, the
 rest plays out, then the end chime.
 
+If no audio comes from the browser for 20 seconds, the page ends by itself
+(so a page left talking doesn't hold its zones for ever), and the panel
+says why. Locking a phone's screen, or leaving the panel in a background
+tab, can pause the microphone and end a hands-free page this way.
+
 Browsers only allow the microphone on **HTTPS** pages (and on
 `http://localhost`), so the panel serves HTTPS whenever it listens on
 anything but loopback:

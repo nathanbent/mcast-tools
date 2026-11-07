@@ -24,12 +24,15 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
 use serde_json::json;
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Chunks queued for each group's sender: at 20 ms a chunk, several seconds.
 const QUEUE: usize = 256;
 /// How often to look at the run, to notice a stop.
 const CHECK: Duration = Duration::from_millis(250);
+/// The mcast server ends a live page when no audio has come for 20 s; a
+/// page that ends after this long without any was most likely ended so.
+const QUIET: Duration = Duration::from_secs(15);
 
 /// Only the panel's own page may open a socket (browsers send `Origin`,
 /// and a WebSocket isn't held back by the same-origin rules on its own).
@@ -132,16 +135,19 @@ async fn talk(s: AppState, cfg: crate::model::Config, id: String, mut socket: We
     .await;
 
     let mut check = tokio::time::interval(CHECK);
+    let mut heard = Instant::now();
     let reason = loop {
         tokio::select! {
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Binary(audio))) => {
+                    heard = Instant::now();
                     let audio = audio.to_vec();
                     // A group whose sender has gone (stopped, taken over) drops out;
                     // one that's behind loses this chunk rather than holding up the rest.
                     groups.retain(|g| !matches!(g.try_send(audio.clone()), Err(TrySendError::Disconnected(_))));
                     if groups.is_empty() {
-                        break Some("every group has ended");
+                        break Some(why_over(runner.get(run.id).as_ref(), heard)
+                            .unwrap_or_else(|| "every group has ended".into()));
                     }
                 }
                 Some(Ok(Message::Text(t))) if t.as_str() == "end" => break None,
@@ -149,19 +155,53 @@ async fn talk(s: AppState, cfg: crate::model::Config, id: String, mut socket: We
                 Some(Ok(_)) => {}
             },
             _ = check.tick() => {
-                let over = runner
-                    .get(run.id)
+                let now = runner.get(run.id);
+                let over = now
+                    .as_ref()
                     .map_or(true, |r| r.state.is_over() || r.state == RunState::Stopping);
                 if over {
-                    break Some("stopped");
+                    break Some(why_over(now.as_ref(), heard).unwrap_or_else(|| "stopped".into()));
                 }
             }
         }
     };
     // Closing the queues ends each stream: the senders finish with their end chimes.
     drop(groups);
+    if let Some(reason) = &reason {
+        if reason != "stopped" {
+            eprintln!(
+                "live page \"{}\" (run {}) ended: {reason}",
+                run.name, run.id
+            );
+        }
+    }
     if let Some(reason) = reason {
         say(&mut socket, json!({ "type": "ended", "reason": reason })).await;
     }
     let _ = socket.send(Message::Close(None)).await;
+}
+
+/// Why a live page's run is over, if it ended by itself rather than being
+/// stopped (or isn't over yet: `None`). The browser is told, so it can say
+/// so rather than just going quiet.
+fn why_over(run: Option<&crate::runner::Run>, heard: Instant) -> Option<String> {
+    let run = run?;
+    if !run.state.is_over() || run.state == RunState::Stopped {
+        return None;
+    }
+    let quiet = heard.elapsed();
+    if quiet >= QUIET {
+        return Some(format!(
+            "no audio came from the microphone for {} s, so the page ended \
+             (a locked screen, or the panel in a background tab, can pause the microphone)",
+            quiet.as_secs()
+        ));
+    }
+    let failed = run.targets.iter().find_map(|t| t.error.clone());
+    Some(
+        run.error
+            .clone()
+            .or(failed)
+            .unwrap_or_else(|| "the page ended".into()),
+    )
 }
