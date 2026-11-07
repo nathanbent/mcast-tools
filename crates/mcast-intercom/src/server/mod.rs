@@ -5,7 +5,9 @@
 //! server only through a [`Backend`].
 
 mod library;
+mod live;
 mod routes;
+pub mod tls;
 mod web;
 
 use crate::backend::Backend;
@@ -44,6 +46,8 @@ pub struct ServeConfig {
     pub web: bool,
     /// Serve the web page from this directory instead of the built-in copy.
     pub web_dir: Option<PathBuf>,
+    /// Serve HTTPS with this certificate and key (see [`tls`]).
+    pub tls: Option<tls::TlsFiles>,
 }
 
 /// Something clients may want to hear about as it happens.
@@ -144,12 +148,36 @@ pub async fn serve(
         let (backend, config, token) = (backend.clone(), cfg.config.clone(), cfg.token.clone());
         tokio::task::spawn_blocking(move || AppState::new(backend, config, token, close_rx)).await?
     };
-    let listener = tokio::net::TcpListener::bind(cfg.listen)
-        .await
-        .with_context(|| format!("listening on {}", cfg.listen))?;
+    let mut app = router(state.clone());
+    if cfg.web {
+        app = app.merge(web::router(cfg.web_dir));
+    }
+    let shutdown = async move {
+        shutdown.await;
+        let _ = close_tx.send(true);
+    };
+    let (addr, server) = match &cfg.tls {
+        None => {
+            let listener = tokio::net::TcpListener::bind(cfg.listen)
+                .await
+                .with_context(|| format!("listening on {}", cfg.listen))?;
+            let addr = format!("http://{}", listener.local_addr()?);
+            let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown);
+            (
+                addr,
+                Box::pin(async move { serve.await })
+                    as std::pin::Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>,
+            )
+        }
+        Some(files) => {
+            let listener = tls::TlsListener::bind(cfg.listen, files).await?;
+            let addr = format!("https://{}", axum::serve::Listener::local_addr(&listener)?);
+            let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown);
+            (addr, Box::pin(async move { serve.await }) as _)
+        }
+    };
     eprintln!(
-        "mcast intercom on http://{} ({} zones, {} announcements from {}; sending through {}){}",
-        listener.local_addr()?,
+        "mcast intercom on {addr} ({} zones, {} announcements from {}; sending through {}){}",
         loaded.zones.len(),
         loaded.announcements.len(),
         cfg.config.display(),
@@ -160,16 +188,7 @@ pub async fn serve(
             ""
         }
     );
-    let mut app = router(state);
-    if cfg.web {
-        app = app.merge(web::router(cfg.web_dir));
-    }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown.await;
-            let _ = close_tx.send(true);
-        })
-        .await?;
+    server.await?;
     Ok(())
 }
 
@@ -196,6 +215,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete::<Announcement>),
         )
         .route("/announcements/{id}/play", post(play))
+        .route("/live/{id}", get(live::live))
         .route("/schedules", get(list::<Schedule>).post(create::<Schedule>))
         .route(
             "/schedules/{id}",

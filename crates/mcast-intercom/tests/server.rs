@@ -259,3 +259,78 @@ fn the_panel_api_plays_through_a_real_server() {
         .unwrap();
     assert_eq!(b["connected"], true, "{b}");
 }
+
+/// Push to talk, end to end: a WebSocket into the panel, live senders on a
+/// real mcast server, and the page ending when the talking does.
+#[test]
+fn talks_live_to_two_groups() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let srv = server();
+    let path = srv.dir.join("intercom.json");
+    let mut cfg = config();
+    cfg.announcements.push(Announcement {
+        id: "talk".into(),
+        name: "Talk".into(),
+        audio: Audio::Live,
+        chime: Some(json!("beep")),
+        end_chime: Some(json!("beep")),
+        mode: Some("voice".into()),
+        volume_db: None,
+        lead_in_ms: None,
+        repeat: 1,
+        repeat_gap_s: 0.0,
+        zones: vec!["both".into()],
+        priority: Priority::Normal,
+    });
+    std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+    let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
+    let (_closing_tx, closing) = tokio::sync::watch::channel(false);
+
+    srv._rt.block_on(async {
+        let state = mcast_intercom::server::AppState::new(backend, path, None, closing);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = mcast_intercom::server::router(state.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        // Not live: refused.
+        let url = format!("ws://{addr}/api/intercom/v1/live/ding");
+        assert!(tokio_tungstenite::connect_async(url).await.is_err());
+
+        let url = format!("ws://{addr}/api/intercom/v1/live/talk");
+        let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let first = ws.next().await.unwrap().unwrap();
+        let started: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
+        assert_eq!(started["type"], "started", "{started}");
+        assert_eq!(started["groups"], 2);
+        let run_id = started["run"].as_u64().unwrap();
+
+        // Half a second of tone, in 20 ms chunks, then the end.
+        for chunk in 0..25 {
+            let pcm: Vec<u8> = (0..960)
+                .flat_map(|i| {
+                    let t = (chunk * 960 + i) as f32 / 48_000.0;
+                    (((t * 440.0 * std::f32::consts::TAU).sin() * 8000.0) as i16).to_le_bytes()
+                })
+                .collect();
+            ws.send(Message::Binary(pcm.into())).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(state.runner().get(run_id).unwrap().state, RunState::Playing);
+        ws.send(Message::Text("end".into())).await.unwrap();
+
+        let r = state.runner().clone();
+        let run = tokio::task::spawn_blocking(move || {
+            wait_for(&r, run_id, "the page to end", |r| r.state.is_over())
+        })
+        .await
+        .unwrap();
+        assert_eq!(run.state, RunState::Done, "{run:#?}");
+        assert!(run
+            .targets
+            .iter()
+            .all(|t| t.state == TargetState::Done && t.played == 1));
+    });
+}

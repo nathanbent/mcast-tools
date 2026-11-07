@@ -13,6 +13,7 @@ export const MODES = [["voice", "Voice"], ["music", "Music"], ["none", "None"]];
 export const modeLabel = (m) => (m ? MODES.find(([v]) => v === m)?.[1] ?? m : "Server default");
 
 function audioLabel(a) {
+  if (a.audio === "live") return "Live (push to talk)";
   return a.audio === "chime_only" ? "Chime only" : a.audio.media;
 }
 
@@ -35,8 +36,9 @@ function form(a, save, cancel) {
   const d = state.config.defaults ?? {};
   const media = a && typeof a.audio === "object" ? a.audio.media : null;
   const name = h("input", { value: a?.name ?? "", required: true, maxLength: 64 });
-  const audio = select([["chime_only", "Chime only"], { group: "Media files", options: mediaOptions("media:", media) }],
-    media ? `media:${media}` : "chime_only");
+  const audio = select([["chime_only", "Chime only"], ["live", "Live: talk from the panel (push to talk)"],
+    { group: "Media files", options: mediaOptions("media:", media) }],
+    media ? `media:${media}` : a?.audio === "live" ? "live" : "chime_only");
   const chime = chimeField("Before", a?.chime, "chime", { inherit: true });
   const endChime = chimeField("After", a?.end_chime, "end_chime", { inherit: true });
   const mode = select([["", `Default (${modeLabel(d.mode)})`], ...MODES], a?.mode ?? "");
@@ -52,6 +54,15 @@ function form(a, save, cancel) {
   }));
   const setZones = (on) => { for (const z of zones) z.box.checked = on; };
 
+  const liveOnly = () => {
+    const live = audio.value === "live";
+    repeat.disabled = live;
+    gap.disabled = live;
+    if (live) repeat.value = "1";
+  };
+  audio.addEventListener("change", liveOnly);
+  liveOnly();
+
   const submit = (e) => {
     e.preventDefault();
     const chosen = zones.filter((z) => z.box.checked).map((z) => z.id);
@@ -59,7 +70,7 @@ function form(a, save, cancel) {
     const unknown = (a?.zones ?? []).filter((id) => !state.config.zones.some((z) => z.id === id));
     save({
       name: name.value.trim(),
-      audio: audio.value === "chime_only" ? "chime_only" : { media: audio.value.slice(6) },
+      audio: audio.value === "chime_only" || audio.value === "live" ? audio.value : { media: audio.value.slice(6) },
       chime: chime.value(),
       end_chime: endChime.value(),
       mode: mode.value || null,
@@ -74,7 +85,7 @@ function form(a, save, cancel) {
 
   return h("form", { onsubmit: submit },
     part("General",
-      h("div", { class: "row" }, field("Name", name), field("Audio", audio, "Upload files through mcast serve"))),
+      h("div", { class: "row" }, field("Name", name), field("Audio", audio, "Upload files on the Sounds tab"))),
     part("Chimes",
       h("div", { class: "row" }, chime.el, endChime.el),
       h("p", { class: "small muted" },

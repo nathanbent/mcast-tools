@@ -791,8 +791,11 @@ in a time zone you choose, and only while the panel runs. They can all be
 paused at once, skip days off (holidays, breaks), and sit in groups that
 switch on and off together. Several sites can each have their own zones,
 schedules, time zone and days off. A Sounds tab manages the mcast server's
-sound files in folders. It is its own server with its
-own token (`--panel-token`); `--url` and `--token` point it at `mcast serve`.
+sound files in folders. Live announcements are push to talk from the
+browser's microphone, which browsers only allow over HTTPS:
+`--tls-self-signed` (or `--tls-cert`/`--tls-key`) serves the panel that way.
+It is its own server with its own token (`--panel-token`); `--url` and
+`--token` point it at `mcast serve`.
 See [crates/mcast-intercom/README.md](crates/mcast-intercom/README.md) for the
 file's format and the panel's API. On a Raspberry Pi, `ENABLE_INTERCOM=yes` in
 `pi/pi.conf` runs it as a service ([pi/README.md](pi/README.md#the-intercom-panel)).

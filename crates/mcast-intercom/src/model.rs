@@ -376,7 +376,13 @@ pub enum Audio {
     /// `"chime_only"`: no audio, just the chime (the default chime unless
     /// `chime` or `end_chime` says otherwise).
     ChimeOnly,
+    /// `"live"`: someone talks, from the panel's page (push to talk). Its
+    /// chimes go before and after.
+    Live,
 }
+
+/// The sample rate the panel's page sends live audio at.
+pub const LIVE_RATE: u32 = 48_000;
 
 /// Who wins when a group is already being sent to.
 #[derive(
@@ -491,6 +497,7 @@ impl Announcement {
             match &self.audio {
                 Audio::Media(path) => json!({ "type": "file", "path": path }),
                 Audio::ChimeOnly => json!({ "type": "chime" }),
+                Audio::Live => json!({ "type": "live", "rate": LIVE_RATE, "channels": 1 }),
             },
         );
         let volume = match (self.volume_db, target.volume_db) {
@@ -685,6 +692,9 @@ impl Config {
             if !(1..=MAX_REPEAT).contains(&a.repeat) {
                 bail!("{what}: repeat must be 1 to {MAX_REPEAT}");
             }
+            if a.audio == Audio::Live && a.repeat != 1 {
+                bail!("{what}: a live announcement plays once");
+            }
             if !(0.0..=MAX_REPEAT_GAP_S).contains(&a.repeat_gap_s) {
                 bail!("{what}: repeat_gap_s must be 0 to {MAX_REPEAT_GAP_S}");
             }
@@ -750,6 +760,12 @@ impl Config {
             let Some(a) = self.announcements.iter().find(|a| a.id == sch.announcement) else {
                 bail!("{what}: no announcement \"{}\"", sch.announcement);
             };
+            if a.audio == Audio::Live {
+                bail!(
+                    "{what}: \"{}\" is live (someone talks), so it can't be scheduled",
+                    a.name
+                );
+            }
             if let Some(g) = &sch.group {
                 if !self.schedule_groups.iter().any(|x| x.id == *g) {
                     bail!("{what}: no schedule group \"{g}\"");

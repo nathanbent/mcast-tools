@@ -65,6 +65,54 @@ fn stopping_cuts_a_chime_short() {
 }
 
 #[test]
+fn a_live_sender_plays_what_is_pushed_and_ends_when_closed() {
+    let (jobs, _) = jobs();
+    let req = SendRequest {
+        source: SourceRequest::Live {
+            rate: 16_000,
+            channels: 1,
+        },
+        chime: Some(crate::request::ChimeRequest::BuiltIn(
+            mcast_audio::chime::BuiltIn::Beep,
+        )),
+        tail_ms: 0.0,
+        ..tone("239.255.77.18:5004")
+    };
+    assert!(req.endless());
+    let job = jobs.start_sender(req).unwrap();
+    let feed = jobs.live_feed(job.id).unwrap();
+    // A third of a second of tone, in two pieces with a sample split between them.
+    let pcm: Vec<u8> = (0..5_333)
+        .flat_map(|i| (((i as f32 / 8.0).sin() * 8000.0) as i16).to_le_bytes())
+        .collect();
+    feed.push_s16le(&pcm[..1001]);
+    feed.push_s16le(&pcm[1001..]);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(jobs.get(job.id).unwrap().state, JobState::Running);
+    feed.close();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let j = jobs.get(job.id).unwrap();
+        if !j.state.is_active() || std::time::Instant::now() > deadline {
+            break j;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(done.state, JobState::Finished, "{done:?}");
+    match done.stats {
+        // The chime and the third of a second, at least.
+        Some(JobStats::Send(s)) => assert!(s.seconds > 0.5, "{s:?}"),
+        other => panic!("no send stats: {other:?}"),
+    }
+    // Ended: nothing more goes in.
+    assert_eq!(jobs.live_feed(job.id).unwrap_err(), LiveError::Ended);
+    // Only live senders take audio.
+    let tone_job = jobs.start_sender(tone("239.255.77.19:5004")).unwrap();
+    assert_eq!(jobs.live_feed(tone_job.id).unwrap_err(), LiveError::NotLive);
+    jobs.stop(tone_job.id, Duration::from_secs(5));
+}
+
+#[test]
 fn bad_requests_fail_up_front_and_leave_no_job() {
     let (jobs, _) = jobs();
     let req = SendRequest {

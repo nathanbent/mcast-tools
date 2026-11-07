@@ -67,8 +67,14 @@ it: schedules run on the Pi's clock and time zone) and re-run `install.sh`. You 
   token from `mcast.env`.
 - Its own token, printed at the end and kept in `/etc/mcast/intercom.env`
   (`INTERCOM_TOKEN` in `pi.conf` sets one).
-- The panel on `http://pager.local:8651/`, through the firewall and advertised
-  over mDNS as "Intercom on pager".
+- The panel on `https://pager.local:8651/`, through the firewall and advertised
+  over mDNS as "Intercom on pager". It's HTTPS (`INTERCOM_HTTPS=yes`, the
+  default) so push to talk can use the browser's microphone. The certificate
+  is self-signed and kept in `/var/lib/mcast` (`intercom-cert.pem`), so
+  browsers warn about it once; accept it to go on. For your own certificate,
+  set `MCAST_INTERCOM_TLS_CERT` and `MCAST_INTERCOM_TLS_KEY` in
+  `/etc/mcast/intercom.env` (readable by the `mcast` user), then
+  `systemctl restart mcast-intercom`.
 
 Zones, announcements and schedules are kept in `/var/lib/mcast/intercom.json`;
 set them up in the panel. Schedules only play while the service runs, so a

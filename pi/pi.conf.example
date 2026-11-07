@@ -35,6 +35,11 @@ ENABLE_INTERCOM=no
 # end and kept in /etc/mcast/intercom.env).
 INTERCOM_LISTEN="0.0.0.0:8651"
 INTERCOM_TOKEN=""
+# Serve the panel over HTTPS with a self-signed certificate. Browsers only let
+# push to talk use the microphone on HTTPS pages; they warn about the
+# certificate once. (For your own certificate, set MCAST_INTERCOM_TLS_CERT and
+# MCAST_INTERCOM_TLS_KEY in /etc/mcast/intercom.env instead.)
+INTERCOM_HTTPS=yes
 
 # --- LLDP ------------------------------------------------------------------
 # Announce this Pi to the switch (and see which switch port it's on).

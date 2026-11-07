@@ -336,8 +336,15 @@ pub(super) async fn play(
     Path(id): Path<String>,
 ) -> ApiResult<(StatusCode, Json<Run>)> {
     let cfg = s.load().await?;
-    if !cfg.announcements.iter().any(|a| a.id == id) {
-        return Err(not_found::<Announcement>(&id));
+    match cfg.announcements.iter().find(|a| a.id == id) {
+        None => return Err(not_found::<Announcement>(&id)),
+        Some(a) if a.audio == crate::model::Audio::Live => {
+            return Err(ApiError::bad(format!(
+                "\"{}\" is live: talk on it with the panel's push to talk (/live/{id})",
+                a.name
+            )))
+        }
+        Some(_) => {}
     }
     let runner = s.0.runner.clone();
     let run = tokio::task::spawn_blocking(move || runner.play(&cfg, &id, Trigger::Manual))

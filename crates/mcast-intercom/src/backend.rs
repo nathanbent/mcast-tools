@@ -122,6 +122,39 @@ pub trait Backend: Send + Sync + 'static {
     fn job(&self, id: u64) -> BackendResult<Job>;
     /// Follow the server's events in the background until `on` returns false.
     fn follow(&self, on: FeedFn);
+    /// Stream audio (16-bit little-endian PCM) into a sender with a live
+    /// source, chunk by chunk, until `chunks` closes (the page ends) or the
+    /// job does. Blocks until then.
+    fn stream_live(
+        &self,
+        job: u64,
+        chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    ) -> BackendResult<()>;
+}
+
+/// A request body read from a channel of chunks, ending when it closes.
+struct ChunkReader {
+    chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    current: Vec<u8>,
+    at: usize,
+}
+
+impl std::io::Read for ChunkReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        while self.at == self.current.len() {
+            match self.chunks.recv() {
+                Ok(c) => {
+                    self.current = c;
+                    self.at = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.current.len() - self.at);
+        buf[..n].copy_from_slice(&self.current[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
 }
 
 /// `mcast serve`'s HTTP API.
@@ -304,6 +337,26 @@ impl Backend for HttpBackend {
 
     fn job(&self, id: u64) -> BackendResult<Job> {
         self.get(&format!("/jobs/{id}"))
+    }
+
+    fn stream_live(
+        &self,
+        job: u64,
+        chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    ) -> BackendResult<()> {
+        // No read timeout: the reply only comes when the page is over.
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .build();
+        let body = ChunkReader {
+            chunks,
+            current: Vec::new(),
+            at: 0,
+        };
+        self.request(&agent, "POST", &format!("/jobs/{job}/live"))
+            .set("Content-Type", "application/octet-stream")
+            .send(body)?;
+        Ok(())
     }
 
     fn follow(&self, on: FeedFn) {

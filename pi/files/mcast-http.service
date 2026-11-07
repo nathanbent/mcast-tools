@@ -4,7 +4,7 @@
 <service-group>
   <name replace-wildcards="yes">@NAME@</name>
   <service>
-    <type>_http._tcp</type>
+    <type>@TYPE@</type>
     <port>@PORT@</port>
     <txt-record>path=/</txt-record>
   </service>

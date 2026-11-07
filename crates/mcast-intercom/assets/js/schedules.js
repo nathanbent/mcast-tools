@@ -69,9 +69,11 @@ const setSite = (site, changes, done) => put(`/sites/${encodeURIComponent(site.i
 function form(s, save, cancel) {
   const weekly = s?.when.weekly ?? { days: WEEKDAYS, times: [] };
   const name = h("input", { value: s?.name ?? "", maxLength: 64, placeholder: "Optional" });
+  // Live announcements are talked on, not scheduled.
+  const playable = state.config.announcements.filter((a) => a.audio !== "live");
   const announcement = select(
-    state.config.announcements.map((a) => [a.id, a.name]),
-    s?.announcement ?? state.config.announcements[0]?.id ?? "");
+    playable.map((a) => [a.id, a.name]),
+    s?.announcement ?? playable[0]?.id ?? "");
   const kind = select([["weekly", "Every week"], ["once", "Once"]], s?.when.once ? "once" : "weekly");
   const days = DAYS.map(([d, l]) => ({ d, box: h("input", { type: "checkbox", checked: weekly.days.includes(d) }), l }));
   const setDays = (which) => { for (const x of days) x.box.checked = which.includes(x.d); };
@@ -122,8 +124,8 @@ function form(s, save, cancel) {
     });
   };
 
-  if (!state.config.announcements.length) {
-    return h("p", { class: "muted" }, "Add an announcement first.");
+  if (!playable.length) {
+    return h("p", { class: "muted" }, "Add an announcement first (live ones can't be scheduled).");
   }
   return h("form", { onsubmit: submit },
     h("div", { class: "row" }, field("Plays", announcement), field("Name", name), field("When", kind)),

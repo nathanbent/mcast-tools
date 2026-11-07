@@ -11,6 +11,7 @@ use crate::codec::{Codec, Decoder, OpusOptions, StreamSpec};
 use crate::convert::{map_channels, Converter};
 use crate::device;
 use crate::file::AudioFile;
+use crate::live::{LiveFeed, LiveReader};
 use crate::packetizer::Packetizer;
 use crate::pad::Pad;
 use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
@@ -46,6 +47,9 @@ pub enum Source {
     Capture { device: Option<String> },
     /// No audio: just the chimes (and lead-in and tail).
     Silent,
+    /// Audio pushed in from elsewhere as it happens (see [`LiveFeed`]):
+    /// it ends, with the end chime, when the feed is closed.
+    Live { feed: LiveFeed },
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +135,7 @@ enum Input {
         file: AudioFile,
         looped: bool,
     },
+    Live(LiveReader),
 }
 
 /// A paced source (tone or file) with start offset, length limit and fades.
@@ -179,6 +184,7 @@ impl Reader {
                     looped: *looped,
                 }
             }
+            Source::Live { feed } => Input::Live(LiveReader::new(feed.clone())),
             Source::Capture { .. } => unreachable!("capture isn't read through Reader"),
         };
         let frames = |d: Duration| (d.as_secs_f64() * rate as f64).round() as u64;
@@ -220,6 +226,7 @@ impl Reader {
                 out.len()
             }
             Input::Silent => 0,
+            Input::Live(live) => live.fill(out),
             Input::File { file, looped } => {
                 let mut written = 0;
                 let mut rewound = false;
@@ -315,6 +322,7 @@ impl Sender {
             Source::Capture { device } => {
                 device::input_format(&device::input_device(device.as_deref())?)?
             }
+            Source::Live { feed } => (feed.rate(), feed.channels()),
         };
         if spec.channels == 0
             || spec.sample_rate == 0
