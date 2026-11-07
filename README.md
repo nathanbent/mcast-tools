@@ -238,15 +238,15 @@ mcast @page-1 --file page.wav -e g722 -v -3     # options typed here win
 
 | Command | Does |
 |---|---|
-| `mcast preset create NAME [OPTIONS]` | New preset for `audio send` (`--recv` or `--monitor`, before the options, for `audio recv` or `monitor`) |
+| `mcast preset create NAME [OPTIONS]` | New preset for `audio send` (`--recv`, `--discover` or `--monitor`, before the options, for `audio recv`, `audio discover` or `monitor`) |
 | `mcast preset set NAME OPTIONS` | Add or change options (creates a send preset if there isn't one) |
 | `mcast preset unset NAME OPTION...` | Remove options, named `group`, `--group` or `-g` (`groups` for monitor's groups) |
 | `mcast preset list [NAME]` (`ls`, `show`) | Show presets as the commands they run |
 | `mcast preset copy FROM TO` (`cp`), `delete NAME` (`rm`) | |
 | `mcast @NAME [OPTIONS]`, `mcast preset run NAME [OPTIONS]` | Run a preset |
-| `mcast audio send -P NAME [OPTIONS]` (`--preset`) | The same, on the command itself (also `audio recv`, `monitor`); repeatable, so presets can stack |
+| `mcast audio send -P NAME [OPTIONS]` (`--preset`) | The same, on the command itself (also `audio recv`, `audio discover`, `monitor`); repeatable, so presets can stack |
 
-Options are the ones `mcast audio send` / `recv` / `monitor` take, and are checked when
+Options are the ones `mcast audio send` / `recv` / `discover` / `monitor` take, and are checked when
 saved. A later option replaces the same option, or any it conflicts with:
 setting `--file` drops a saved `--tone`, `-m music` drops `-p`. Stacked
 presets apply left to right, and the command line comes last:
@@ -267,6 +267,13 @@ mcast preset create zones --monitor 239.192.2.1:10000 239.192.2.2:10000 --sap
 mcast @zones                                    # watch both zones and SAP streams
 mcast @zones --log -d 3600 > night.log
 mcast @zones 239.192.2.3:10000                  # just this group (still with --sap)
+```
+
+A discover preset can save the SAP groups to listen on and whether to print SDP:
+
+```bash
+mcast preset create sap2 --discover --sap-group 239.195.255.255:9875 --sdp
+mcast @sap2 -d 10
 ```
 
 Presets live in `~/.config/mcast/presets.conf` (`$XDG_CONFIG_HOME`,
