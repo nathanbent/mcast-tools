@@ -45,6 +45,9 @@ A page with a tab for each part:
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
+The header's ◐ / ☀ / ☾ button picks the theme: the system's, light or dark,
+remembered in that browser (`mcast serve`'s own page has the same switch).
+
 Sound files and phonebook names come from the mcast server, so its own web
 page and TUI see the same files and folders.
 

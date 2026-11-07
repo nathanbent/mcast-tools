@@ -22,7 +22,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f1215;
     --panel: #171b20;
     --text: #e7eaee;
@@ -38,6 +38,26 @@
     --shadow: none;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #0f1215;
+  --panel: #171b20;
+  --text: #e7eaee;
+  --muted: #97a1ac;
+  --line: #2a3038;
+  --field: #0f1215;
+  --accent: #5b8def;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --meter: #2a3038;
+  --meter-fill: #22c55e;
+  --shadow: none;
+}
+
+/* A theme chosen on this browser (js/theme.js) wins over the system's. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+#theme { font-size: 16px; padding: 2px 8px; }
 
 * { box-sizing: border-box; }
 
@@ -456,10 +476,14 @@ dialog h3 { font-size: 13px; color: var(--muted); margin: 14px 0 4px; }
   --c-teal: #0d9488; --c-blue: #2563eb; --c-purple: #7c3aed; --c-grey: #6b7280;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --c-red: #f87171; --c-orange: #fb923c; --c-amber: #fbbf24; --c-green: #4ade80;
     --c-teal: #2dd4bf; --c-blue: #60a5fa; --c-purple: #a78bfa; --c-grey: #9ca3af;
   }
+}
+:root[data-theme="dark"] {
+  --c-red: #f87171; --c-orange: #fb923c; --c-amber: #fbbf24; --c-green: #4ade80;
+  --c-teal: #2dd4bf; --c-blue: #60a5fa; --c-purple: #a78bfa; --c-grey: #9ca3af;
 }
 .color-red { --c: var(--c-red); } .color-orange { --c: var(--c-orange); } .color-amber { --c: var(--c-amber); }
 .color-green { --c: var(--c-green); } .color-teal { --c: var(--c-teal); } .color-blue { --c: var(--c-blue); }

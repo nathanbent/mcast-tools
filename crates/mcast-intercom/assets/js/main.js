@@ -1,6 +1,7 @@
 // Start-up: check access, load everything, follow events, mount the tabs.
 
 import { api, follow, setToken, token } from "./api.js";
+import { themeButton } from "./themes.js";
 import { h, replace, toast } from "./dom.js";
 import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded, can, TABS } from "./store.js";
 import * as panel from "./panel.js";
@@ -113,6 +114,7 @@ async function allStop() {
 }
 
 async function start() {
+  themeButton(document.getElementById("theme"));
   setStatus("connecting");
   try {
     await authenticate();

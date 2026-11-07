@@ -122,6 +122,14 @@ The original sketch:
 
 ### 5. Theme switch
 
+**Built.**
+- A header button cycles System → Light → Dark, kept per browser in `localStorage` (`mcast.theme`).
+- A tiny classic script (`js/theme.js`, first in `<head>`) sets `data-theme` before the first paint, so there's no flash. The strict CSP allows no inline script, so it's a file.
+- The CSS's dark tokens apply under `prefers-color-scheme: dark` unless Light was chosen, and always when Dark was. That includes the Panel's palette.
+- `mcast serve`'s page has the same switch.
+
+The plan:
+
 - System / Light / Dark in the header or Settings, kept per browser in
   `localStorage` (a device preference, not panel config).
 - A `data-theme` attribute on `<html>`, set before first paint so the page
