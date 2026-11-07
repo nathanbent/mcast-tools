@@ -1,6 +1,6 @@
 # Intercom control panel: plan
 
-Status: phases 1 to 3 built (`crates/mcast-intercom`: `mcast intercom list|check|upcoming|play|serve`); phase 4 to come.
+Status: all four phases built: `crates/mcast-intercom` (`mcast intercom list|check|upcoming|play|serve`) and the Raspberry Pi service (`ENABLE_INTERCOM` in `pi/pi.conf`).
 
 A small control panel on top of `mcast serve`: you define **zones** (sets of
 speakers), **announcements** (audio + chimes + where it goes), and
@@ -158,7 +158,7 @@ but its own copy so it can leave with the crate:
    testing. Tests against an in-process `mcast-server`.
 2. **Panel** (done): its HTTP API + web UI (panel grid, editors, history).
 3. **Scheduler** (done): weekly + one-shot, time zone, grace, upcoming.
-4. **Polish:** Pi systemd unit and install.sh option.
+4. **Polish** (done): Pi systemd unit and install.sh option.
 
 Not planned for now (possible later): live talk, queue-when-busy, skip dates
 / holidays / richer schedule rules, a TUI tab.

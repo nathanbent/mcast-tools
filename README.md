@@ -724,8 +724,8 @@ play weekly or once at wall-clock times in a time zone you choose, and only
 while the panel runs. It is its own server with its
 own token (`--panel-token`); `--url` and `--token` point it at `mcast serve`.
 See [crates/mcast-intercom/README.md](crates/mcast-intercom/README.md) for the
-file's format and the panel's API. A Raspberry Pi service for the panel is
-planned ([docs/intercom-plan.md](docs/intercom-plan.md)).
+file's format and the panel's API. On a Raspberry Pi, `ENABLE_INTERCOM=yes` in
+`pi/pi.conf` runs it as a service ([pi/README.md](pi/README.md#the-intercom-panel)).
 
 ## Layout
 

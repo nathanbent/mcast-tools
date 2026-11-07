@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - turn a fresh Raspberry Pi OS Lite (64-bit) install into an mcast
-# appliance: mcast serve as a service, LLDP/CDP, hardened SSH, optional Cockpit
-# and Tailscale, a firewall, mDNS, multicast tuning and a watchdog.
+# appliance: mcast serve as a service, optionally the intercom panel, LLDP/CDP,
+# hardened SSH, optional Cockpit and Tailscale, a firewall, mDNS, multicast
+# tuning and a watchdog.
 #
 # Usage: sudo ./install.sh [path/to/pi.conf]   (default: pi.conf next to this script)
 #
@@ -16,12 +17,16 @@ REPO="nathanbent/mcast-tools"
 
 # --- Defaults (see pi.conf.example) -------------------------------------------
 PI_HOSTNAME=""
+PI_TIMEZONE=""
 ADMIN_USER=""
 INSTALL_MCAST=yes
 MCAST_LISTEN="0.0.0.0:8650"
 MCAST_TOKEN=""
 MCAST_IFACE="any"
 MCAST_EXTRA_ARGS=""
+ENABLE_INTERCOM=no
+INTERCOM_LISTEN="0.0.0.0:8651"
+INTERCOM_TOKEN=""
 ENABLE_LLDP=yes
 LLDP_CDP=yes
 LLDP_INTERFACES="eth*,end*,wlan*"
@@ -48,6 +53,9 @@ fi
 
 ADMIN_USER=${ADMIN_USER:-${SUDO_USER:-}}
 MCAST_PORT=${MCAST_LISTEN##*:}
+INTERCOM_PORT=${INTERCOM_LISTEN##*:}
+# Set once the intercom service is installed and running.
+INTERCOM_ON=no
 NOTES=()
 
 on() { [ "${1,,}" = yes ] || [ "${1,,}" = true ] || [ "$1" = 1 ]; }
@@ -67,6 +75,27 @@ render() {
     printf '%s\n' "$content" >"$dest.tmp"
     chmod "$mode" "$dest.tmp"
     mv "$dest.tmp" "$dest"
+}
+
+# How to reach a server listening on LISTEN (host:port) from this Pi.
+local_url() {
+    local host=${1%:*} port=${1##*:}
+    case $host in
+        0.0.0.0 | "") host=127.0.0.1 ;;
+        "[::]") host="[::1]" ;;
+    esac
+    echo "http://$host:$port"
+}
+
+# A value from an env file written by an earlier run: env_value FILE KEY
+env_value() {
+    [ -f "$1" ] || return 0
+    # shellcheck source=/dev/null
+    (. "$1" && printf '%s\n' "${!2:-}")
+}
+
+new_token() {
+    head -c 18 /dev/urandom | base64 | tr '+/' '-_'
 }
 
 APT_UPDATED=no
@@ -101,6 +130,12 @@ set_hostname() {
     else
         printf '127.0.1.1\t%s\n' "$PI_HOSTNAME" >>/etc/hosts
     fi
+}
+
+set_timezone() {
+    [ -n "$PI_TIMEZONE" ] || return 0
+    step "Time zone: $PI_TIMEZONE"
+    timedatectl set-timezone "$PI_TIMEZONE"
 }
 
 install_base() {
@@ -147,12 +182,9 @@ install_mcast() {
     install -d -m 0750 -o root -g mcast /etc/mcast
     local env=/etc/mcast/mcast.env
     # Keep a token from an earlier run unless pi.conf sets one.
-    if [ -z "$MCAST_TOKEN" ] && [ -f "$env" ]; then
-        # shellcheck source=/dev/null
-        MCAST_TOKEN=$(. "$env" && echo "${MCAST_TOKEN:-}")
-    fi
+    [ -n "$MCAST_TOKEN" ] || MCAST_TOKEN=$(env_value "$env" MCAST_TOKEN)
     if [ -z "$MCAST_TOKEN" ]; then
-        MCAST_TOKEN=$(head -c 18 /dev/urandom | base64 | tr '+/' '-_')
+        MCAST_TOKEN=$(new_token)
         note "mcast token (also in $env): $MCAST_TOKEN"
     fi
     umask 027
@@ -172,6 +204,57 @@ EOF
     systemctl enable mcast.service
     systemctl restart mcast.service
     note "mcast web GUI: http://$(hostname).local:$MCAST_PORT/   (sudo mcast update to upgrade)"
+}
+
+install_intercom() {
+    local unit=/etc/systemd/system/mcast-intercom.service
+    if ! on "$ENABLE_INTERCOM"; then
+        # Switched off after being on: stop it, but keep its config and token.
+        if [ -f "$unit" ]; then
+            step "Intercom panel: off"
+            systemctl disable --now mcast-intercom.service || true
+            rm -f "$unit"
+            systemctl daemon-reload
+        fi
+        return 0
+    fi
+    step "Intercom panel"
+    if [ ! -x /usr/local/bin/mcast ] || [ ! -f /etc/mcast/mcast.env ]; then
+        echo "the intercom panel plays through mcast serve: set INSTALL_MCAST=yes too" >&2
+        exit 1
+    fi
+    if ! /usr/local/bin/mcast intercom --help >/dev/null 2>&1; then
+        note "Intercom panel NOT installed: $(/usr/local/bin/mcast --version) is too old. Run 'sudo mcast update' once a release has it (or 'sudo mcast update --source'), then re-run install.sh."
+        return 0
+    fi
+
+    local env=/etc/mcast/intercom.env mcast_listen
+    [ -n "$INTERCOM_TOKEN" ] || INTERCOM_TOKEN=$(env_value "$env" MCAST_INTERCOM_TOKEN)
+    if [ -z "$INTERCOM_TOKEN" ]; then
+        INTERCOM_TOKEN=$(new_token)
+        note "intercom panel token (also in $env): $INTERCOM_TOKEN"
+    fi
+    mcast_listen=$(env_value /etc/mcast/mcast.env MCAST_LISTEN)
+    umask 027
+    cat >"$env" <<EOF
+# Read by mcast-intercom.service. Written by install.sh; edit and
+# "systemctl restart mcast-intercom". Its token for mcast serve is
+# MCAST_TOKEN in mcast.env.
+MCAST_INTERCOM_LISTEN=$INTERCOM_LISTEN
+MCAST_INTERCOM_TOKEN=$INTERCOM_TOKEN
+MCAST_URL=$(local_url "${mcast_listen:-$MCAST_LISTEN}")
+MCAST_INTERCOM=/var/lib/mcast/intercom.json
+EOF
+    umask 022
+    chown root:mcast "$env"
+    chmod 0640 "$env"
+
+    render mcast-intercom.service "$unit" 0644
+    systemctl daemon-reload
+    systemctl enable mcast-intercom.service
+    systemctl restart mcast-intercom.service
+    INTERCOM_ON=yes
+    note "Intercom panel: http://$(hostname).local:$INTERCOM_PORT/   (its config: /var/lib/mcast/intercom.json)"
 }
 
 setup_lldp() {
@@ -237,7 +320,14 @@ setup_avahi() {
     on "$ENABLE_AVAHI" || return 0
     step "mDNS"
     if on "$INSTALL_MCAST"; then
-        render mcast-http.service /etc/avahi/services/mcast.service 0644 PORT "$MCAST_PORT"
+        render mcast-http.service /etc/avahi/services/mcast.service 0644 \
+            NAME "mcast on %h" PORT "$MCAST_PORT"
+    fi
+    if [ $INTERCOM_ON = yes ]; then
+        render mcast-http.service /etc/avahi/services/mcast-intercom.service 0644 \
+            NAME "Intercom on %h" PORT "$INTERCOM_PORT"
+    else
+        rm -f /etc/avahi/services/mcast-intercom.service
     fi
     if [ -f /usr/share/doc/avahi-daemon/examples/ssh.service ]; then
         cp /usr/share/doc/avahi-daemon/examples/ssh.service /etc/avahi/services/ssh.service
@@ -258,6 +348,7 @@ setup_firewall() {
     step "Firewall"
     local ports=22
     on "$INSTALL_MCAST" && ports+=", $MCAST_PORT"
+    [ $INTERCOM_ON = yes ] && ports+=", $INTERCOM_PORT"
     on "$ENABLE_COCKPIT" && ports+=", 9090"
     render nftables.conf /etc/nftables.conf 0755 TCP_PORTS "$ports"
     nft -c -f /etc/nftables.conf
@@ -300,9 +391,11 @@ setup_system() {
 
 # --- Run ----------------------------------------------------------------------
 set_hostname
+set_timezone
 install_base
 setup_sysctl
 install_mcast
+install_intercom
 setup_lldp
 setup_ssh
 setup_cockpit

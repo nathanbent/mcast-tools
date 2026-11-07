@@ -9,6 +9,7 @@ installs in `pi.conf`:
 | Piece | Default | What you get |
 |---|---|---|
 | `mcast serve` | on | Web GUI and API on `:8650` as a systemd service, under its own user, restarted if it crashes |
+| Intercom panel | off | `mcast intercom serve` on `:8651`: buttons and schedules for announcements, played through `mcast serve` ([details](../crates/mcast-intercom/README.md)) |
 | LLDP (+ CDP) | on | The switch sees the Pi's name and role, and the Pi can show you which switch, port and VLAN it's on |
 | SSH | on | Root login off. Password logins off once you have a key installed |
 | Cockpit | on | Web admin on `:9090`: terminal, logs, services, network, updates |
@@ -19,7 +20,7 @@ installs in `pi.conf`:
 | Watchdog | on | The hardware watchdog reboots the Pi if it hangs |
 | Unattended upgrades | on | Security updates install themselves |
 | Network tools | on | `tcpdump`, `tshark`, `iperf3`, `ethtool`, `mtr`, `nmap`, `arping`, `dig` |
-| Login summary | on | IP addresses, LLDP neighbor and mcast status when you log in (`mcast-pi-status`) |
+| Login summary | on | IP addresses, LLDP neighbor, and mcast and intercom status when you log in (`mcast-pi-status`) |
 
 ## Quick start
 
@@ -48,7 +49,38 @@ installs in `pi.conf`:
    `http://pager.local:8650/` and enter the token.
 
 Re-run `sudo ./install.sh` any time you change `pi.conf`. Each step can be run again safely,
-and the token is kept between runs. Upgrade mcast later with `sudo mcast update`.
+and the tokens are kept between runs. To upgrade mcast later:
+
+```bash
+sudo mcast update && sudo systemctl restart mcast
+```
+
+Add `mcast-intercom` to the restart if the intercom panel is on.
+
+## The intercom panel
+
+Set `ENABLE_INTERCOM=yes` in `pi.conf` (and `PI_TIMEZONE`, if Imager didn't set
+it: schedules run on the Pi's clock and time zone) and re-run `install.sh`. You get:
+
+- `mcast-intercom.service`, running `mcast intercom serve` as the `mcast` user,
+  started after `mcast.service`. It reaches `mcast serve` on this Pi with the
+  token from `mcast.env`.
+- Its own token, printed at the end and kept in `/etc/mcast/intercom.env`
+  (`INTERCOM_TOKEN` in `pi.conf` sets one).
+- The panel on `http://pager.local:8651/`, through the firewall and advertised
+  over mDNS as "Intercom on pager".
+
+Zones, announcements and schedules are kept in `/var/lib/mcast/intercom.json`;
+set them up in the panel. Schedules only play while the service runs, so a
+power cut means missed announcements, and they show as *missed* in the panel's
+history. Logs: `journalctl -u mcast-intercom -f`.
+
+Setting `ENABLE_INTERCOM=no` again stops and removes the service, but keeps
+`intercom.json` and the token.
+
+The intercom is newer than release 0.3.1. With an older binary, `install.sh`
+skips it and says so: once a release includes it, run `sudo mcast update`, then
+re-run `install.sh`.
 
 The release binaries are 64-bit only, so the 32-bit OS isn't supported.
 
@@ -57,15 +89,17 @@ The release binaries are 64-bit only, so the 32-bit OS isn't supported.
 | File | Installed as |
 |---|---|
 | `files/mcast.service` | `/etc/systemd/system/mcast.service`; settings in `/etc/mcast/mcast.env` (root and the `mcast` group only, because it holds the token) |
+| `files/mcast-intercom.service` | `/etc/systemd/system/mcast-intercom.service`, when the intercom is on; settings in `/etc/mcast/intercom.env` (root and `mcast` only) |
 | `files/lldpd.conf` | `/etc/lldpd.d/mcast.conf`; CDP is switched on in `/etc/default/lldpd` |
 | `files/sshd.conf` | `/etc/ssh/sshd_config.d/10-mcast-pi.conf` (plus `11-…-keys-only.conf`) |
 | `files/nftables.conf` | `/etc/nftables.conf` |
 | `files/sysctl.conf` | `/etc/sysctl.d/60-mcast.conf` |
-| `files/mcast-http.service` | `/etc/avahi/services/mcast.service` |
+| `files/mcast-http.service` | `/etc/avahi/services/mcast.service` (and `mcast-intercom.service`) |
 | `files/watchdog.conf` | `/etc/systemd/system.conf.d/10-watchdog.conf` |
 | `files/mcast-pi-status`, `files/motd` | `/usr/local/bin/mcast-pi-status`, `/etc/update-motd.d/60-mcast` |
 
-Uploaded media is stored in `/var/lib/mcast/media`. Logs: `journalctl -u mcast -f`.
+Uploaded media is stored in `/var/lib/mcast/media`, and the intercom's config in
+`/var/lib/mcast/intercom.json`. Logs: `journalctl -u mcast -f`.
 
 ## Recommendations
 
@@ -154,7 +188,7 @@ Uploaded media is stored in `/var/lib/mcast/media`. Logs: `journalctl -u mcast -
 
 - **Read-only root.** `raspi-config` → Performance → Overlay File System
   makes the SD card read-only, so it survives power cuts and doesn't wear out. Uploaded
-  media and config changes are then lost on reboot. Turn it on once the Pi is
+  media, intercom changes and other config changes are then lost on reboot. Turn it on once the Pi is
   set up, or put `/var/lib/mcast` on a separate writable partition.
 - **A ready-made image.** The next step after this script is to build a
   flashable image with [`rpi-image-gen`](https://github.com/raspberrypi/rpi-image-gen)

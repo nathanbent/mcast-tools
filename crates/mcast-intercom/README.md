@@ -42,6 +42,9 @@ again first, so changes made by hand while it runs aren't lost. It keeps the
 last 50 plays in memory. When it stops, anything playing finishes on the mcast
 server, but repeats still to come are dropped.
 
+On a Raspberry Pi, `ENABLE_INTERCOM=yes` in `pi/pi.conf` sets it up as a
+service next to `mcast serve` ([pi/README.md](../../pi/README.md#the-intercom-panel)).
+
 `--web-dir crates/mcast-intercom/assets` serves the page from disk, so a
 reload picks up edits; `--no-web` serves the API alone.
 
