@@ -40,6 +40,31 @@ fn rejects_a_second_page_to_the_same_group() {
 }
 
 #[test]
+fn stopping_cuts_a_chime_short() {
+    let (jobs, _) = jobs();
+    // A long lead-in, then a chime with nothing after it: all of it would
+    // play out before a stop took effect if stops waited for chimes.
+    let req = SendRequest {
+        source: SourceRequest::Chime,
+        chime: Some(crate::request::ChimeRequest::BuiltIn(
+            mcast_audio::chime::BuiltIn::Westminster,
+        )),
+        lead_in_ms: 1000.0,
+        ..tone("239.255.77.16:5004")
+    };
+    let job = jobs.start_sender(req).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let stopped = jobs.stop(job.id, Duration::from_secs(5)).unwrap();
+    assert_eq!(stopped.state, JobState::Stopped);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "took {:?} to stop",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn bad_requests_fail_up_front_and_leave_no_job() {
     let (jobs, _) = jobs();
     let req = SendRequest {
