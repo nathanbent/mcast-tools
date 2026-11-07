@@ -1,0 +1,11 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Installed by mcast-tools/pi/install.sh as /etc/avahi/services/mcast.service. -->
+<service-group>
+  <name replace-wildcards="yes">mcast on %h</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>@PORT@</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>
