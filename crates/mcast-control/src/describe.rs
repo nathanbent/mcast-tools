@@ -1,7 +1,7 @@
 //! Human-readable descriptions shared by the CLI and job listings.
 
 use crate::request::SendRequest;
-use mcast_audio::chime::ChimeSource;
+use mcast_audio::chime::{Chime, ChimeSource};
 use mcast_audio::process::Mode;
 use mcast_audio::sender::Sender;
 
@@ -30,11 +30,15 @@ pub fn send_summary(s: &Sender, req: &SendRequest) -> String {
     if let Some(v) = req.volume_db {
         details += &format!(", {v:+} dB");
     }
+    let chime = |what: &str, c: Chime| match &c.source {
+        ChimeSource::BuiltIn(b) => format!(", {b} {what}"),
+        ChimeSource::File(p) => format!(", {what} {}", p.display()),
+    };
     if let Some(c) = req.chime() {
-        details += &match &c.source {
-            ChimeSource::BuiltIn => ", built-in chime".to_string(),
-            ChimeSource::File(p) => format!(", chime {}", p.display()),
-        };
+        details += &chime("chime", c);
+    }
+    if let Some(c) = req.end_chime() {
+        details += &chime("end chime", c);
     }
     format!("{spec} {destination} ({details})")
 }
