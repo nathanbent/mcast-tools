@@ -104,7 +104,7 @@ async function start() {
   history.mount($("history"));
   announcements.mount($("announcements"));
   zones.mount($("zones"));
-  schedules.mount($("schedules"), $("days-off"));
+  schedules.mount($("schedules"), $("days-off"), $("schedule-groups"));
   settings.mount($("tab-settings"));
   sounds.mount($("sounds"));
   // "in 5 min" moves on, and once-only times drop off the list.

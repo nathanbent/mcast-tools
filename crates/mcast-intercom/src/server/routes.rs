@@ -3,7 +3,7 @@
 
 use super::{ApiError, ApiResult, AppState, Event};
 use crate::backend::Entry;
-use crate::model::{Announcement, Config, DayOff, Defaults, Schedule, Zone};
+use crate::model::{Announcement, Config, DayOff, Defaults, Schedule, ScheduleGroup, Site, Zone};
 use crate::runner::{PlayError, Run, Trigger};
 use crate::scheduler;
 use crate::store;
@@ -105,6 +105,63 @@ impl Item for Schedule {
     }
     fn all_mut(c: &mut Config) -> &mut Vec<Self> {
         &mut c.schedules
+    }
+}
+
+impl Item for Site {
+    const KIND: &'static str = "site";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn all(c: &Config) -> &Vec<Self> {
+        &c.sites
+    }
+    fn all_mut(c: &mut Config) -> &mut Vec<Self> {
+        &mut c.sites
+    }
+    fn in_use(c: &Config, id: &str) -> Option<String> {
+        let at = |site: &Option<String>| site.as_deref() == Some(id);
+        let zones = c.zones.iter().filter(|z| at(&z.site)).count();
+        let schedules = c.schedules.iter().filter(|s| at(&s.site)).count();
+        let plural = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+        let parts: Vec<String> = [(zones, "zone"), (schedules, "schedule")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, w)| plural(n, w))
+            .collect();
+        (!parts.is_empty()).then(|| {
+            format!(
+                "site \"{id}\" has {}; move or delete them first",
+                parts.join(" and ")
+            )
+        })
+    }
+}
+
+impl Item for ScheduleGroup {
+    const KIND: &'static str = "schedule group";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn all(c: &Config) -> &Vec<Self> {
+        &c.schedule_groups
+    }
+    fn all_mut(c: &mut Config) -> &mut Vec<Self> {
+        &mut c.schedule_groups
+    }
+    fn in_use(c: &Config, id: &str) -> Option<String> {
+        let n = c
+            .schedules
+            .iter()
+            .filter(|s| s.group.as_deref() == Some(id))
+            .count();
+        (n > 0).then(|| {
+            format!(
+                "schedule group \"{id}\" has {n} schedule{}; move or delete {} first",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "it" } else { "them" }
+            )
+        })
     }
 }
 
@@ -418,26 +475,42 @@ pub(super) async fn chime_preview(
 #[derive(serde::Deserialize)]
 pub(super) struct UpcomingQuery {
     n: Option<usize>,
+    /// Only this site's schedules; empty for those with no site.
+    site: Option<String>,
 }
 
-/// The next times anything is scheduled, and the time zone they're in.
+/// The next times anything is scheduled, and the time zones they're in.
 pub(super) async fn upcoming(
     State(s): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<UpcomingQuery>,
 ) -> ApiResult<Json<Value>> {
-    let cfg = s.load().await?;
-    let tz = cfg.tz().map_err(|e| ApiError::internal(format!("{e:#}")))?;
+    let mut cfg = s.load().await?;
     let n = q.n.unwrap_or(10).clamp(1, 100);
     let now = jiff::Timestamp::now();
-    let fires = scheduler::upcoming(&cfg, &tz, now, n);
+    if let Some(site) = &q.site {
+        cfg.schedules
+            .retain(|s| s.site.as_deref().unwrap_or("") == site.as_str());
+    }
+    let fires = scheduler::upcoming(&cfg, now, n);
     // Each schedule's next time, enabled or not (and paused or not), past
     // days off; null when it won't come again.
     let next: serde_json::Map<String, Value> = cfg
         .schedules
         .iter()
         .map(|s| {
-            let at = scheduler::next_playing(&cfg, s, &tz, now).map(|t| t.as_millisecond());
+            let at = scheduler::next_playing(&cfg, s, now).map(|t| t.as_millisecond());
             (s.id.clone(), json!(at))
+        })
+        .collect();
+    let sites: serde_json::Map<String, Value> = cfg
+        .sites
+        .iter()
+        .map(|site| {
+            let tz = cfg.site_tz_name(Some(&site.id));
+            (
+                site.id.clone(),
+                json!({ "time_zone": tz, "paused": site.paused }),
+            )
         })
         .collect();
     Ok(Json(json!({
@@ -446,6 +519,7 @@ pub(super) async fn upcoming(
         "now_ms": crate::now_ms(),
         "fires": fires,
         "next": next,
+        "sites": sites,
     })))
 }
 

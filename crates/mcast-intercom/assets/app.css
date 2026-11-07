@@ -366,3 +366,20 @@ table.files td .badge { margin-left: 8px; }
   table.files .buttons.nowrap { flex-wrap: wrap; justify-content: flex-end; }
   table.files .buttons button { padding: 4px 8px; font-size: 13px; }
 }
+
+/* Sites and schedule groups */
+
+.sitebar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.sitebar button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.site-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.site-card { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: var(--radius); }
+.site-card.paused { border-top-color: var(--warn); }
+.site-card p { margin: 0; }
+.site-card .upcoming { margin: 4px 0; grid-template-columns: auto minmax(0, 1fr); font-size: 14px; }
+.site-card .upcoming .muted { display: none; }
+.site-head { display: flex; align-items: center; gap: 8px; }
+.site-head button.link.name { padding: 0; font-size: 16px; font-weight: 600; text-decoration: none; }
+tr.section td { background: var(--bg); padding: 6px 8px; }
+.group-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.check.switch { font-size: 13px; }
+.upcoming.with-site { grid-template-columns: auto minmax(0, 1fr) auto auto; }

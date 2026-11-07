@@ -86,6 +86,7 @@ fn config() -> Config {
     Config {
         zones: vec![
             Zone {
+                site: None,
                 id: "both".into(),
                 name: "Both".into(),
                 // The same group by name and by address plays once.
@@ -96,6 +97,7 @@ fn config() -> Config {
                 ],
             },
             Zone {
+                site: None,
                 id: "busy".into(),
                 name: "Busy".into(),
                 targets: vec![target("239.255.77.73:5004")],

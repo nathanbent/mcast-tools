@@ -788,7 +788,10 @@ recent plays, editors for schedules, announcements and zones, and a Settings
 tab. There, default chimes and sound settings apply to every announcement
 that doesn't set its own. Schedules play weekly or once at wall-clock times
 in a time zone you choose, and only while the panel runs. They can all be
-paused at once, and skip days off (holidays, breaks). It is its own server with its
+paused at once, skip days off (holidays, breaks), and sit in groups that
+switch on and off together. Several sites can each have their own zones,
+schedules, time zone and days off. A Sounds tab manages the mcast server's
+sound files in folders. It is its own server with its
 own token (`--panel-token`); `--url` and `--token` point it at `mcast serve`.
 See [crates/mcast-intercom/README.md](crates/mcast-intercom/README.md) for the
 file's format and the panel's API. On a Raspberry Pi, `ENABLE_INTERCOM=yes` in

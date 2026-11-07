@@ -670,3 +670,81 @@ async fn manages_sound_files_and_keeps_announcements_pointing_at_them() {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn sites_and_schedule_groups() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, site) = p
+        .call(
+            Method::POST,
+            "/sites",
+            Some(json!({"name": "North campus", "time_zone": "America/New_York"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{site}");
+    assert_eq!(site["id"], "north-campus");
+    let (s, g) = p
+        .call(
+            Method::POST,
+            "/schedule-groups",
+            Some(json!({"name": "Exam week"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{g}");
+    assert_eq!(g["enabled"], true);
+
+    // The hall belongs to the site; a schedule there, in the group.
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/zones/hall",
+            Some(json!({"name": "Hall", "targets": [{"group": "zone-1"}], "site": "north-campus"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/schedules",
+            Some(
+                json!({"announcement": "bell", "site": "north-campus", "group": "exam-week",
+                        "when": {"weekly": {"days": ["mon"], "times": ["09:00"]}}}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, up) = p
+        .call(Method::GET, "/upcoming?site=north-campus", None)
+        .await;
+    assert_eq!(up["fires"][0]["site"], "north-campus", "{up}");
+    assert_eq!(up["sites"]["north-campus"]["time_zone"], "America/New_York");
+    let (_, other) = p.call(Method::GET, "/upcoming?site=", None).await;
+    assert_eq!(other["fires"], json!([]));
+
+    // Switching the group off takes it out of what's coming up.
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/schedule-groups/exam-week",
+            Some(json!({"name": "Exam week", "enabled": false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, up) = p.call(Method::GET, "/upcoming", None).await;
+    assert_eq!(up["fires"], json!([]));
+
+    // In use: neither can go.
+    for path in ["/sites/north-campus", "/schedule-groups/exam-week"] {
+        let (s, v) = p.call(Method::DELETE, path, None).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{path}: {v}");
+    }
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/sites",
+            Some(json!({"name": "Bad", "time_zone": "Mars/Base"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}

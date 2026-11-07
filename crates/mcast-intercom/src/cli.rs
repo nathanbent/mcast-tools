@@ -155,15 +155,22 @@ pub fn describe_when(w: &When) -> String {
 /// The next times anything is scheduled to play.
 pub fn upcoming(path: &Path, n: usize) -> Result<()> {
     let cfg = store::load(path)?;
-    let tz = cfg.tz()?;
-    let fires = scheduler::upcoming(&cfg, &tz, jiff::Timestamp::now(), n);
+    let fires = scheduler::upcoming(&cfg, jiff::Timestamp::now(), n);
     if fires.is_empty() {
         println!("Nothing scheduled.");
         return Ok(());
     }
-    println!("Times in {}:", cfg.tz_name());
+    if cfg.sites.is_empty() {
+        println!("Times in {}:", cfg.tz_name());
+    }
     for f in fires {
-        println!("  {}  {} ({})", f.when(), f.name, f.schedule);
+        // With sites, each time is in its own site's time zone.
+        let at = match f.site.as_deref().and_then(|id| cfg.site(id)) {
+            Some(site) => format!(" at {} ({})", site.name, cfg.site_tz_name(Some(&site.id))),
+            None if !cfg.sites.is_empty() => format!(" ({})", cfg.tz_name()),
+            None => String::new(),
+        };
+        println!("  {}  {} ({}){at}", f.when(), f.name, f.schedule);
     }
     Ok(())
 }

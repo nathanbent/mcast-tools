@@ -17,6 +17,7 @@ export const state = {
   backend: null,
   // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
   upcoming: { time_zone: null, fires: [] },
+  siteUpcoming: {},
 };
 
 const listeners = [];
@@ -44,12 +45,16 @@ export async function refreshConfig() {
   changed("config");
 }
 
+// What's coming up: everything (`upcoming`), and each site's own
+// (`siteUpcoming[id]`, with "" for schedules that have no site).
 export async function refreshUpcoming() {
-  try {
-    state.upcoming = await api("GET", "/upcoming?n=10");
-  } catch {
-    // The config has a problem; that's shown elsewhere.
-  }
+  const sites = (state.config.sites ?? []).map((s) => s.id);
+  const keys = sites.length ? [...sites, ""] : [];
+  const ask = (q) => api("GET", `/upcoming?n=10${q}`).catch(() => null);
+  const [all, ...each] = await Promise.all([ask(""), ...keys.map((k) => ask(`&site=${encodeURIComponent(k)}`))]);
+  // On failure the config has a problem; that's shown elsewhere.
+  if (all) state.upcoming = all;
+  state.siteUpcoming = Object.fromEntries(keys.map((k, i) => [k, each[i]]).filter(([, v]) => v));
   changed("upcoming");
 }
 
@@ -94,7 +99,8 @@ export function isHidden(name) {
 }
 
 export function refreshAll() {
-  return Promise.all([refreshConfig(), refreshRuns().catch(() => {}), refreshServer(), refreshUpcoming(), refreshLibrary()]);
+  // What's coming up depends on the sites in the config.
+  return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary()]);
 }
 
 export function apply(ev) {
@@ -112,8 +118,7 @@ export function apply(ev) {
       break;
     }
     case "config_changed":
-      refreshConfig();
-      refreshUpcoming();
+      refreshConfig().then(refreshUpcoming);
       // Hidden files, and which announcements use which.
       refreshLibrary();
       break;
@@ -153,11 +158,13 @@ export function fromNow(ms) {
   return `in ${Math.round(s / 86400)} days`;
 }
 
-// A moment as wall-clock time in the schedules' zone (the browser's if unknown).
-export function atTime(ms) {
+// A moment as wall-clock time in a site's time zone, or the panel's (the
+// browser's if unknown).
+export function atTime(ms, site) {
   const opts = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  const tz = (site && state.upcoming.sites?.[site]?.time_zone) || state.upcoming.time_zone;
   try {
-    return new Date(ms).toLocaleString(undefined, { ...opts, timeZone: state.upcoming.time_zone || undefined });
+    return new Date(ms).toLocaleString(undefined, { ...opts, timeZone: tz || undefined });
   } catch {
     return new Date(ms).toLocaleString(undefined, opts);
   }
@@ -165,6 +172,10 @@ export function atTime(ms) {
 
 export function announcementName(id) {
   return state.config.announcements.find((a) => a.id === id)?.name ?? id;
+}
+
+export function siteName(id) {
+  return (state.config.sites ?? []).find((s) => s.id === id)?.name ?? id;
 }
 
 export function zoneName(id) {

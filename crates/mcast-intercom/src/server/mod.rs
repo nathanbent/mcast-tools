@@ -9,7 +9,7 @@ mod routes;
 mod web;
 
 use crate::backend::Backend;
-use crate::model::{Announcement, Config, Schedule, Zone};
+use crate::model::{Announcement, Config, Schedule, ScheduleGroup, Site, Zone};
 use crate::runner::{BackendStatus, Change, Run, Runner};
 use crate::scheduler::{Scheduler, GRACE};
 use crate::store;
@@ -202,6 +202,21 @@ pub fn router(state: AppState) -> Router {
             get(get_one::<Schedule>)
                 .put(put::<Schedule>)
                 .delete(delete::<Schedule>),
+        )
+        .route("/sites", get(list::<Site>).post(create::<Site>))
+        .route(
+            "/sites/{id}",
+            get(get_one::<Site>).put(put::<Site>).delete(delete::<Site>),
+        )
+        .route(
+            "/schedule-groups",
+            get(list::<ScheduleGroup>).post(create::<ScheduleGroup>),
+        )
+        .route(
+            "/schedule-groups/{id}",
+            get(get_one::<ScheduleGroup>)
+                .put(put::<ScheduleGroup>)
+                .delete(delete::<ScheduleGroup>),
         )
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
