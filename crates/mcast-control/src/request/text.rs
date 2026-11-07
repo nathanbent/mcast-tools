@@ -105,8 +105,12 @@ impl TextRequest {
             return Ok(TextTarget {
                 group,
                 t140_pt: self.t140_pt,
-                red_pt: Some(self.red_pt),
-                announced: None,
+                red_pt: self.redundancy.then_some(self.red_pt),
+                // Named after its announcement, if it has one.
+                announced: known
+                    .iter()
+                    .find(|i| i.group == group)
+                    .map(|i| i.name.clone()),
             });
         }
         if let Some(wanted) = &self.stream {
@@ -197,6 +201,15 @@ mod tests {
         };
         let t = r.target(&known).unwrap();
         assert_eq!((t.group, t.red_pt), (known[0].group, None));
+        // Joined by group, it still takes the announced name.
+        let r = TextRequest {
+            group: Some(known[0].group),
+            ..TextRequest::default()
+        };
+        assert_eq!(
+            r.target(&known).unwrap().announced.as_deref(),
+            Some("Front desk")
+        );
         let r = TextRequest {
             stream: Some("lobby".into()),
             ..TextRequest::default()

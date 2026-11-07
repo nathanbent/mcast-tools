@@ -57,10 +57,16 @@ export function upload(name, file, onProgress) {
   });
 }
 
+// URL of a media file, for <img> and download links (which can't send headers).
+export function mediaUrl(name) {
+  const t = token();
+  return `/api/v1/media/${encodeURIComponent(name)}${t ? `?access_token=${encodeURIComponent(t)}` : ""}`;
+}
+
 const EVENT_TYPES = [
   "job_started", "job_updated", "job_ended",
   "stream_added", "stream_changed", "stream_removed",
-  "monitor", "lagged",
+  "monitor", "text_line", "file_received", "lagged",
 ];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch lists then: events

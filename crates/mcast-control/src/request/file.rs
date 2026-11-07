@@ -165,7 +165,8 @@ impl FileRecvRequest {
     /// The group and payload type, and the announcement's name if any.
     pub fn target(&self, known: &[FileInfo]) -> Result<(SocketAddr, u8, Option<String>)> {
         if let Some(g) = self.group {
-            return Ok((g, self.payload_type, None));
+            let name = known.iter().find(|i| i.group == g).map(|i| i.name.clone());
+            return Ok((g, self.payload_type, name));
         }
         if let Some(wanted) = &self.stream {
             let w = wanted.to_lowercase();

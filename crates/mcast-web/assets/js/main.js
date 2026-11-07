@@ -7,6 +7,8 @@ import * as jobs from "./jobs.js";
 import * as streams from "./streams.js";
 import * as monitor from "./monitor.js";
 import * as media from "./media.js";
+import * as text from "./text.js";
+import * as files from "./files.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -62,6 +64,8 @@ async function start() {
   page.mount($("page"));
   jobs.mount($("jobs"));
   media.mount($("media"));
+  text.mount($("text"));
+  files.mount($("files"));
   streams.mount($("streams"));
   monitor.mount($("monitor"));
 
