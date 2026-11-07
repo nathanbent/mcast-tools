@@ -133,6 +133,23 @@ fn pages_and_sees_the_overlap() {
 }
 
 #[test]
+fn a_job_list_older_than_a_job_event_is_fetched_again() {
+    let srv = server(None);
+    let (mut app, rx) = app(&srv.url);
+    pump(&mut app, &rx, "the event stream", |a| a.connection.is_ok());
+    let asked = app.job_changes;
+    // A job starts while the list (from before it) is on its way.
+    app.handle(Msg::Feed(Feed::Event(serde_json::json!({
+        "type": "job_started",
+        "job": {"id": 7, "kind": "sender", "state": "running"},
+    }))));
+    app.handle(Msg::Jobs(asked, Ok(Vec::new())));
+    assert!(app.jobs.contains_key(&7), "the stale list was used");
+    // The list asked for again replaces it (this server has no job 7).
+    pump(&mut app, &rx, "the list again", |a| a.jobs.is_empty());
+}
+
+#[test]
 fn draws_every_screen_at_any_size() {
     let srv = server(None);
     let (mut app, rx) = app(&srv.url);
@@ -182,7 +199,9 @@ fn uploads_and_pages_from_the_media_tab() {
         key(&mut app, KeyCode::Char(c));
     }
     key(&mut app, KeyCode::Enter);
-    pump(&mut app, &rx, "the upload", |a| !a.media.is_empty());
+    pump(&mut app, &rx, "the upload", |a| {
+        !a.busy && !a.media.is_empty()
+    });
     std::fs::remove_file(&wav).unwrap();
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::Form(FormKind::Page));
@@ -190,7 +209,9 @@ fn uploads_and_pages_from_the_media_tab() {
     key(&mut app, KeyCode::Esc);
     key(&mut app, KeyCode::Char('d'));
     key(&mut app, KeyCode::Char('y'));
-    pump(&mut app, &rx, "the delete", |a| a.media.is_empty());
+    pump(&mut app, &rx, "the delete", |a| {
+        !a.busy && a.media.is_empty()
+    });
 }
 
 #[test]
@@ -261,8 +282,15 @@ fn chats_and_sends_files_by_keyboard() {
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::Compose(String::new()));
     key(&mut app, KeyCode::Esc);
-    pump(&mut app, &rx, "the line to be heard", |a| {
-        a.texts.get(&ear).is_some_and(|l| !l.is_empty())
+    // The talker's own copy and the listener's arrive separately, and the
+    // listener may hear the line before the talker's name (then relabelled).
+    pump(&mut app, &rx, "the line, said and heard", |a| {
+        let said = a.texts.get(&desk).is_some_and(|l| !l.is_empty());
+        let heard = a
+            .texts
+            .get(&ear)
+            .is_some_and(|l| l.first().is_some_and(|l| l.from == "desk"));
+        said && heard
     });
     assert_eq!(app.texts[&ear][0].text, "hello from the tui");
     let s = screen(&app, 100, 12);
@@ -275,7 +303,8 @@ fn chats_and_sends_files_by_keyboard() {
     assert_eq!(app.current_channel().unwrap().id, ear);
     key(&mut app, KeyCode::Char('i'));
     assert_eq!(app.mode, Mode::Normal);
-    assert!(screen(&app, 100, 12).contains("desk: hello from the tui"));
+    let s = screen(&app, 100, 12);
+    assert!(s.contains("desk: hello from the tui"), "{s}");
 
     // Files: upload, receive (r), send the selected file (f).
     let src = srv
@@ -287,7 +316,9 @@ fn chats_and_sends_files_by_keyboard() {
     key(&mut app, KeyCode::Char('u'));
     type_text(&mut app, src.to_str().unwrap());
     key(&mut app, KeyCode::Enter);
-    pump(&mut app, &rx, "the upload", |a| a.media.len() == 1);
+    pump(&mut app, &rx, "the upload", |a| {
+        !a.busy && a.media.len() == 1
+    });
     std::fs::remove_file(&src).unwrap();
     // Pictures can't be paged.
     key(&mut app, KeyCode::Enter);
@@ -307,7 +338,9 @@ fn chats_and_sends_files_by_keyboard() {
     app.forms.send.set("group", files_group);
     app.forms.send.set("rate", "20000");
     key(&mut app, KeyCode::Enter);
-    pump(&mut app, &rx, "the copy to arrive", |a| a.media.len() == 2);
+    pump(&mut app, &rx, "the copy to arrive", |a| {
+        !a.busy && a.media.len() == 2
+    });
     let copy = app
         .media
         .iter()
@@ -354,7 +387,10 @@ fn keeps_the_phonebook_and_pages_by_name() {
     key(&mut app, KeyCode::Down);
     type_text(&mut app, "Ground floor");
     key(&mut app, KeyCode::Enter);
-    pump(&mut app, &rx, "the entry", |a| a.phonebook.len() == 1);
+    // The reply closes the form; the event brings the entry. Wait for both.
+    pump(&mut app, &rx, "the entry", |a| {
+        !a.busy && a.phonebook.len() == 1
+    });
     assert_eq!(app.mode, Mode::Normal, "{:?}", app.status);
     let s = screen(&app, 100, 10);
     assert!(
@@ -378,7 +414,7 @@ fn keeps_the_phonebook_and_pages_by_name() {
     app.forms.book.set("name", "Zone-1");
     key(&mut app, KeyCode::Enter);
     pump(&mut app, &rx, "the rename", |a| {
-        a.phonebook.first().is_some_and(|e| e.name == "Zone-1")
+        !a.busy && a.phonebook.first().is_some_and(|e| e.name == "Zone-1")
     });
     assert_eq!(app.phonebook.len(), 1);
 
@@ -404,5 +440,7 @@ fn keeps_the_phonebook_and_pages_by_name() {
     key(&mut app, KeyCode::Char('d'));
     assert_eq!(app.mode, Mode::ConfirmRemove("Zone-1".into()));
     key(&mut app, KeyCode::Char('y'));
-    pump(&mut app, &rx, "the removal", |a| a.phonebook.is_empty());
+    pump(&mut app, &rx, "the removal", |a| {
+        !a.busy && a.phonebook.is_empty()
+    });
 }

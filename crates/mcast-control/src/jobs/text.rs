@@ -12,7 +12,7 @@ use mcast_text::receiver::{self, TextReceiverConfig};
 use mcast_text::sender::TextSender;
 use mcast_text::session::TextInfo;
 use serde::Serialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -108,6 +108,26 @@ impl Shared {
             }
         }
         self.emit(Event::TextLine { line });
+    }
+
+    /// Relabel the lines already received from `ssrc`, now its name is known.
+    fn text_renamed(&self, id: JobId, ssrc: u32, name: &str) {
+        {
+            let mut st = self.lock();
+            let Some(ch) = st.jobs.get_mut(&id).and_then(|j| j.text.as_mut()) else {
+                return;
+            };
+            for l in ch.history.iter_mut() {
+                if !l.own && l.ssrc == Some(ssrc) {
+                    l.from = name.to_string();
+                }
+            }
+        }
+        self.emit(Event::TextRenamed {
+            job: id,
+            ssrc,
+            name: name.to_string(),
+        });
     }
 
     fn text_stats(&self, id: JobId, f: impl FnOnce(&mut TextStats)) {
@@ -315,6 +335,8 @@ fn receive(
     // The receiver reports its first event (at least a tick) once its socket is open.
     let mut ready = Some(ready);
     let mut labels: HashMap<u32, String> = HashMap::new();
+    // Sources whose lines have gone out, so a name that comes later relabels them.
+    let mut shown: HashSet<u32> = HashSet::new();
     let mut buffers: HashMap<u32, LineBuffer> = HashMap::new();
     let line = |labels: &HashMap<u32, String>, ssrc: u32, text: String| TextLine {
         job: id,
@@ -342,16 +364,24 @@ fn receive(
                 shared.text_stats(id, |t| t.senders = senders);
             }
             receiver::Event::Named { ssrc, name } => {
-                labels.insert(ssrc, name);
+                // RTCP comes on its own socket, so a name can arrive after
+                // the first lines; relabel those rather than leave an address.
+                if labels.insert(ssrc, name.clone()).as_ref() != Some(&name)
+                    && shown.contains(&ssrc)
+                {
+                    shared.text_renamed(id, ssrc, &name);
+                }
             }
             receiver::Event::Text { ssrc, text } => {
                 let buf = buffers.entry(ssrc).or_insert_with(|| LineBuffer::new(now));
                 for l in buf.push(text, now) {
+                    shown.insert(ssrc);
                     shared.text_line(line(&labels, ssrc, l));
                 }
             }
             receiver::Event::Bye { ssrc, reason } => {
                 if let Some(l) = buffers.get_mut(&ssrc).and_then(LineBuffer::take) {
+                    shown.insert(ssrc);
                     shared.text_line(line(&labels, ssrc, l));
                 }
                 let who = labels
@@ -370,6 +400,7 @@ fn receive(
             receiver::Event::Tick => {
                 for (&ssrc, buf) in buffers.iter_mut() {
                     if let Some(l) = buf.take_stale(now, STALE_LINE) {
+                        shown.insert(ssrc);
                         shared.text_line(line(&labels, ssrc, l));
                     }
                 }

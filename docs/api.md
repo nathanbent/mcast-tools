@@ -301,6 +301,7 @@ its data is JSON with that `type` too:
 | `stream_removed` | `{"stream": STREAM, "reason": "deleted"\|"expired"}` |
 | `monitor` | `{"snapshot": SNAPSHOT}`, every second |
 | `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one |
+| `text_renamed` | `{"job", "ssrc", "name"}`: a sender's name (from RTCP) arrived after lines from it went out labelled with its address; those lines on channel `job` from `ssrc` (not your own) are now `name`'s. The lines `GET /jobs/{id}/text` returns are relabelled too |
 | `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
 | `phonebook_changed` | `{}`: the phonebook was changed through the API; fetch it again |
 | `chimes_changed` | `{}`: chimes were hidden or shown through the API; fetch `/chimes` again |

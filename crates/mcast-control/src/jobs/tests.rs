@@ -153,6 +153,59 @@ fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 #[test]
+fn a_name_that_comes_late_relabels_the_lines() {
+    use crate::request::TextRequest;
+    let (jobs, events) = jobs();
+    let group: SocketAddr = "239.255.77.17:5004".parse().unwrap();
+    let listener = jobs
+        .start_text(
+            TextRequest {
+                group: Some(group),
+                send: false,
+                ..TextRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    // A talker with no RTCP: its line arrives with only its address to go by.
+    let talker = jobs
+        .start_text(
+            TextRequest {
+                group: Some(group),
+                rtcp: false,
+                ..TextRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    jobs.send_text(talker.id, "hello\n").unwrap();
+    wait_for("the line", || {
+        !jobs.text_history(listener.id).unwrap().is_empty()
+    });
+    let heard = jobs.text_history(listener.id).unwrap();
+    let ssrc = heard[0].ssrc.unwrap();
+    assert_ne!(heard[0].from, "desk");
+
+    // Its name, late: the line already heard takes it.
+    let mut net = mcast_core::net::MulticastOptions::new(group).unwrap();
+    net.loopback = true;
+    let mut rtcp =
+        mcast_core::rtcp::SenderRtcp::open(&net, ssrc, 1000, Some("desk"), Duration::from_secs(5))
+            .unwrap();
+    rtcp.report_now(Duration::ZERO);
+    wait_for("the new name", || {
+        jobs.text_history(listener.id).unwrap()[0].from == "desk"
+    });
+    assert!(events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        Event::TextRenamed { job, ssrc: s, name } if *job == listener.id && *s == ssrc && name == "desk"
+    )));
+    drop(rtcp);
+    jobs.stop(talker.id, Duration::from_secs(5));
+    jobs.stop(listener.id, Duration::from_secs(5));
+}
+
+#[test]
 fn text_channel_sends_and_hears_lines() {
     use crate::request::TextRequest;
     let (jobs, events) = jobs();

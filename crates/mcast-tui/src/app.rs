@@ -76,7 +76,8 @@ pub enum Level {
 /// Results from background threads.
 pub enum Msg {
     Feed(Feed),
-    Jobs(Result<Vec<Job>, ApiError>),
+    /// The job list, and [`App::job_changes`] when it was asked for.
+    Jobs(u64, Result<Vec<Job>, ApiError>),
     Streams(Result<Vec<Stream>, ApiError>),
     Media(Result<Vec<MediaFile>, ApiError>),
     Devices(Result<Vec<Device>, ApiError>),
@@ -125,6 +126,9 @@ pub struct App {
     pub conflict: Option<u64>,
     pub busy: bool,
     pub quit: bool,
+    /// Counts job events and replies, so a job list fetched while one came
+    /// in is fetched again rather than used (it may not have that job yet).
+    pub job_changes: u64,
 }
 
 impl App {
@@ -150,6 +154,7 @@ impl App {
             connection: Err("connecting".into()),
             conflict: None,
             busy: false,
+            job_changes: 0,
             quit: false,
         }
     }
@@ -262,7 +267,8 @@ impl App {
             }
             Msg::Feed(Feed::Disconnected(why)) => self.connection = Err(why),
             Msg::Feed(Feed::Event(e)) => self.event(e),
-            Msg::Jobs(r) => match r {
+            Msg::Jobs(asked, r) => match r {
+                Ok(_) if asked != self.job_changes => self.refresh("jobs"),
                 Ok(jobs) => {
                     self.jobs.clear();
                     for j in jobs {
@@ -363,6 +369,7 @@ impl App {
                     self.tab = Tab::Jobs;
                     self.selected[Tab::Jobs.index()] = 0;
                 }
+                self.job_changes += 1;
                 self.add_job(j);
             }
             Err(e) if e.status == 409 => {
@@ -390,6 +397,7 @@ impl App {
         match e["type"].as_str().unwrap_or("") {
             "job_started" | "job_updated" | "job_ended" => {
                 if let Ok(j) = serde_json::from_value::<Job>(e["job"].clone()) {
+                    self.job_changes += 1;
                     self.add_job(j);
                 }
             }
@@ -402,6 +410,18 @@ impl App {
             "text_line" => {
                 if let Ok(l) = serde_json::from_value(e["line"].clone()) {
                     self.add_line(l);
+                }
+            }
+            "text_renamed" => {
+                let (Some(job), Some(ssrc), Some(name)) =
+                    (e["job"].as_u64(), e["ssrc"].as_u64(), e["name"].as_str())
+                else {
+                    return;
+                };
+                for l in self.texts.get_mut(&job).into_iter().flatten() {
+                    if !l.own && l.ssrc == Some(ssrc as u32) {
+                        l.from = name.to_string();
+                    }
                 }
             }
             "file_received" => {
