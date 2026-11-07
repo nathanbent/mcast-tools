@@ -22,6 +22,7 @@ socket2 = { version = "0.5", features = ["all"] }
 mcast-core = { path = "crates/mcast-core" }
 mcast-audio = { path = "crates/mcast-audio" }
 mcast-monitor = { path = "crates/mcast-monitor" }
+mcast-text = { path = "crates/mcast-text" }
 
 [profile.release]
 # Whole-program optimisation: slower builds, faster and smaller binaries.

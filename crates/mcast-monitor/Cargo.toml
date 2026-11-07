@@ -8,3 +8,4 @@ rust-version.workspace = true
 [dependencies]
 mcast-core.workspace = true
 mcast-audio.workspace = true
+mcast-text.workspace = true

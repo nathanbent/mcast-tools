@@ -1,12 +1,12 @@
-//! RTCP for audio streams: sender reports from `Sender`, receiver reports
-//! from the receiver, and a background listener for both.
+//! RTCP sessions: sender reports beside an RTP stream, receiver reports,
+//! and a background listener for both.
 
-use mcast_core::net::{open_receiver, open_sender, MulticastOptions};
-use mcast_core::rtcp::{
+use crate::net::{open_receiver, open_sender, MulticastOptions};
+use crate::rtcp::{
     self, jittered, ntp_now, Packet, Playout, ReportBlock, SdesChunk, SenderInfo, SDES_CNAME,
     SDES_NAME, SDES_TOOL,
 };
-use mcast_core::rtp::RTP_HEADER_LEN;
+use crate::rtp::RTP_HEADER_LEN;
 use std::io::{self, ErrorKind};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +59,8 @@ pub struct SenderRtcp {
     octets: u32,
     /// RTP timestamp of the last packet sent, and when.
     last: Option<(u32, Instant)>,
+    /// When we last sent a report.
+    reported: Option<Instant>,
     done: bool,
 }
 
@@ -89,6 +91,7 @@ impl SenderRtcp {
             packets: 0,
             octets: 0,
             last: None,
+            reported: None,
             done: false,
         })
     }
@@ -108,14 +111,46 @@ impl SenderRtcp {
             .octets
             .wrapping_add((packet.len() - RTP_HEADER_LEN) as u32);
         self.last = Some((ts, at));
+        self.tick(at);
+    }
+
+    /// Tie the media clock to the wall clock before (or between) packets:
+    /// `ts` is the RTP timestamp at instant `at`. For streams such as text
+    /// that go quiet, so reports stay meaningful while idle.
+    pub fn anchor(&mut self, ts: u32, at: Instant) {
+        self.last = Some((ts, at));
+    }
+
+    /// Send a report if one is due. Call this regularly when no packets are
+    /// being sent, so the heartbeat continues.
+    pub fn tick(&mut self, now: Instant) {
         // RFC 3550 6.2: the first report comes after half an interval.
         let next = *self
             .next
-            .get_or_insert_with(|| at + jittered(self.interval) / 2);
-        if at >= next {
-            self.next = Some(at + jittered(self.interval));
+            .get_or_insert_with(|| now + jittered(self.interval) / 2);
+        if now >= next {
+            self.next = Some(now + jittered(self.interval));
             self.send(&[]);
         }
+    }
+
+    /// Send a report now, unless one went out within `min_gap`. For bursty
+    /// streams: a report just before a burst tells receivers who's talking.
+    pub fn report_now(&mut self, min_gap: Duration) {
+        let now = Instant::now();
+        if self
+            .reported
+            .is_some_and(|t| now.duration_since(t) < min_gap)
+        {
+            return;
+        }
+        self.next = Some(now + jittered(self.interval));
+        self.send(&[]);
+    }
+
+    /// When the next report is due (for sleeping until then).
+    pub fn next_due(&self) -> Option<Instant> {
+        self.next
     }
 
     fn report(&self) -> Option<Packet> {
@@ -145,6 +180,7 @@ impl SenderRtcp {
         }));
         packets.push(self.sdes.clone());
         packets.extend_from_slice(extra);
+        self.reported = Some(Instant::now());
         // Best effort: RTCP loss is harmless.
         let _ = self.socket.send(&rtcp::encode(&packets));
     }
@@ -261,7 +297,7 @@ impl ReceiverRtcp {
         })?;
         let listener = Listener::start(&opts)?;
         let socket = open_sender(&opts)?;
-        let ssrc = mcast_core::random_u32();
+        let ssrc = crate::random_u32();
         let sdes = sdes(ssrc, &socket, name);
         Ok(Self {
             listener,
@@ -282,18 +318,18 @@ impl ReceiverRtcp {
         Instant::now() >= self.next
     }
 
-    /// Send a Receiver Report (with a block about the source, if any) and
-    /// our playout delay.
-    pub fn report(&mut self, block: Option<ReportBlock>, playout: Option<Playout>) {
+    /// Send a Receiver Report (with blocks about the sources we hear) and,
+    /// for audio, our playout delay.
+    pub fn report(&mut self, blocks: Vec<ReportBlock>, playout: Option<Playout>) {
         self.next = Instant::now() + jittered(self.interval);
-        self.send(block, playout, false);
+        self.send(blocks, playout, false);
     }
 
-    fn send(&mut self, block: Option<ReportBlock>, playout: Option<Playout>, bye: bool) {
+    fn send(&mut self, blocks: Vec<ReportBlock>, playout: Option<Playout>, bye: bool) {
         let mut packets = vec![
             Packet::ReceiverReport {
                 ssrc: self.ssrc,
-                reports: block.into_iter().collect(),
+                reports: blocks,
             },
             self.sdes.clone(),
         ];
@@ -312,7 +348,7 @@ impl ReceiverRtcp {
     pub fn bye(&mut self) {
         if !self.done {
             self.done = true;
-            self.send(None, None, true);
+            self.send(Vec::new(), None, true);
         }
     }
 }
@@ -326,8 +362,8 @@ impl Drop for ReceiverRtcp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcast_core::rtcp::{ntp_diff_secs, sdes_for};
-    use mcast_core::rtp::RtpHeader;
+    use crate::rtcp::{ntp_diff_secs, sdes_for};
+    use crate::rtp::RtpHeader;
 
     fn rtp(ts: u32, payload: usize) -> Vec<u8> {
         let mut v = Vec::new();

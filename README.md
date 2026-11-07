@@ -1,7 +1,8 @@
 # mcast-tools
 
-A collection of multicast tools, written in Rust. The first set is audio:
-uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
+A collection of multicast tools, written in Rust: audio over RTP multicast
+(the AES67 PCM payloads, plus G.711, G.722 and Opus), real-time text, and a
+stream monitor.
 
 ## Build and install
 
@@ -257,6 +258,55 @@ Network options:
 | `--ttl` | TTL / hop limit |
 | `--no-loopback` | Don't deliver to receivers on the same host |
 
+## Text
+
+Real-time text over RTP: T.140 per RFC 4103, the format IP phones and
+accessibility (TTY replacement) systems use for text calls. Text is gathered
+for up to 300 ms per packet, and each packet repeats the previous two packets'
+text (RFC 2198 redundancy). A receiver can therefore lose up to two packets in
+a row and still rebuild the text. Text lost beyond that shows as `�`. Nothing
+is sent while nobody types. RTCP (above) keeps the heartbeat going and carries
+each sender's name.
+
+```bash
+mcast text send "fire drill at 3pm"            # one message, announced via SAP as "<host> text"
+mcast text send -n Ops < notices.txt          # each line of a file
+tail -f app.log | mcast text send -n "App log" # follow a log
+mcast text recv                               # print the first text stream announced
+mcast text recv --stream ops                  # the one whose name contains "ops"
+mcast text recv -g 239.69.1.1:5004            # skip discovery
+mcast text chat -n Alice                      # send what you type, print everyone else
+```
+
+`recv` prints whole lines with the sender's name (`Ops: fire drill at 3pm`).
+A half-typed line is shown once its sender has been quiet for 3 s.
+`--raw` prints the characters as they arrive, with no names.
+
+`chat` is send and receive on one group (default `239.69.1.1:5004`, kept away
+from the audio and paging groups), without SAP. Everyone who runs
+`mcast text chat` on the same group sees each other's lines:
+
+```
+chatting on 239.69.1.1:5004 as "Bob". Type and press Enter; Ctrl-D or Ctrl-C to leave.
+[Alice is here]
+Alice: hi bob
+Alice: how's the lobby?
+[Alice left]
+```
+
+| Option | Meaning |
+|---|---|
+| `-n, --name` | Name shown to receivers (sent via SAP and RTCP) |
+| `-g, --group` | Group and port [default `239.69.1.1:5004`] |
+| `--no-red` | Plain T.140, without redundant copies |
+| `--pt`, `--red-pt` | Payload types [default 98 for T.140, 100 for redundancy, as in RFC 4103's examples] |
+| `--no-sap`, `--sap-group`, `--no-rtcp`, `--tos`, `--ttl`, `-i` | As for audio |
+
+With SAP on, `send` waits 1 s before the first text so receivers that
+discover the stream have time to join. `mcast audio discover` lists text
+streams too, and `mcast monitor` shows them (status "active", or "idle Ns"
+between messages).
+
 ## Monitor
 
 `mcast monitor` watches multicast streams and shows, per source, every second:
@@ -322,8 +372,9 @@ Listeners are forgotten 30 s after their last report.
 
 | Crate | Purpose |
 |---|---|
-| `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP, SAP announce/directory, SDP parse/write |
+| `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP (packets and sender/receiver sessions), SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
+| `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, SDP |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
@@ -335,4 +386,4 @@ subcommand in the CLI.
 
 - Audio: PTP-aligned timestamps (AES67), resampling on playback, playing
   in step across receivers (using the RTCP clock mapping)
-- Other: file transfer, chat, ping/latency, relay/bridge between interfaces
+- Other: file transfer (with fountain codes), ping/latency, relay/bridge between interfaces

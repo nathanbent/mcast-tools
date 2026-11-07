@@ -44,6 +44,8 @@ pub struct Target {
     pub spec: Option<StreamSpec>,
     /// RTP clock rate, if known (otherwise estimated from the stream).
     pub clock_rate: Option<u32>,
+    /// A real-time text stream (bursty: silence between messages is normal).
+    pub text: bool,
 }
 
 impl Target {
@@ -53,7 +55,30 @@ impl Target {
             name: None,
             spec: None,
             clock_rate: None,
+            text: false,
         }
+    }
+
+    /// The stream an SAP announcement describes: audio, or T.140 text.
+    fn from_sdp(sdp: &mcast_core::sdp::SessionDescription) -> Option<Self> {
+        let named = |n: &str| (!n.is_empty()).then(|| n.to_string());
+        if let Some(info) = StreamInfo::from_sdp(sdp) {
+            return Some(Self {
+                group: info.group,
+                name: named(&info.name),
+                spec: info.spec(),
+                clock_rate: Some(info.sample_rate),
+                text: false,
+            });
+        }
+        let info = mcast_text::TextInfo::from_sdp(sdp)?;
+        Some(Self {
+            group: info.group,
+            name: named(&info.name),
+            spec: None,
+            clock_rate: Some(mcast_text::t140::CLOCK_RATE),
+            text: true,
+        })
     }
 }
 
@@ -73,6 +98,8 @@ pub struct GroupStatus {
     pub group: SocketAddr,
     pub name: Option<String>,
     pub from_sap: bool,
+    /// Real-time text: idle periods are normal.
+    pub text: bool,
     /// Announcement withdrawn (SAP deletion or timeout).
     pub ended: bool,
     pub error: Option<String>,
@@ -254,28 +281,22 @@ impl Monitor {
     fn handle_sap(&mut self, event: DirectoryEvent) {
         match event {
             DirectoryEvent::Added(s) | DirectoryEvent::Changed(s) => {
-                let Some(info) = StreamInfo::from_sdp(&s.sdp) else {
+                let Some(target) = Target::from_sdp(&s.sdp) else {
                     return;
                 };
-                let name = (!info.name.is_empty()).then(|| info.name.clone());
                 if let Some(g) = self
                     .groups
                     .iter_mut()
-                    .find(|g| g.target.group == info.group)
+                    .find(|g| g.target.group == target.group)
                 {
                     // Known group: fill in what the announcement tells us.
-                    g.target.name = g.target.name.take().or(name);
-                    g.target.spec = g.target.spec.or(info.spec());
-                    g.target.clock_rate = g.target.clock_rate.or(Some(info.sample_rate));
+                    g.target.name = g.target.name.take().or(target.name);
+                    g.target.spec = g.target.spec.or(target.spec);
+                    g.target.clock_rate = g.target.clock_rate.or(target.clock_rate);
+                    g.target.text |= target.text;
                     g.ended = false;
                     return;
                 }
-                let target = Target {
-                    group: info.group,
-                    name,
-                    spec: info.spec(),
-                    clock_rate: Some(info.sample_rate),
-                };
                 if let Err(e) = self.add_group(target, true) {
                     if let Some(g) = self.groups.last_mut() {
                         g.error = Some(e.to_string());
@@ -283,13 +304,13 @@ impl Monitor {
                 }
             }
             DirectoryEvent::Deleted(s) | DirectoryEvent::Expired(s) => {
-                let Some(info) = StreamInfo::from_sdp(&s.sdp) else {
+                let Some(target) = Target::from_sdp(&s.sdp) else {
                     return;
                 };
                 if let Some(g) = self
                     .groups
                     .iter_mut()
-                    .find(|g| g.target.group == info.group && g.from_sap)
+                    .find(|g| g.target.group == target.group && g.from_sap)
                 {
                     g.ended = true;
                     g.stop.store(true, Ordering::Relaxed);
@@ -305,6 +326,7 @@ impl Monitor {
                 group: g.target.group,
                 name: g.target.name.clone(),
                 from_sap: g.from_sap,
+                text: g.target.text,
                 ended: g.ended,
                 error: g.error.clone(),
             })

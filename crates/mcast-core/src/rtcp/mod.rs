@@ -11,6 +11,10 @@
 //! [`Playout`]) carrying how far behind the sender they play, so a monitor
 //! can show whether receivers are in sync with each other.
 
+mod session;
+
+pub use session::{rtcp_options, Listener, Received, ReceiverRtcp, RtcpConfig, SenderRtcp};
+
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

@@ -602,6 +602,7 @@ dependencies = [
  "mcast-audio",
  "mcast-core",
  "mcast-monitor",
+ "mcast-text",
 ]
 
 [[package]]
@@ -631,6 +632,15 @@ name = "mcast-monitor"
 version = "0.1.0"
 dependencies = [
  "mcast-audio",
+ "mcast-core",
+ "mcast-text",
+]
+
+[[package]]
+name = "mcast-text"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "mcast-core",
 ]
 

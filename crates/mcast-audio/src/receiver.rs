@@ -5,12 +5,11 @@ use crate::device;
 use crate::dsp::db_to_lin;
 use crate::format::{AudioFormat, Encoding};
 use crate::jitter::{jitter_buffer, JitterWriter};
-use crate::rtcp::{ReceiverRtcp, RtcpConfig};
 use anyhow::{anyhow, Context, Result};
 use mcast_core::net::{open_receiver, MulticastOptions};
 use mcast_core::rtcp::{
-    ntp_diff_secs, ntp_now, sdes_for, ClockMapping, Packet, Playout, ReceptionStats, SDES_CNAME,
-    SDES_NAME,
+    ntp_diff_secs, ntp_now, sdes_for, ClockMapping, Packet, Playout, ReceiverRtcp, ReceptionStats,
+    RtcpConfig, SDES_CNAME, SDES_NAME,
 };
 use mcast_core::rtp::{self, SeqEvent, SequenceTracker};
 use std::fs::File;
@@ -289,7 +288,7 @@ pub fn run(
                     ),
                     None => (None, None),
                 };
-                r.report(block, playout);
+                r.report(block.into_iter().collect(), playout);
             }
         }
 
