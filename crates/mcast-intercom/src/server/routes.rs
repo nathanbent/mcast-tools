@@ -3,7 +3,7 @@
 
 use super::{ApiError, ApiResult, AppState, Event};
 use crate::backend::Entry;
-use crate::model::{Announcement, Config, Schedule, Zone};
+use crate::model::{Announcement, Config, DayOff, Defaults, Schedule, Zone};
 use crate::runner::{PlayError, Run, Trigger};
 use crate::scheduler;
 use crate::store;
@@ -430,17 +430,19 @@ pub(super) async fn upcoming(
     let n = q.n.unwrap_or(10).clamp(1, 100);
     let now = jiff::Timestamp::now();
     let fires = scheduler::upcoming(&cfg, &tz, now, n);
-    // Each schedule's next time, enabled or not; null when it won't come again.
+    // Each schedule's next time, enabled or not (and paused or not), past
+    // days off; null when it won't come again.
     let next: serde_json::Map<String, Value> = cfg
         .schedules
         .iter()
         .map(|s| {
-            let at = scheduler::next_after(s, &tz, now).map(|t| t.as_millisecond());
+            let at = scheduler::next_playing(&cfg, s, &tz, now).map(|t| t.as_millisecond());
             (s.id.clone(), json!(at))
         })
         .collect();
     Ok(Json(json!({
         "time_zone": cfg.tz_name(),
+        "paused": cfg.schedules_paused,
         "now_ms": crate::now_ms(),
         "fires": fires,
         "next": next,
@@ -448,18 +450,43 @@ pub(super) async fn upcoming(
 }
 
 fn settings(c: &Config) -> Value {
-    json!({ "time_zone": c.time_zone, "effective_time_zone": c.tz_name() })
+    json!({
+        "time_zone": c.time_zone,
+        "effective_time_zone": c.tz_name(),
+        "defaults": c.defaults,
+        "schedules_paused": c.schedules_paused,
+        "days_off": c.days_off,
+    })
 }
 
-/// `{"time_zone": "Europe/London"}`, or null for the system's.
+/// The panel-wide settings: time zone, announcement defaults, pausing
+/// schedules, and days off.
 pub(super) async fn get_settings(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     Ok(Json(settings(&s.load().await?)))
 }
 
+/// A field that can be left out (no change) or `null` (cleared).
+fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
+/// Each field left out stays as it is.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Settings {
-    time_zone: Option<String>,
+    /// `null` for the system's.
+    #[serde(default, deserialize_with = "present")]
+    time_zone: Option<Option<String>>,
+    #[serde(default)]
+    defaults: Option<Defaults>,
+    #[serde(default)]
+    schedules_paused: Option<bool>,
+    #[serde(default)]
+    days_off: Option<Vec<DayOff>>,
 }
 
 pub(super) async fn put_settings(
@@ -468,10 +495,18 @@ pub(super) async fn put_settings(
 ) -> ApiResult<Json<Value>> {
     let Json(new) = body?;
     change(&s, move |c| {
-        c.time_zone = new
-            .time_zone
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty());
+        if let Some(tz) = new.time_zone {
+            c.time_zone = tz.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        }
+        if let Some(d) = new.defaults {
+            c.defaults = d;
+        }
+        if let Some(p) = new.schedules_paused {
+            c.schedules_paused = p;
+        }
+        if let Some(days) = new.days_off {
+            c.days_off = days;
+        }
         Ok(settings(c))
     })
     .await

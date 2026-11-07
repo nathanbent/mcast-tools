@@ -66,6 +66,9 @@ fn config() -> Config {
         ],
         schedules: Vec::new(),
         time_zone: None,
+        defaults: Default::default(),
+        schedules_paused: false,
+        days_off: Vec::new(),
         announcements: vec![
             Announcement {
                 volume_db: Some(2.0),
@@ -329,6 +332,63 @@ fn reads_the_documented_format() {
     // Unknown fields are refused, so typos don't go unnoticed.
     let typo = json!({"id": "a", "name": "A", "audio": "chime_only", "zones": [], "repeats": 2});
     assert!(serde_json::from_value::<Announcement>(typo).is_err());
+}
+
+#[test]
+fn announcements_use_the_defaults_they_leave_out() {
+    let cfg: Config = serde_json::from_value(json!({
+        "zones": [{"id": "up", "name": "Upstairs", "targets": [{"group": "239.1.1.1:5000"}]}],
+        "defaults": {"chime": "ding-dong", "end_chime": "falling", "mode": "voice",
+                     "volume_db": -3, "lead_in_ms": 300},
+        "announcements": [
+            {"id": "plain", "name": "Plain", "audio": {"media": "a.wav"}, "zones": ["up"]},
+            {"id": "own", "name": "Own", "audio": {"media": "a.wav"}, "zones": ["up"],
+             "chime": "bell", "end_chime": "none", "mode": "music", "volume_db": 0}
+        ]
+    }))
+    .unwrap();
+    cfg.validate().unwrap();
+    let request = |id: &str| {
+        cfg.announcement(id)
+            .unwrap()
+            .with_defaults(&cfg.defaults)
+            .send_request(&cfg.zones[0].targets[0], "239.1.1.1:5000")
+    };
+    assert_eq!(
+        request("plain"),
+        json!({
+            "group": "239.1.1.1:5000", "name": "Plain", "source": {"type": "file", "path": "a.wav"},
+            "chime": "ding-dong", "end_chime": "falling", "mode": "voice",
+            "volume_db": -3.0, "lead_in_ms": 300.0,
+        })
+    );
+    // Its own settings win; "none" turns a default chime off.
+    assert_eq!(
+        request("own"),
+        json!({
+            "group": "239.1.1.1:5000", "name": "Own", "source": {"type": "file", "path": "a.wav"},
+            "chime": "bell", "mode": "music", "volume_db": 0.0, "lead_in_ms": 300.0,
+        })
+    );
+    // Saved as written: the defaults aren't copied into announcements.
+    let saved = serde_json::to_value(&cfg).unwrap();
+    assert!(saved["announcements"][0].get("chime").is_none());
+    assert_eq!(saved["announcements"][1]["end_chime"], "none");
+
+    // Without defaults, nothing changes from before.
+    let mut bare = cfg.clone();
+    bare.defaults = Default::default();
+    let plain = bare.announcement("plain").unwrap();
+    assert_eq!(plain.with_defaults(&bare.defaults), *plain);
+    assert!(serde_json::to_value(&bare)
+        .unwrap()
+        .get("defaults")
+        .is_none());
+
+    let mut bad = cfg.clone();
+    bad.defaults.chime = Some(json!({"file": "../x.wav"}));
+    let e = bad.validate().unwrap_err().to_string();
+    assert!(e.contains("defaults: chime"), "{e}");
 }
 
 #[test]

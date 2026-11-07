@@ -18,6 +18,7 @@
       <button data-tab="schedules" aria-selected="false">Schedules</button>
       <button data-tab="announcements" aria-selected="false">Announcements</button>
       <button data-tab="zones" aria-selected="false">Zones</button>
+      <button data-tab="settings" aria-selected="false">Settings</button>
     </nav>
     <span class="spacer"></span>
     <span id="backend" data-state="unknown" aria-live="polite"></span>
@@ -36,10 +37,16 @@
       <h2 id="h-history">History</h2>
       <div id="history"></div>
     </section>
-    <section id="tab-schedules" aria-labelledby="h-schedules" hidden>
-      <h2 id="h-schedules">Schedules</h2>
-      <div id="schedules"></div>
-    </section>
+    <div id="tab-schedules" class="stack" hidden>
+      <section aria-labelledby="h-schedules">
+        <h2 id="h-schedules">Schedules</h2>
+        <div id="schedules"></div>
+      </section>
+      <section aria-labelledby="h-days-off">
+        <h2 id="h-days-off">Days off</h2>
+        <div id="days-off"></div>
+      </section>
+    </div>
     <section id="tab-announcements" aria-labelledby="h-announcements" hidden>
       <h2 id="h-announcements">Announcements</h2>
       <div id="announcements"></div>
@@ -48,6 +55,7 @@
       <h2 id="h-zones">Zones</h2>
       <div id="zones"></div>
     </section>
+    <div id="tab-settings" class="stack" hidden></div>
   </main>
 
   <div id="toasts" aria-live="polite"></div>

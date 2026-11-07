@@ -1,71 +1,47 @@
-// Announcements: what to play (a media file or a chime), chimes, where it
-// goes, how many times, and its priority.
+// Announcements: what to play (a media file or a chime), its chimes, where
+// it goes, how it plays, and how it sounds. Chimes and sound settings left
+// unset use the panel's defaults (the Settings tab).
 
 import { h } from "./dom.js";
 import { state, zoneName } from "./store.js";
-import { mountEditor, field, select, numberInput, num } from "./editor.js";
-import { builtInGroups, listenButton, openChooser } from "./chimes.js";
+import { mountEditor, field, select, numberInput, num, mediaOptions } from "./editor.js";
+import { chimeField, chimeLabel, chooserLink, effectiveChime } from "./chimes.js";
 
 const PRIORITIES = [["normal", "Normal"], ["high", "High"], ["emergency", "Emergency"]];
+export const MODES = [["voice", "Voice"], ["music", "Music"], ["none", "None"]];
 
-function mediaOptions(prefix, current) {
-  const names = [...state.media];
-  if (current && !names.includes(current)) names.push(current);
-  return names.map((n) => [prefix + n, state.media.includes(n) ? n : `${n} (missing)`]);
-}
-
-// A chime as the API has it ("bell", "default", {file}) <-> a select value.
-function chimeValue(c) {
-  if (c == null) return "";
-  return typeof c === "string" ? c : `file:${c.file}`;
-}
-
-function chimeOf(v) {
-  if (v === "") return null;
-  return v.startsWith("file:") ? { file: v.slice(5) } : v;
-}
-
-function chimeOptions(current, defaultLabel) {
-  const file = current && typeof current === "object" ? current.file : null;
-  return [
-    ["", "None"],
-    ["default", defaultLabel],
-    ...builtInGroups(typeof current === "string" ? current : null),
-    { group: "Media files", options: mediaOptions("file:", file) },
-  ];
-}
-
-function chimeSelect(current, defaultLabel) {
-  return select(chimeOptions(current, defaultLabel), chimeValue(current));
-}
-
-// A chime select with a button to listen to it, redrawn (keeping its
-// choice) when the chimes to list change.
-function chimeField(label, sel, defaultLabel, defaultName) {
-  const wrap = h("span", { class: "with-button" }, sel, listenButton(sel, { default: defaultName }));
-  sel.redraw = () => {
-    const value = sel.value;
-    const now = select(chimeOptions(chimeOf(value), defaultLabel), value);
-    sel.replaceChildren(...now.childNodes);
-    sel.value = value;
-  };
-  return field(label, wrap);
-}
+export const modeLabel = (m) => (m ? MODES.find(([v]) => v === m)?.[1] ?? m : "Server default");
 
 function audioLabel(a) {
   return a.audio === "chime_only" ? "Chime only" : a.audio.media;
 }
 
+// "Ding dong → Falling", marking chimes that come from the defaults.
+function chimesLabel(a) {
+  const one = (which) => {
+    const c = effectiveChime(a, which);
+    if (c == null) return null;
+    return chimeLabel(c, which) + (a[which] == null ? " (default)" : "");
+  };
+  const [before, after] = [one("chime"), one("end_chime")];
+  if (!before && !after) return a.audio === "chime_only" ? "Server default" : "None";
+  return [before ?? "—", after].filter(Boolean).join(" → ");
+}
+
+// A section of the form.
+const part = (legend, ...children) => h("fieldset", { class: "part" }, h("legend", {}, legend), ...children);
+
 function form(a, save, cancel) {
+  const d = state.config.defaults ?? {};
   const media = a && typeof a.audio === "object" ? a.audio.media : null;
   const name = h("input", { value: a?.name ?? "", required: true, maxLength: 64 });
   const audio = select([["chime_only", "Chime only"], { group: "Media files", options: mediaOptions("media:", media) }],
     media ? `media:${media}` : "chime_only");
-  const chime = chimeSelect(a ? a.chime : "default", "Default (rising)");
-  const endChime = chimeSelect(a?.end_chime, "Default (falling)");
-  const mode = select([["", "Server default"], ["voice", "Voice"], ["music", "Music"], ["none", "None"]], a?.mode ?? "");
-  const volume = numberInput(a?.volume_db, { placeholder: "0" });
-  const leadIn = numberInput(a?.lead_in_ms, { min: 0, placeholder: "0" });
+  const chime = chimeField("Before", a?.chime, "chime", { inherit: true });
+  const endChime = chimeField("After", a?.end_chime, "end_chime", { inherit: true });
+  const mode = select([["", `Default (${modeLabel(d.mode)})`], ...MODES], a?.mode ?? "");
+  const volume = numberInput(a?.volume_db, { placeholder: `Default: ${d.volume_db ?? 0}` });
+  const leadIn = numberInput(a?.lead_in_ms, { min: 0, placeholder: `Default: ${d.lead_in_ms ?? 0}` });
   const repeat = numberInput(a?.repeat ?? 1, { min: 1, max: 20, step: 1, required: true });
   const gap = numberInput(a?.repeat_gap_s ?? 2, { min: 0, max: 3600, required: true });
   const priority = select(PRIORITIES, a?.priority ?? "normal");
@@ -74,6 +50,7 @@ function form(a, save, cancel) {
     box: h("input", { type: "checkbox", checked: !!a?.zones.includes(z.id) }),
     name: z.name,
   }));
+  const setZones = (on) => { for (const z of zones) z.box.checked = on; };
 
   const submit = (e) => {
     e.preventDefault();
@@ -83,8 +60,8 @@ function form(a, save, cancel) {
     save({
       name: name.value.trim(),
       audio: audio.value === "chime_only" ? "chime_only" : { media: audio.value.slice(6) },
-      chime: chimeOf(chime.value),
-      end_chime: chimeOf(endChime.value),
+      chime: chime.value(),
+      end_chime: endChime.value(),
       mode: mode.value || null,
       volume_db: num(volume),
       lead_in_ms: num(leadIn),
@@ -96,24 +73,28 @@ function form(a, save, cancel) {
   };
 
   return h("form", { onsubmit: submit },
-    h("div", { class: "row" }, field("Name", name), field("Audio", audio, "Upload files through mcast serve")),
-    h("div", { class: "row" },
-      chimeField("Chime before", chime, "Default (rising)", "rising"),
-      chimeField("Chime after", endChime, "Default (falling)", "falling")),
-    h("p", { class: "small chime-link" },
-      h("button", { type: "button", class: "link",
-        onclick: () => openChooser(() => { chime.redraw(); endChime.redraw(); }) },
-        "Choose which chimes to list…")),
-    h("fieldset", {}, h("legend", {}, "Zones"),
+    part("General",
+      h("div", { class: "row" }, field("Name", name), field("Audio", audio, "Upload files through mcast serve"))),
+    part("Chimes",
+      h("div", { class: "row" }, chime.el, endChime.el),
+      h("p", { class: "small muted" },
+        "Panel default uses the chime set in Settings. ", chooserLink([chime, endChime]))),
+    part("Zones",
       zones.length
-        ? h("div", { class: "checks" }, zones.map((z) => h("label", { class: "check" }, z.box, z.name)))
+        ? h("div", { class: "checks" },
+            zones.map((z) => h("label", { class: "check" }, z.box, z.name)),
+            zones.length > 1 && h("button", { type: "button", class: "link", onclick: () => setZones(true) }, "all"),
+            zones.length > 1 && h("button", { type: "button", class: "link", onclick: () => setZones(false) }, "none"))
         : h("p", { class: "muted" }, "Add a zone first.")),
-    h("div", { class: "row" },
-      field("Times to play", repeat), field("Seconds between", gap),
-      field("Priority", priority, "Normal skips busy groups. High takes them over except from high or emergency; emergency, except from emergency.")),
-    h("details", {}, h("summary", {}, "More"),
+    part("Playback",
       h("div", { class: "row" },
-        field("Processing", mode), field("Volume (dB)", volume), field("Lead-in (ms)", leadIn, "Silence first, to wake amplifiers"))),
+        field("Times to play", repeat), field("Seconds between", gap),
+        field("Priority", priority, "Normal skips busy groups. High takes them over except from high or emergency; emergency, except from emergency."))),
+    part("Sound",
+      h("div", { class: "row" },
+        field("Processing", mode), field("Volume (dB)", volume),
+        field("Lead-in (ms)", leadIn, "Silence first, to wake amplifiers")),
+      h("p", { class: "small muted" }, "Leave a setting empty to use the default from Settings.")),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));
@@ -127,6 +108,7 @@ export function mount(el) {
     columns: [
       ["Name", (a) => a.name],
       ["Audio", audioLabel, true],
+      ["Chimes", chimesLabel, true],
       ["Zones", (a) => a.zones.map(zoneName).join(", ")],
       ["Plays", (a) => (a.repeat > 1 ? `${a.repeat}×` : "once"), true],
       ["Priority", (a) => a.priority ?? "normal", true],

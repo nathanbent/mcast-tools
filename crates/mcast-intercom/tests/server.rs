@@ -103,6 +103,9 @@ fn config() -> Config {
         ],
         schedules: Vec::new(),
         time_zone: None,
+        defaults: Default::default(),
+        schedules_paused: false,
+        days_off: Vec::new(),
         announcements: vec![
             chime("ding", "both", Priority::Normal),
             chime("polite", "busy", Priority::Normal),

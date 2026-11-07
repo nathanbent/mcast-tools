@@ -25,6 +25,14 @@ export function numberInput(value, props = {}) {
   return h("input", { type: "number", step: "any", value: value == null ? "" : String(value), ...props });
 }
 
+// Media file names as [prefix + name, label] options, with `current` even if
+// the server no longer has it.
+export function mediaOptions(prefix, current) {
+  const names = [...state.media];
+  if (current && !names.includes(current)) names.push(current);
+  return names.map((n) => [prefix + n, state.media.includes(n) ? n : `${n} (missing)`]);
+}
+
 // A number input's value, or null when empty.
 export const num = (input) => (input.value.trim() === "" ? null : Number(input.value));
 

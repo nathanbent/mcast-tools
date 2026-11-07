@@ -1,7 +1,7 @@
 //! `mcast intercom ...`: list, check and play from the command line.
 
 use crate::backend::{Backend, HttpBackend};
-use crate::model::{Audio, Config, Day, Target, When};
+use crate::model::{Audio, Config, Day, Target, When, NO_CHIME};
 use crate::runner::{Run, RunState, Runner, TargetState, Trigger};
 use crate::scheduler;
 use crate::store;
@@ -37,11 +37,16 @@ pub fn list(path: &Path) -> Result<()> {
             Audio::ChimeOnly => "chime only".into(),
         };
         let mut extras = Vec::new();
-        if let Some(c) = &a.chime {
-            extras.push(format!("chime {}", chime_name(c)));
-        }
-        if let Some(c) = &a.end_chime {
-            extras.push(format!("end chime {}", chime_name(c)));
+        // As it plays, with the defaults: say which chimes are those.
+        let played = a.with_defaults(&cfg.defaults);
+        for (label, own, c) in [
+            ("chime", &a.chime, &played.chime),
+            ("end chime", &a.end_chime, &played.end_chime),
+        ] {
+            if let Some(c) = c {
+                let from = if own.is_none() { " (default)" } else { "" };
+                extras.push(format!("{label} {}{from}", chime_name(c)));
+            }
         }
         if a.repeat > 1 {
             extras.push(format!("{} times", a.repeat));
@@ -62,7 +67,15 @@ pub fn list(path: &Path) -> Result<()> {
         );
     }
     if !cfg.schedules.is_empty() {
-        println!("Schedules (times in {}):", cfg.tz_name());
+        println!(
+            "Schedules (times in {}){}:",
+            cfg.tz_name(),
+            if cfg.schedules_paused {
+                ", all paused"
+            } else {
+                ""
+            }
+        );
         for sch in &cfg.schedules {
             let what = cfg
                 .announcement(&sch.announcement)
@@ -72,6 +85,23 @@ pub fn list(path: &Path) -> Result<()> {
                 sch.id,
                 describe_when(&sch.when),
                 if sch.enabled { "" } else { " (off)" }
+            );
+        }
+    }
+    if !cfg.days_off.is_empty() {
+        println!("Days off (no schedules play):");
+        for d in &cfg.days_off {
+            let when = match &d.to {
+                Some(to) if *to != d.from => format!("{} to {to}", d.from),
+                _ => d.from.clone(),
+            };
+            println!(
+                "  {when}{}",
+                if d.name.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", d.name)
+                }
             );
         }
     }
@@ -210,27 +240,34 @@ fn server_problems(
             }
         }
     }
+    // The defaults, then each announcement's own (the defaults it uses are
+    // checked once, above).
+    let d = &cfg.defaults;
+    let mut uses = vec![("defaults".to_string(), None, [&d.chime, &d.end_chime])];
     for a in &cfg.announcements {
-        let mut files = Vec::new();
-        if let Audio::Media(m) = &a.audio {
-            files.push(m.as_str());
-        }
-        for c in [&a.chime, &a.end_chime].into_iter().flatten() {
+        let what = format!("announcement \"{}\"", a.id);
+        let media = match &a.audio {
+            Audio::Media(m) => Some(m.as_str()),
+            Audio::ChimeOnly => None,
+        };
+        uses.push((what, media, [&a.chime, &a.end_chime]));
+    }
+    for (what, audio, chime_values) in uses {
+        let mut files: Vec<&str> = audio.into_iter().collect();
+        for c in chime_values.into_iter().flatten() {
             if let Some(f) = c["file"].as_str() {
                 files.push(f);
             }
             if let (Some(name), Some(chimes)) = (c.as_str(), &chimes) {
-                if name != "default" && !chimes.iter().any(|k| k == name) {
-                    problems.push(format!(
-                        "announcement \"{}\": no built-in chime \"{name}\"",
-                        a.id
-                    ));
+                let special = name == "default" || name == NO_CHIME;
+                if !special && !chimes.iter().any(|k| k == name) {
+                    problems.push(format!("{what}: no built-in chime \"{name}\""));
                 }
             }
         }
         for f in files {
             if !media.iter().any(|m| m == f) {
-                problems.push(format!("announcement \"{}\": no media file \"{f}\"", a.id));
+                problems.push(format!("{what}: no media file \"{f}\""));
             }
         }
     }

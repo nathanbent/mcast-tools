@@ -5,6 +5,7 @@
 import { api, token } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, refreshChimes } from "./store.js";
+import { field, select, mediaOptions } from "./editor.js";
 
 const CATEGORIES = [
   ["chime", "Chimes"], ["bell", "Bells"], ["tone", "Beeps and tones"], ["alert", "Alerts and sirens"],
@@ -45,12 +46,14 @@ export function listen(name) {
 }
 
 // A small button that plays whichever built-in `select` has chosen;
-// `fallback` maps other values (such as "default") to a built-in.
+// `fallback` maps other values (such as "default") to a built-in, and may
+// be a function returning that map.
 export function listenButton(select, fallback = {}) {
   return h("button", {
     type: "button", class: "icon", title: "Listen", "aria-label": "Listen to this chime",
     onclick: () => {
-      const name = fallback[select.value] ?? select.value;
+      const map = typeof fallback === "function" ? fallback() : fallback;
+      const name = map[select.value] ?? select.value;
       if (state.chimes.some((c) => c.name === name)) listen(name);
       else toast("Only the mcast server's built-in chimes can be previewed.", "info");
     },
@@ -118,4 +121,82 @@ export async function openChooser(changed) {
   await refreshChimes();
   render();
   dialog.showModal();
+}
+
+// ---- Chime fields, for announcements and the panel's defaults ----
+
+// The mcast server's own defaults, which "default" means.
+export const SERVER_DEFAULT = { chime: "rising", end_chime: "falling" };
+
+// A chime as the config has it ("bell", "default", "none", {file}) <-> a
+// select value; "" is "not set".
+export function chimeValue(c) {
+  if (c == null) return "";
+  return typeof c === "string" ? c : `file:${c.file}`;
+}
+
+export function chimeOf(v) {
+  if (v === "") return null;
+  return v.startsWith("file:") ? { file: v.slice(5) } : v;
+}
+
+// For people: "Ding dong", "lunch.wav", "None", "Server default (rising)".
+export function chimeLabel(c, which = "chime") {
+  if (c == null || c === "none") return "None";
+  if (typeof c === "object") return c.file;
+  if (c === "default") return `Server default (${SERVER_DEFAULT[which]})`;
+  return title(c);
+}
+
+// The chime an announcement plays (null for none), with the panel's
+// defaults filled in, as the panel does when it plays it.
+export function effectiveChime(a, which) {
+  const own = a[which];
+  if (own === "none") return null;
+  if (own != null) return own;
+  const d = state.config.defaults?.[which];
+  return d == null || d === "none" ? null : d;
+}
+
+// `which`: "chime" or "end_chime". `inherit`: true in an announcement, where
+// "not set" means the panel's default and "none" turns it off; false in the
+// defaults themselves, where "not set" is none.
+function chimeOptions(current, which, inherit) {
+  const file = current && typeof current === "object" ? current.file : null;
+  const named = typeof current === "string" && !["default", "none"].includes(current) ? current : null;
+  const panelDefault = chimeLabel(state.config.defaults?.[which], which);
+  return [
+    ...(inherit ? [["", `Panel default (${panelDefault})`], ["none", "None"]] : [["", "None"]]),
+    ["default", `Server default (${SERVER_DEFAULT[which]})`],
+    ...builtInGroups(named),
+    { group: "Media files", options: mediaOptions("file:", file) },
+  ];
+}
+
+// A labelled chime select with a button to listen to it. Its `redraw()`
+// rebuilds the choices (keeping the one chosen), for when the chimes to
+// list or the defaults change.
+export function chimeField(label, current, which, { inherit = false, hint } = {}) {
+  const sel = select(chimeOptions(current, which, inherit), chimeValue(current));
+  const toBuiltIn = () => {
+    const map = { default: SERVER_DEFAULT[which] };
+    const d = state.config.defaults?.[which];
+    if (inherit && typeof d === "string") map[""] = d === "default" ? SERVER_DEFAULT[which] : d;
+    return map;
+  };
+  const wrap = h("span", { class: "with-button" }, sel, listenButton(sel, toBuiltIn));
+  sel.redraw = () => {
+    const value = sel.value;
+    const now = select(chimeOptions(chimeOf(value), which, inherit), value);
+    sel.replaceChildren(...now.childNodes);
+    sel.value = value;
+  };
+  return { el: field(label, wrap, hint), select: sel, value: () => chimeOf(sel.value) };
+}
+
+// "Choose which chimes to list…", redrawing `fields` after a change.
+export function chooserLink(fields) {
+  return h("button", { type: "button", class: "link",
+    onclick: () => openChooser(() => fields.forEach((f) => f.select.redraw())) },
+  "Choose which chimes to list…");
 }
