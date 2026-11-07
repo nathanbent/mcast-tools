@@ -6,11 +6,14 @@ use mcast_audio::process::{Mode, ProcessOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
 use mcast_core::sap::{self, Directory, DirectoryEvent};
 use mcast_core::{Interface, MulticastOptions};
+use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+mod presets;
 
 const DEFAULT_GROUP: &str = "239.69.0.1:5004";
 
@@ -30,6 +33,75 @@ enum Command {
     Audio(AudioCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
+    /// Save options for `audio send` / `audio recv` under a name; run with `mcast @NAME`
+    #[command(subcommand)]
+    Preset(PresetCommand),
+}
+
+#[derive(Subcommand)]
+#[command(after_help = "Examples:
+  mcast preset create page-1 -g 239.192.2.1:10000 -e g711u --tos 184 --no-sap
+  mcast preset set page-1 -p -C -L 800          # add or change options
+  mcast preset unset page-1 chime               # remove one (by name or flag)
+  mcast @page-1 --file page.wav                 # run it; options given here win
+  mcast audio send -P page-1 --file page.wav    # same
+  mcast preset create lobby --recv -s lobby -v -6
+
+Presets are kept in ~/.config/mcast/presets.conf ($MCAST_PRESETS overrides),
+one option per line; the file can be edited by hand.")]
+enum PresetCommand {
+    /// Create a preset for `audio send` (or `audio recv` with --recv), with any options
+    Create {
+        name: String,
+        /// The preset is for `mcast audio recv` (put this before the options)
+        #[arg(long)]
+        recv: bool,
+        /// Options, exactly as for `mcast audio send` (or recv)
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// Add or change options (creating a send preset if needed); they replace
+    /// the same option, or ones they conflict with, e.g. --file replaces --tone
+    Set {
+        name: String,
+        /// Options, exactly as for `mcast audio send` (or recv); see their --help
+        #[arg(
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// Remove options, named like `group`, `--group` or `-g`
+    Unset {
+        name: String,
+        #[arg(required = true, allow_hyphen_values = true, value_name = "OPTION")]
+        options: Vec<String>,
+    },
+    /// Run a preset; extra options are added and override it. Shortcut: mcast @NAME
+    Run {
+        name: String,
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// List presets, or show one, as the commands they run
+    #[command(visible_aliases = ["ls", "show"])]
+    List { name: Option<String> },
+    /// Copy a preset to a new name
+    #[command(visible_alias = "cp")]
+    Copy { from: String, to: String },
+    /// Delete a preset
+    #[command(visible_alias = "rm")]
+    Delete { name: String },
 }
 
 #[derive(Subcommand)]
@@ -124,6 +196,9 @@ impl SapListenArgs {
 
 #[derive(Args)]
 struct SendArgs {
+    /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Multicast group and port, e.g. 239.69.0.1:5004 or [ff15::69]:5004
     #[arg(short, long, default_value = DEFAULT_GROUP)]
     group: SocketAddr,
@@ -225,6 +300,9 @@ struct SendArgs {
 
 #[derive(Args)]
 struct RecvArgs {
+    /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Multicast group and port; skips SAP discovery. The codec comes from
     /// --encoding, or from the payload type for G.711/G.722 (else L16/48000/2)
     #[arg(short, long)]
@@ -304,7 +382,7 @@ struct DiscoverArgs {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(presets::expand(std::env::args_os().collect())?);
     let stop = Arc::new(AtomicBool::new(false));
     {
         let stop = stop.clone();
@@ -315,6 +393,7 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Recv(a)) => audio_recv(a, &stop),
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
         Command::Monitor(a) => monitor(a, &stop),
+        Command::Preset(c) => preset(c),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");
@@ -322,6 +401,69 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn preset(c: PresetCommand) -> Result<()> {
+    let mut store = presets::Store::load()?;
+    match c {
+        PresetCommand::Create {
+            name,
+            recv,
+            options,
+        } => {
+            let kind = if recv {
+                presets::Kind::Recv
+            } else {
+                presets::Kind::Send
+            };
+            let p = store.create(&name, kind, &options)?;
+            println!("created {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Set { name, options } => {
+            let (p, created) = store.set(&name, &options)?;
+            let verb = if created { "created" } else { "updated" };
+            println!("{verb} {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Unset { name, options } => {
+            let p = store.unset(&name, &options)?;
+            println!("updated {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Run { name, .. } => {
+            // `presets::expand` rewrites `preset run NAME` before parsing.
+            bail!("can't run preset \"{name}\"");
+        }
+        PresetCommand::List { name: Some(name) } => {
+            println!("{}", store.get(&name)?.command_line());
+            return Ok(());
+        }
+        PresetCommand::List { name: None } => {
+            if store.presets.is_empty() {
+                eprintln!(
+                    "no presets in {}; create one with `mcast preset create NAME [OPTIONS]`",
+                    store.path.display()
+                );
+            }
+            let width = store
+                .presets
+                .iter()
+                .map(|p| p.name.len())
+                .max()
+                .unwrap_or(0);
+            for p in &store.presets {
+                println!("{:<width$}  {}", p.name, p.command_line());
+            }
+            return Ok(());
+        }
+        PresetCommand::Copy { from, to } => {
+            let p = store.copy(&from, &to)?;
+            println!("created {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Delete { name } => {
+            store.delete(&name)?;
+            println!("deleted {name}");
+        }
+    }
+    store.save()
 }
 
 fn hostname() -> String {
