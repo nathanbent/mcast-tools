@@ -184,6 +184,26 @@ Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   163
 
 TTL and DSCP are reported on Linux.
 
+## ffmpeg paging script
+
+`scripts/mcast-play.sh` streams an audio file to a multicast paging group with
+ffmpeg, with the same voice/music processing as `mcast audio send -m`. It's the
+original script `mcast` was modelled on, with two fixes:
+
+- **Steady pacing**: packets go out every 20 ms instead of in bursts (`-re`
+  only throttles input reading). Processing and sending are two ffmpeg
+  processes joined by a pipe; the sender cuts audio into one-packet frames and
+  releases them in real time. Pages also start ~2.5 s sooner in voice/music mode.
+- **QoS marking**: uses `dscp=46`; ffmpeg's RTP output ignores `tos=184`.
+
+```bash
+scripts/mcast-play.sh announcement.wav -m voice -L 500        # G.711 u-law to 239.192.2.1:10000
+scripts/mcast-play.sh song.flac -c g722 -m music -v -6
+scripts/mcast-play.sh announcement.wav -c g711u -m voice -o preview.wav
+```
+
+Run it with no arguments for all options. Requires ffmpeg (with libopus for Opus).
+
 ## Layout
 
 | Crate | Purpose |
@@ -192,6 +212,7 @@ TTL and DSCP are reported on Linux.
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
 | `crates/mcast` | The `mcast` CLI |
+| `scripts/mcast-play.sh` | ffmpeg-based paging script |
 
 New tool families go in their own crate (e.g. `crates/mcast-<thing>`) and get a
 subcommand in the CLI.
