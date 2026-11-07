@@ -42,6 +42,16 @@ To skip discovery, give the group and format yourself:
 mcast audio recv -g 239.69.0.1:5004 -r 48000 -c 2 -e l16 --latency 20 --device "Speakers"
 ```
 
+Adjust the volume on either end in dB. Cuts are exact; boosts are limited so they
+can't clip (a 5 ms look-ahead limiter when sending, a zero-latency soft knee
+above -1 dBFS when receiving):
+
+```bash
+mcast audio send --file music.mp3 -v -6        # send 6 dB quieter
+mcast audio recv --stream lobby -v 6           # play 6 dB louder
+mcast audio recv --stream lobby -v -10 --wav quiet.wav
+```
+
 List devices with `mcast audio devices`.
 
 ### Codecs

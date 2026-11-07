@@ -233,6 +233,9 @@ struct RecvArgs {
     /// Playout latency in milliseconds
     #[arg(short, long, default_value_t = 40.0)]
     latency: f64,
+    /// Volume change in dB, e.g. -6 or 3 (boosts are soft-limited to avoid clipping)
+    #[arg(short, long, allow_negative_numbers = true)]
+    volume: Option<f64>,
     /// Output device (substring of its name)
     #[arg(long, conflicts_with = "wav")]
     device: Option<String>,
@@ -456,6 +459,12 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
         stats.frames as f64 / spec.sample_rate as f64,
         stats.send_errors
     );
+    if stats.capture_dropped > 0 {
+        eprintln!(
+            "warning: dropped {} captured samples (processing fell behind the input device)",
+            stats.capture_dropped
+        );
+    }
     Ok(())
 }
 
@@ -547,6 +556,7 @@ fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
         fallback,
         payload_type,
         latency: Duration::from_secs_f64(a.latency / 1000.0),
+        volume_db: a.volume,
         sink,
         duration: a.duration.map(Duration::from_secs_f64),
         stats_interval: if a.stats > 0.0 {
