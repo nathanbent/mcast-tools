@@ -1,4 +1,5 @@
-//! Named presets: saved options for `mcast audio send` and `mcast audio recv`.
+//! Named presets: saved options for `mcast audio send`, `mcast audio recv`
+//! and `mcast monitor`.
 //!
 //! A preset is stored as the options it adds, one per line, in a small text
 //! file (`~/.config/mcast/presets.conf`, or `$MCAST_PRESETS`):
@@ -11,12 +12,12 @@
 //! --voice
 //! ```
 //!
-//! Using one (`mcast @page-zone-1 --file page.wav`, or `--preset` on send/recv)
+//! Using one (`mcast @page-zone-1 --file page.wav`, or `--preset` on the command)
 //! rewrites the command line before clap parses it: the preset's options go
 //! first, minus any that the command line sets again or conflicts with, so
 //! options typed on the command line always win.
 
-use crate::{RecvArgs, SendArgs};
+use crate::{MonitorArgs, RecvArgs, SendArgs};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::parser::ValueSource;
 use clap::{Arg, Args, Command};
@@ -29,13 +30,16 @@ use std::path::PathBuf;
 pub enum Kind {
     Send,
     Recv,
+    Monitor,
 }
 
 impl Kind {
-    fn sub(self) -> &'static str {
+    /// The subcommand words after `mcast`.
+    fn words(self) -> &'static [&'static str] {
         match self {
-            Kind::Send => "send",
-            Kind::Recv => "recv",
+            Kind::Send => &["audio", "send"],
+            Kind::Recv => &["audio", "recv"],
+            Kind::Monitor => &["monitor"],
         }
     }
 
@@ -43,6 +47,7 @@ impl Kind {
         match s.split_whitespace().collect::<Vec<_>>()[..] {
             ["audio", "send"] | ["send"] => Some(Kind::Send),
             ["audio", "recv"] | ["recv"] => Some(Kind::Recv),
+            ["monitor"] => Some(Kind::Monitor),
             _ => None,
         }
     }
@@ -52,11 +57,13 @@ impl Kind {
         let name = match self {
             Kind::Send => "mcast audio send",
             Kind::Recv => "mcast audio recv",
+            Kind::Monitor => "mcast monitor",
         };
         let c = Command::new(name).no_binary_name(true);
         let mut c = match self {
             Kind::Send => SendArgs::augment_args(c),
             Kind::Recv => RecvArgs::augment_args(c),
+            Kind::Monitor => MonitorArgs::augment_args(c),
         };
         c.build();
         c
@@ -65,11 +72,12 @@ impl Kind {
 
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "audio {}", self.sub())
+        write!(f, "{}", self.words().join(" "))
     }
 }
 
-/// One option of a preset, in canonical `--long[=value]` form.
+/// One option of a preset, in canonical `--long[=value]` form; or the
+/// positional arguments (monitor's groups), as bare values.
 #[derive(Clone, Debug, PartialEq)]
 struct Entry {
     id: String,
@@ -148,17 +156,22 @@ fn normalize<S: AsRef<str>>(kind: Kind, tokens: &[S]) -> Result<Vec<Entry>, Stri
         if id == "preset" || m.value_source(id) != Some(ValueSource::CommandLine) {
             continue;
         }
-        let Some(long) = arg.get_long() else {
-            continue; // help/version, or a positional (send/recv have none)
-        };
-        let tokens = if arg.get_action().takes_values() {
+        let raw = || {
             m.get_raw(id)
                 .into_iter()
                 .flatten()
-                .map(|v| format!("--{long}={}", v.to_string_lossy()))
-                .collect()
+                .map(|v| v.to_string_lossy())
+        };
+        let tokens = if arg.is_positional() {
+            raw().map(|v| v.into_owned()).collect()
+        } else if let Some(long) = arg.get_long() {
+            if arg.get_action().takes_values() {
+                raw().map(|v| format!("--{long}={v}")).collect()
+            } else {
+                vec![format!("--{long}")]
+            }
         } else {
-            vec![format!("--{long}")]
+            continue; // help/version
         };
         out.push((
             m.index_of(id).unwrap_or(usize::MAX),
@@ -217,11 +230,16 @@ fn merge(cmd: &Command, mut base: Vec<Entry>, over: Vec<Entry>) -> Vec<Entry> {
 }
 
 /// Find the options on a command line without validating it (it may only be
-/// valid once a preset fills in the rest). Returns their ids, and the values
-/// of any --preset options.
+/// valid once a preset fills in the rest). Returns their ids (including the
+/// positional argument's, if any are given), and the values of any --preset
+/// options.
 fn scan(cmd: &Command, tokens: &[OsString]) -> (Vec<String>, Vec<String>) {
     let mut ids = Vec::new();
     let mut presets = Vec::new();
+    let positional = cmd
+        .get_arguments()
+        .find(|a| a.is_positional())
+        .map(|a| a.get_id().to_string());
     let mut i = 0;
     let next_value = |i: usize, optional: bool| -> Option<String> {
         let v = tokens.get(i + 1)?.to_string_lossy().into_owned();
@@ -230,6 +248,9 @@ fn scan(cmd: &Command, tokens: &[OsString]) -> (Vec<String>, Vec<String>) {
     while i < tokens.len() {
         let t = tokens[i].to_string_lossy().into_owned();
         if t == "--" {
+            if i + 1 < tokens.len() {
+                ids.extend(positional.clone());
+            }
             break;
         }
         // (arg, value given inline)
@@ -246,6 +267,8 @@ fn scan(cmd: &Command, tokens: &[OsString]) -> (Vec<String>, Vec<String>) {
                         || a.get_all_aliases().is_some_and(|al| al.contains(&name))
                 })
                 .map(|a| (a, inline));
+        } else if !t.starts_with('-') || t == "-" {
+            ids.extend(positional.clone());
         } else if let Some(rest) = t.strip_prefix('-') {
             // Bundled shorts (-pC): flags until one that takes a value.
             for (j, c) in rest.char_indices() {
@@ -284,7 +307,8 @@ fn scan(cmd: &Command, tokens: &[OsString]) -> (Vec<String>, Vec<String>) {
 }
 
 /// Rewrite the command line if it uses presets: `mcast @NAME ...`,
-/// `mcast preset run NAME ...`, or `mcast audio send|recv --preset NAME ...`.
+/// `mcast preset run NAME ...`, or `--preset NAME` on `mcast audio send`,
+/// `mcast audio recv` or `mcast monitor`.
 /// Other command lines are returned unchanged.
 pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
     let word = |i: usize| argv.get(i).and_then(|a| a.to_str());
@@ -301,6 +325,8 @@ pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
             Some("recv") => (None, Some(Kind::Recv), 3),
             _ => return Ok(argv),
         }
+    } else if word(1) == Some("monitor") {
+        (None, Some(Kind::Monitor), 2)
     } else {
         return Ok(argv);
     };
@@ -339,7 +365,8 @@ pub fn expand(argv: Vec<OsString>) -> Result<Vec<OsString>> {
     }
     entries.retain(|e| !cli_ids.iter().any(|c| conflicts(&cmd, &e.id, c)));
 
-    let mut out: Vec<OsString> = vec![argv[0].clone(), "audio".into(), kind.sub().into()];
+    let mut out: Vec<OsString> = vec![argv[0].clone()];
+    out.extend(kind.words().iter().map(OsString::from));
     out.extend(
         entries
             .into_iter()
@@ -420,15 +447,16 @@ fn parse_file(text: &str) -> Result<Vec<Preset>> {
         let Some(p) = out.last_mut() else {
             bail!("line {}: expected a [name] header before \"{line}\"", n + 1);
         };
-        if line.starts_with('-') {
+        if let Some(kind) = Kind::parse(line) {
+            p.kind = kind;
+        } else if line.starts_with('-') || !line.contains(char::is_whitespace) {
+            // An option, or a positional value (monitor's groups).
             p.options.push(line.to_string());
         } else {
-            p.kind = Kind::parse(line).with_context(|| {
-                format!(
-                    "line {}: expected \"audio send\", \"audio recv\" or an option, got \"{line}\"",
-                    n + 1
-                )
-            })?;
+            bail!(
+                "line {}: expected \"audio send\", \"audio recv\", \"monitor\" or an option, got \"{line}\"",
+                n + 1
+            );
         }
     }
     Ok(out)
@@ -527,17 +555,23 @@ impl Store {
                     a.get_long() == Some(k)
                         || a.get_all_aliases().is_some_and(|al| al.contains(&k))
                         || (short.is_some() && a.get_short() == short)
+                        // positionals by name: `groups` or `group` for monitor
+                        || (a.is_positional()
+                            && (a.get_id() == k
+                                || a.get_value_names().is_some_and(|v| {
+                                    v.iter().any(|n| n.eq_ignore_ascii_case(k))
+                                })))
                 })
-                .filter(|a| a.get_long().is_some() && a.get_id() != "preset")
+                .filter(|a| (a.get_long().is_some() || a.is_positional()) && a.get_id() != "preset")
                 .with_context(|| format!("`mcast {}` has no option \"{key}\"", p.kind))?;
             let before = entries.len();
             entries.retain(|e| e.id != arg.get_id().as_str());
             if entries.len() == before {
-                eprintln!(
-                    "note: \"{}\" doesn't set --{}",
-                    p.name,
-                    arg.get_long().unwrap()
-                );
+                let label = match arg.get_long() {
+                    Some(l) => format!("--{l}"),
+                    None => arg.get_id().to_string(),
+                };
+                eprintln!("note: \"{}\" doesn't set {label}", p.name);
             }
         }
         p.set_entries(entries);
@@ -646,6 +680,22 @@ mod tests {
     }
 
     #[test]
+    fn monitor_groups_are_one_setting() {
+        assert_eq!(
+            opts(
+                Kind::Monitor,
+                &["239.1.1.1:5000", "--log", "239.1.1.2:5000", "-d", "60"]
+            ),
+            ["239.1.1.1:5000", "239.1.1.2:5000", "--log", "--duration=60"]
+        );
+        let cmd = Kind::Monitor.command();
+        let (ids, _) = scan(&cmd, &os(&["-P", "x", "239.9.9.9:1", "--interval", "2"]));
+        assert_eq!(ids, ["groups", "interval"]);
+        let (ids, _) = scan(&cmd, &os(&["--", "239.9.9.9:1"]));
+        assert_eq!(ids, ["groups"]);
+    }
+
+    #[test]
     fn file_round_trip() {
         let text = "# hi\n[page]\naudio send\n-g 239.192.2.1:10000\n--voice\n\n[lobby]\naudio recv\n--stream=Lobby music\n";
         let presets = parse_file(text).unwrap();
@@ -661,6 +711,9 @@ mod tests {
         assert_eq!(again[0].options, presets[0].options);
         assert!(parse_file("--voice\n").is_err());
         assert!(parse_file("[a]\naudio dance\n").is_err());
+        let m = parse_file("[watch]\nmonitor\n239.192.2.1:10000\n--log\n").unwrap();
+        assert_eq!(m[0].kind, Kind::Monitor);
+        assert_eq!(m[0].tokens(), ["239.192.2.1:10000", "--log"]);
     }
 
     #[test]
@@ -678,6 +731,12 @@ mod tests {
         s.set("voice", &os(&["-p", "-C", "-L", "800"])).unwrap();
         s.create("lobby", Kind::Recv, &os(&["-s", "lobby"]))
             .unwrap();
+        s.create(
+            "zones",
+            Kind::Monitor,
+            &os(&["239.192.2.1:10000", "239.192.2.2:10000", "--sap"]),
+        )
+        .unwrap();
         s.save().unwrap();
 
         let run = |args: &[&str]| -> Vec<String> {
@@ -715,6 +774,30 @@ mod tests {
             run(&["audio", "send", "--tone", "1000"]),
             ["mcast", "audio", "send", "--tone", "1000"]
         );
+        assert_eq!(
+            run(&["@zones", "--log"]),
+            [
+                "mcast",
+                "monitor",
+                "239.192.2.1:10000",
+                "239.192.2.2:10000",
+                "--sap",
+                "--log"
+            ]
+        );
+        // Groups given on the command line replace the preset's.
+        assert_eq!(
+            run(&["monitor", "-P", "zones", "239.69.0.1:5004"]),
+            [
+                "mcast",
+                "monitor",
+                "--sap",
+                "-P",
+                "zones",
+                "239.69.0.1:5004"
+            ]
+        );
+        assert!(expand(os(&["mcast", "monitor", "-P", "page"])).is_err());
         assert!(expand(os(&["mcast", "audio", "recv", "-P", "page"])).is_err());
         assert!(expand(os(&["mcast", "@missing"])).is_err());
 
@@ -724,6 +807,10 @@ mod tests {
                 .unwrap()
                 .options,
             ["--group=239.192.2.1:10000"]
+        );
+        assert_eq!(
+            s.unset("zones", &["groups".into()]).unwrap().options,
+            ["--sap"]
         );
         std::env::remove_var("MCAST_PRESETS");
         let _ = std::fs::remove_dir_all(dir);

@@ -33,7 +33,7 @@ enum Command {
     Audio(AudioCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
-    /// Save options for `audio send` / `audio recv` under a name; run with `mcast @NAME`
+    /// Save options for `audio send`, `audio recv` or `monitor` under a name; run with `mcast @NAME`
     #[command(subcommand)]
     Preset(PresetCommand),
 }
@@ -46,17 +46,23 @@ enum Command {
   mcast @page-1 --file page.wav                 # run it; options given here win
   mcast audio send -P page-1 --file page.wav    # same
   mcast preset create lobby --recv -s lobby -v -6
+  mcast preset create zones --monitor 239.192.2.1:10000 239.192.2.2:10000 --sap
+  mcast @zones --log                            # groups given here replace the preset's
 
 Presets are kept in ~/.config/mcast/presets.conf ($MCAST_PRESETS overrides),
 one option per line; the file can be edited by hand.")]
 enum PresetCommand {
-    /// Create a preset for `audio send` (or `audio recv` with --recv), with any options
+    /// Create a preset for `audio send` (or `audio recv` with --recv, `monitor`
+    /// with --monitor), with any options
     Create {
         name: String,
         /// The preset is for `mcast audio recv` (put this before the options)
         #[arg(long)]
         recv: bool,
-        /// Options, exactly as for `mcast audio send` (or recv)
+        /// The preset is for `mcast monitor` (put this before the options)
+        #[arg(long, conflicts_with = "recv")]
+        monitor: bool,
+        /// Options, exactly as for `mcast audio send` (or recv, or monitor)
         #[arg(
             trailing_var_arg = true,
             allow_hyphen_values = true,
@@ -68,7 +74,7 @@ enum PresetCommand {
     /// the same option, or ones they conflict with, e.g. --file replaces --tone
     Set {
         name: String,
-        /// Options, exactly as for `mcast audio send` (or recv); see their --help
+        /// Options, exactly as for `mcast audio send` (or recv, or monitor); see their --help
         #[arg(
             required = true,
             trailing_var_arg = true,
@@ -77,7 +83,7 @@ enum PresetCommand {
         )]
         options: Vec<OsString>,
     },
-    /// Remove options, named like `group`, `--group` or `-g`
+    /// Remove options, named like `group`, `--group` or `-g` (`groups` for monitor's groups)
     Unset {
         name: String,
         #[arg(required = true, allow_hyphen_values = true, value_name = "OPTION")]
@@ -341,6 +347,9 @@ struct RecvArgs {
 
 #[derive(Args)]
 struct MonitorArgs {
+    /// Start from a saved preset (`mcast preset`); options and groups given here win. Repeatable
+    #[arg(short = 'P', long, value_name = "NAME")]
+    preset: Vec<String>,
     /// Groups to watch (ADDR:PORT). With none, watches every stream announced via SAP
     #[arg(value_name = "GROUP")]
     groups: Vec<SocketAddr>,
@@ -409,10 +418,13 @@ fn preset(c: PresetCommand) -> Result<()> {
         PresetCommand::Create {
             name,
             recv,
+            monitor,
             options,
         } => {
             let kind = if recv {
                 presets::Kind::Recv
+            } else if monitor {
+                presets::Kind::Monitor
             } else {
                 presets::Kind::Send
             };
