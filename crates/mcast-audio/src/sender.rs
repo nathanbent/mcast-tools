@@ -17,6 +17,7 @@ use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
 use anyhow::{anyhow, bail, Context, Result};
 use mcast_core::net::{open_sender, MulticastOptions};
 use mcast_core::random_u32;
+use mcast_core::rtcp::{RtcpConfig, SenderRtcp};
 use mcast_core::rtp;
 use mcast_core::sap::{self, Announcer};
 use mcast_core::sdp::SessionDescription;
@@ -73,6 +74,8 @@ pub struct SenderConfig {
     pub render: Option<PathBuf>,
     /// Announce the stream with SAP so receivers can find it.
     pub announce: Option<Announce>,
+    /// Send RTCP sender reports (and BYE at the end) on the RTP port + 1.
+    pub rtcp: Option<RtcpConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +281,7 @@ pub struct Sender {
     loudness: Option<LoudnessInfo>,
     sdp: SessionDescription,
     announce: Option<(MulticastOptions, Duration)>,
+    rtcp: Option<SenderRtcp>,
 }
 
 impl Sender {
@@ -405,6 +409,20 @@ impl Sender {
             spec.output_format().duration_of(frames),
             cfg.opus.fec,
         );
+        let ssrc = random_u32();
+        let rtcp = match (&cfg.rtcp, &target) {
+            (Some(r), Target::Network(_)) => Some(
+                SenderRtcp::open(
+                    &cfg.net,
+                    ssrc,
+                    spec.rtp_clock_rate(),
+                    r.name.as_deref(),
+                    r.interval,
+                )
+                .context("opening RTCP sender (use --no-rtcp to skip)")?,
+            ),
+            _ => None,
+        };
         let announce = cfg.announce.filter(|_| cfg.render.is_none()).map(|a| {
             let mut net = cfg.net.clone();
             net.group = a
@@ -418,7 +436,7 @@ impl Sender {
             target: Some(target),
             spec,
             ptime,
-            packetizer: Packetizer::new(spec, encoder, frames, pt, random_u32()),
+            packetizer: Packetizer::new(spec, encoder, frames, pt, ssrc),
             converter: Converter::new(rate, channels, spec.sample_rate, spec.channels),
             processor,
             source_format,
@@ -431,6 +449,7 @@ impl Sender {
             loudness: loudness_info,
             sdp,
             announce,
+            rtcp,
         })
     }
 
@@ -482,6 +501,11 @@ impl Sender {
         self.announce.as_ref().map(|(net, _)| net.group)
     }
 
+    /// Where RTCP sender reports go, if sending them.
+    pub fn rtcp_group(&self) -> Option<SocketAddr> {
+        self.rtcp.as_ref().and_then(|r| r.group())
+    }
+
     /// Stream until the source ends, `duration` elapses, or `stop` is set.
     pub fn run(self, stop: &AtomicBool) -> Result<SenderStats> {
         self.run_with_progress(stop, Arc::default())
@@ -514,6 +538,7 @@ impl Sender {
             stats: SenderStats::default(),
             progress,
             fatal: None,
+            rtcp: self.rtcp.take(),
         };
         let (rate, src_channels) = self.source_format;
         let spec = self.spec;
@@ -589,6 +614,9 @@ impl Sender {
                     break;
                 }
             }
+        }
+        if let Some(r) = &mut out.rtcp {
+            r.bye(None);
         }
         let mut stats = out.stats;
         stats.frames = stats.packets * self.packetizer.frames_per_packet() as u64;
@@ -688,6 +716,7 @@ struct Output {
     stats: SenderStats,
     progress: Arc<Progress>,
     fatal: Option<anyhow::Error>,
+    rtcp: Option<SenderRtcp>,
 }
 
 impl Output {
@@ -714,6 +743,9 @@ impl Output {
                 Ok(_) => {
                     self.stats.packets += 1;
                     self.progress.packets.store(self.stats.packets, Ordering::Relaxed);
+                    if let Some(r) = &mut self.rtcp {
+                        r.sent(pkt, Instant::now());
+                    }
                 }
                 // Transient conditions (full buffers, no route yet) shouldn't kill a stream.
                 Err(e)

@@ -22,3 +22,9 @@ mcast-server.workspace = true
 mcast-web.workspace = true
 mcast-tui.workspace = true
 tokio.workspace = true
+mcast-text.workspace = true
+mcast-file.workspace = true
+image.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

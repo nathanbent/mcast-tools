@@ -77,6 +77,9 @@ pub struct RecvStats {
     pub underruns: u64,
     pub overflows: u64,
     pub buffered_ms: f64,
+    /// From the sender's RTCP reports: how long packets take from the
+    /// sender's clock to here (meaningful when the clocks are synced).
+    pub transit_ms: Option<f64>,
 }
 
 impl From<&receiver::ReceiverStats> for RecvStats {
@@ -90,6 +93,7 @@ impl From<&receiver::ReceiverStats> for RecvStats {
             underruns: s.underruns,
             overflows: s.overflows,
             buffered_ms: s.buffered.as_secs_f64() * 1000.0,
+            transit_ms: s.transit_secs.map(|t| t * 1000.0),
         }
     }
 }
@@ -544,6 +548,15 @@ impl Jobs {
                             format!("payload type {payload_type} is dynamic; set the encoding"),
                         ),
                         receiver::Event::DecodeError { message } => i.notes.push(message),
+                        receiver::Event::SenderInfo { ssrc, cname, name } => {
+                            let who = name.or(cname).unwrap_or_else(|| "sender".into());
+                            i.notes.push(format!("ssrc {ssrc:08x} is \"{who}\" (RTCP)"))
+                        }
+                        receiver::Event::Bye { ssrc, reason } => i.notes.push(match reason {
+                            Some(r) => format!("ssrc {ssrc:08x} ended the stream: {r}"),
+                            None => format!("ssrc {ssrc:08x} ended the stream"),
+                        }),
+                        receiver::Event::Warning { message } => i.notes.push(message),
                     });
                 });
                 let result = result.map(|s| Some(JobStats::Recv((&s).into())));
