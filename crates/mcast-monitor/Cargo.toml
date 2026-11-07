@@ -9,3 +9,4 @@ rust-version.workspace = true
 mcast-core.workspace = true
 mcast-audio.workspace = true
 mcast-text.workspace = true
+mcast-file.workspace = true

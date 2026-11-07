@@ -23,6 +23,10 @@ mcast-core = { path = "crates/mcast-core" }
 mcast-audio = { path = "crates/mcast-audio" }
 mcast-monitor = { path = "crates/mcast-monitor" }
 mcast-text = { path = "crates/mcast-text" }
+mcast-file = { path = "crates/mcast-file" }
+raptorq = "2"
+crc32fast = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [profile.release]
 # Whole-program optimisation: slower builds, faster and smaller binaries.

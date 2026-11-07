@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod file;
 mod text;
 
 const DEFAULT_GROUP: &str = "239.69.0.1:5004";
@@ -34,6 +35,9 @@ enum Command {
     /// Real-time text (T.140) over RTP multicast: send, receive, chat
     #[command(subcommand)]
     Text(text::TextCommand),
+    /// Files and pictures over multicast (RaptorQ fountain code): send, receive, show
+    #[command(subcommand)]
+    File(file::FileCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
 }
@@ -44,7 +48,7 @@ enum AudioCommand {
     Send(SendArgs),
     /// Play (or record) a stream; finds one via SAP unless --group is given
     Recv(RecvArgs),
-    /// List streams announced with SAP (audio and text)
+    /// List streams announced with SAP (audio, text and files)
     Discover(DiscoverArgs),
     /// List audio input and output devices
     Devices,
@@ -344,6 +348,7 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Recv(a)) => audio_recv(a, &stop),
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
         Command::Text(c) => text::run(c, &stop),
+        Command::File(c) => file::run(c, &stop),
         Command::Monitor(a) => monitor(a, &stop),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
@@ -692,13 +697,14 @@ fn audio_discover(a: DiscoverArgs, stop: &AtomicBool) -> Result<()> {
                 DirectoryEvent::Deleted(s) => ("-", s, " (ended)"),
                 DirectoryEvent::Expired(s) => ("-", s, " (timed out)"),
             };
-            let desc = match (
-                StreamInfo::from_sdp(&s.sdp),
-                mcast_text::TextInfo::from_sdp(&s.sdp),
-            ) {
-                (Some(info), _) => info.to_string(),
-                (None, Some(text)) => text.to_string(),
-                (None, None) => format!("\"{}\" (no audio or text stream)", s.sdp.name),
+            let desc = if let Some(info) = StreamInfo::from_sdp(&s.sdp) {
+                info.to_string()
+            } else if let Some(text) = mcast_text::TextInfo::from_sdp(&s.sdp) {
+                text.to_string()
+            } else if let Some(file) = mcast_file::FileInfo::from_sdp(&s.sdp) {
+                file.to_string()
+            } else {
+                format!("\"{}\" (no stream we know)", s.sdp.name)
             };
             println!("{mark} {desc} from {}{why}", s.origin);
             if a.sdp && matches!(event, DirectoryEvent::Added(_) | DirectoryEvent::Changed(_)) {
@@ -866,9 +872,9 @@ fn monitor_table(
             let opt =
                 |v: Option<f64>, unit: &str| v.map_or("-".to_string(), |v| format!("{v:.1}{unit}"));
             let codec = match (&r.codec, r.payload_type, r.is_rtp()) {
-                (_, _, false) if g.text && r.packets < 3 => "T.140 text".to_string(),
+                (_, _, false) if g.kind.is_some() && r.packets < 3 => g.kind.unwrap().to_string(),
                 (_, _, false) => "not RTP".to_string(),
-                (None, _, _) if g.text => "T.140 text".to_string(),
+                (None, _, _) if g.kind.is_some() => g.kind.unwrap().to_string(),
                 (Some(c), _, _) => c.clone(),
                 (None, Some(pt), _) => format!("pt {pt}"),
                 (None, None, _) => "-".into(),
@@ -880,9 +886,9 @@ fn monitor_table(
                     Some(why) => format!("ended (BYE: {why})"),
                     None => "ended (BYE)".into(),
                 }
-            } else if g.text && r.idle > Duration::from_secs(1) {
+            } else if g.kind.is_some() && r.idle > Duration::from_secs(1) {
                 format!("idle {}s", r.idle.as_secs())
-            } else if g.text {
+            } else if g.kind.is_some() {
                 "active".into()
             } else if r.idle > Duration::from_secs(2) {
                 format!("no packets for {}s", r.idle.as_secs())

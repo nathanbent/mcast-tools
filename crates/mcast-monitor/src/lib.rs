@@ -44,8 +44,9 @@ pub struct Target {
     pub spec: Option<StreamSpec>,
     /// RTP clock rate, if known (otherwise estimated from the stream).
     pub clock_rate: Option<u32>,
-    /// A real-time text stream (bursty: silence between messages is normal).
-    pub text: bool,
+    /// What a non-audio stream carries ("T.140 text", "files"), from SAP.
+    /// These are bursty: silence between messages or files is normal.
+    pub kind: Option<&'static str>,
 }
 
 impl Target {
@@ -55,11 +56,11 @@ impl Target {
             name: None,
             spec: None,
             clock_rate: None,
-            text: false,
+            kind: None,
         }
     }
 
-    /// The stream an SAP announcement describes: audio, or T.140 text.
+    /// The stream an SAP announcement describes: audio, text or files.
     fn from_sdp(sdp: &mcast_core::sdp::SessionDescription) -> Option<Self> {
         let named = |n: &str| (!n.is_empty()).then(|| n.to_string());
         if let Some(info) = StreamInfo::from_sdp(sdp) {
@@ -68,16 +69,25 @@ impl Target {
                 name: named(&info.name),
                 spec: info.spec(),
                 clock_rate: Some(info.sample_rate),
-                text: false,
+                kind: None,
             });
         }
-        let info = mcast_text::TextInfo::from_sdp(sdp)?;
+        if let Some(info) = mcast_text::TextInfo::from_sdp(sdp) {
+            return Some(Self {
+                group: info.group,
+                name: named(&info.name),
+                spec: None,
+                clock_rate: Some(mcast_text::t140::CLOCK_RATE),
+                kind: Some("T.140 text"),
+            });
+        }
+        let info = mcast_file::FileInfo::from_sdp(sdp)?;
         Some(Self {
             group: info.group,
             name: named(&info.name),
             spec: None,
-            clock_rate: Some(mcast_text::t140::CLOCK_RATE),
-            text: true,
+            clock_rate: Some(mcast_file::wire::CLOCK_RATE),
+            kind: Some("files"),
         })
     }
 }
@@ -98,8 +108,8 @@ pub struct GroupStatus {
     pub group: SocketAddr,
     pub name: Option<String>,
     pub from_sap: bool,
-    /// Real-time text: idle periods are normal.
-    pub text: bool,
+    /// Text or files (see [`Target::kind`]): idle periods are normal.
+    pub kind: Option<&'static str>,
     /// Announcement withdrawn (SAP deletion or timeout).
     pub ended: bool,
     pub error: Option<String>,
@@ -293,7 +303,7 @@ impl Monitor {
                     g.target.name = g.target.name.take().or(target.name);
                     g.target.spec = g.target.spec.or(target.spec);
                     g.target.clock_rate = g.target.clock_rate.or(target.clock_rate);
-                    g.target.text |= target.text;
+                    g.target.kind = g.target.kind.or(target.kind);
                     g.ended = false;
                     return;
                 }
@@ -326,7 +336,7 @@ impl Monitor {
                 group: g.target.group,
                 name: g.target.name.clone(),
                 from_sap: g.from_sap,
-                text: g.target.text,
+                kind: g.target.kind,
                 ended: g.ended,
                 error: g.error.clone(),
             })

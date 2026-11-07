@@ -1,8 +1,8 @@
 # mcast-tools
 
 A collection of multicast tools, written in Rust: audio over RTP multicast
-(the AES67 PCM payloads, plus G.711, G.722 and Opus), real-time text, and a
-stream monitor.
+(the AES67 PCM payloads, plus G.711, G.722 and Opus), real-time text, files
+and pictures, and a stream monitor.
 
 ## Build and install
 
@@ -307,6 +307,61 @@ discover the stream have time to join. `mcast audio discover` lists text
 streams too, and `mcast monitor` shows them (status "active", or "idle Ns"
 between messages).
 
+## Files and pictures
+
+Send any file, such as a picture, to everyone on a group at once:
+
+```bash
+mcast file send sunset.jpg                     # announced via SAP as "<host> files"
+mcast file send *.png --rate 5000              # several, one after another, at 5 Mbit/s
+mcast file send poster.jpg --loop              # keep sending until Ctrl-C, for late joiners
+mcast file recv                                # save whatever arrives in this directory
+mcast file recv --show --once                  # show the first picture in the terminal, then exit
+mcast file recv -o ~/inbox --stream photos     # from the "Photos" sender, into ~/inbox
+mcast file show sunset.jpg                     # just the terminal preview, no network
+```
+
+```
+receiving fractal.jpg (271.6 KB) from 10.0.0.5
+got fractal.jpg (271.6 KB) in 1.6s, from 199 packets (199 needed), checksum OK; saved ./fractal.jpg
+```
+
+Multicast has no retransmission, so files are sent with a **fountain code**
+(RaptorQ, RFC 6330). The sender sends the file's pieces, then extra "repair"
+pieces. A receiver can rebuild the file from *any* set of pieces slightly
+larger than the file, whichever ones it happened to catch. With the default
+`--redundancy 0.5` the sender sends 1.5× the file, so every receiver can lose
+up to about a third of the packets, each a different third, and still get
+the file. That was tested with 25% random loss. With `--loop` the sender keeps
+making new repair pieces, so a receiver that joins late finishes as soon as it
+has caught enough.
+
+- `--show` draws pictures (PNG, JPEG, GIF, WebP, BMP) with coloured
+  half-block characters, which works in any 24-bit-colour terminal.
+- Each file carries a CRC-32. A file that fails the check isn't saved.
+- Received names are reduced to a plain file name: no directories, no
+  leading dots, no control characters. Existing files aren't overwritten:
+  `cat.jpg` becomes `cat (1).jpg`.
+- `--max-size` (default 512 MB) refuses bigger files before allocating
+  anything. Malformed packets are ignored.
+- A file that stops arriving is given up on after 30 s.
+
+| Option | Meaning |
+|---|---|
+| `--rate KBIT` | Sending rate (default 2000). Mind voice traffic on the same network |
+| `-r, --redundancy` | Extra repair data as a fraction of the file (default 0.5) |
+| `--loop` | Keep sending the last file until Ctrl-C |
+| `-o, --out DIR` | Where to save (default `.`); `--no-save` to only look |
+| `--show`, `--width COLS` | Show pictures in the terminal |
+| `--once` | Exit after the first file |
+| `-g, --group` | Default `239.69.2.1:5004`, away from audio, paging and text |
+
+Files travel as RTP (payload type 110, `x-mcast-file`), so `mcast monitor`
+shows their rate and loss. They also carry RTCP, so the sender's heartbeat and
+each receiver's loss show up too. The payload format is documented in
+`crates/mcast-file/src/wire.rs`. It's specific to mcast-tools; the standard
+for broadcast file delivery, FLUTE (RFC 6726), is a lot more machinery.
+
 ## Monitor
 
 `mcast monitor` watches multicast streams and shows, per source, every second:
@@ -375,6 +430,7 @@ Listeners are forgotten 30 s after their last report.
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP (packets and sender/receiver sessions), SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
 | `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, SDP |
+| `crates/mcast-file` | Files over multicast: RaptorQ encoding, packet format, receiver/assembler, terminal picture preview |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
@@ -386,4 +442,4 @@ subcommand in the CLI.
 
 - Audio: PTP-aligned timestamps (AES67), resampling on playback, playing
   in step across receivers (using the RTCP clock mapping)
-- Other: file transfer (with fountain codes), ping/latency, relay/bridge between interfaces
+- Other: ping/latency, relay/bridge between interfaces
