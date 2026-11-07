@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # mcast-pi-status - one-screen summary of this box: addresses, which switch
-# port it's plugged into (from LLDP/CDP), and whether mcast is running.
+# port it's plugged into (from LLDP/CDP), and whether mcast (and the intercom
+# panel) is running.
 # Installed by mcast-tools/pi/install.sh; also shown at SSH login.
 set -u
 
@@ -47,5 +48,19 @@ if systemctl list-unit-files mcast.service >/dev/null 2>&1; then
     else
         printf '  mcast      %s%s%s  %s(journalctl -u mcast)%s\n' \
             "$red" "$(systemctl is-active mcast.service)" "$reset" "$dim" "$reset"
+    fi
+fi
+
+# Intercom panel, when it's installed.
+if [ -f /etc/systemd/system/mcast-intercom.service ]; then
+    if systemctl is-active --quiet mcast-intercom.service; then
+        # shellcheck source=/dev/null
+        listen=$(. /etc/mcast/intercom.env 2>/dev/null; echo "${MCAST_INTERCOM_LISTEN:-}")
+        port=${listen##*:}
+        printf '  intercom   %srunning%s  http://%s.local:%s/\n' \
+            "$green" "$reset" "$(hostname)" "${port:-8651}"
+    else
+        printf '  intercom   %s%s%s  %s(journalctl -u mcast-intercom)%s\n' \
+            "$red" "$(systemctl is-active mcast-intercom.service)" "$reset" "$dim" "$reset"
     fi
 fi

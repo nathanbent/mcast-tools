@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Intercom</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2 6h3l4-3v10l-4-3H2z' fill='%233b82f6'/%3E%3Cpath d='M11 5.5a3.5 3.5 0 0 1 0 5' fill='none' stroke='%233b82f6' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Intercom</h1>
+    <nav class="tabs" aria-label="Sections">
+      <button data-tab="panel" aria-selected="true">Panel</button>
+      <button data-tab="history" aria-selected="false">History</button>
+      <button data-tab="schedules" aria-selected="false">Schedules</button>
+      <button data-tab="announcements" aria-selected="false">Announcements</button>
+      <button data-tab="zones" aria-selected="false">Zones</button>
+    </nav>
+    <span class="spacer"></span>
+    <span id="backend" data-state="unknown" aria-live="polite"></span>
+    <span id="status" data-state="connecting" aria-live="polite">Connecting…</span>
+    <button id="all-stop" class="danger solid" title="Stop everything the panel is playing">All stop</button>
+    <button id="logout" class="subtle" hidden>Sign out</button>
+  </header>
+
+  <p id="fatal" class="fatal" role="alert" hidden></p>
+
+  <main class="single">
+    <section id="tab-panel" aria-label="Panel">
+      <div id="panel"></div>
+    </section>
+    <section id="tab-history" aria-labelledby="h-history" hidden>
+      <h2 id="h-history">History</h2>
+      <div id="history"></div>
+    </section>
+    <section id="tab-schedules" aria-labelledby="h-schedules" hidden>
+      <h2 id="h-schedules">Schedules</h2>
+      <div id="schedules"></div>
+    </section>
+    <section id="tab-announcements" aria-labelledby="h-announcements" hidden>
+      <h2 id="h-announcements">Announcements</h2>
+      <div id="announcements"></div>
+    </section>
+    <section id="tab-zones" aria-labelledby="h-zones" hidden>
+      <h2 id="h-zones">Zones</h2>
+      <div id="zones"></div>
+    </section>
+  </main>
+
+  <div id="toasts" aria-live="polite"></div>
+  <datalist id="phonebook-groups"></datalist>
+  <datalist id="time-zones"></datalist>
+
+  <dialog id="login">
+    <form id="login-form">
+      <h2>Sign in</h2>
+      <p class="muted">This panel needs its token (<code>--panel-token</code> or <code>MCAST_INTERCOM_TOKEN</code>).</p>
+      <p id="login-error" class="error" hidden>That token didn't work.</p>
+      <label class="field"><span>Token</span>
+        <input id="login-token" type="password" autocomplete="current-password" required autofocus></label>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </dialog>
+</body>
+</html>

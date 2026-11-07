@@ -5,6 +5,9 @@
 # --- Identity --------------------------------------------------------------
 # Hostname to set (empty: keep the one Raspberry Pi Imager set).
 PI_HOSTNAME=""
+# Time zone, e.g. "Europe/London" (empty: keep the one Imager set). Intercom
+# schedules use it unless the panel is given a time zone of its own.
+PI_TIMEZONE=""
 # The login account that gets SSH access (empty: whoever ran sudo).
 ADMIN_USER=""
 
@@ -21,6 +24,17 @@ MCAST_TOKEN=""
 MCAST_IFACE="any"
 # Extra arguments for "mcast serve", e.g. "--watch 239.192.2.1:10000".
 MCAST_EXTRA_ARGS=""
+
+# --- Intercom panel --------------------------------------------------------
+# Run "mcast intercom serve": buttons and schedules for announcements, played
+# through mcast serve on this Pi. Needs INSTALL_MCAST=yes. Its zones,
+# announcements and schedules are kept in /var/lib/mcast/intercom.json.
+ENABLE_INTERCOM=no
+# Address the panel listens on. Like mcast, anything but loopback needs a
+# token; leave INTERCOM_TOKEN empty to have one generated (it's printed at the
+# end and kept in /etc/mcast/intercom.env).
+INTERCOM_LISTEN="0.0.0.0:8651"
+INTERCOM_TOKEN=""
 
 # --- LLDP ------------------------------------------------------------------
 # Announce this Pi to the switch (and see which switch port it's on).
