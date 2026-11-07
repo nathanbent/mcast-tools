@@ -33,7 +33,10 @@ mcast update --branch some-branch # try a branch
 mcast update --path ~/mcast-tools # git pull a local clone, then install from it
 ```
 
-`mcast --version` shows the commit the binary was built from. The new binary
+`mcast --version` shows the commit the binary was built from. `--check` (and
+`update` itself) compares it with the branch, through GitHub's API or with
+`--path` in the clone, so a development build that is ahead of `main`, or has
+commits `main` doesn't, isn't replaced unless you add `--force`. The new binary
 goes into `~/.cargo/bin`; if you run a copy from somewhere else (such as
 `./target/release/mcast`), that copy is left as it is.
 

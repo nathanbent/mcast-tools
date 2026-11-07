@@ -91,9 +91,14 @@ pub fn run(a: UpdateArgs) -> Result<()> {
             false
         }
         Relation::Counts { ahead, behind } => {
+            let dropped = if ahead == 1 {
+                "that commit".to_string()
+            } else {
+                format!("those {ahead}")
+            };
             println!(
                 "This build has {ahead} commit{} that {branch} doesn't, and {branch} has \
-                 {behind} new one{}. Updating would replace it with {branch}, dropping those {ahead}.",
+                 {behind} new one{}. Updating would replace it with {branch}, dropping {dropped}.",
                 plural(ahead),
                 plural(behind)
             );
@@ -113,7 +118,7 @@ pub fn run(a: UpdateArgs) -> Result<()> {
 
     if a.check {
         match (wanted, &relation) {
-            (true, Relation::Counts { .. }) => println!("Run `mcast update` to install it."),
+            (true, Relation::Counts { .. }) => println!("Run `mcast update` to install them."),
             (true, _) => println!("Run `mcast update` to rebuild from {branch} anyway."),
             (false, Relation::Same) => {}
             (false, _) => println!("`mcast update --force` would install {branch} anyway."),
