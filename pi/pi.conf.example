@@ -1,0 +1,64 @@
+# mcast Raspberry Pi build settings. Copy to pi.conf, edit, then run: sudo ./install.sh
+# Every setting is optional; anything left out keeps the default shown here.
+# Re-running install.sh after a change is safe: each step is idempotent.
+
+# --- Identity --------------------------------------------------------------
+# Hostname to set (empty: keep the one Raspberry Pi Imager set).
+PI_HOSTNAME=""
+# The login account that gets SSH access (empty: whoever ran sudo).
+ADMIN_USER=""
+
+# --- mcast -----------------------------------------------------------------
+# Install the latest release binary into /usr/local/bin and run "mcast serve".
+INSTALL_MCAST=yes
+# Address the web GUI/API listens on. Anything but loopback needs a token;
+# leave MCAST_TOKEN empty to have one generated (it's printed at the end and
+# kept in /etc/mcast/mcast.env).
+MCAST_LISTEN="0.0.0.0:8650"
+MCAST_TOKEN=""
+# Interface for jobs, discovery and monitoring: "any", an IPv4 address or an
+# interface index (see "mcast serve --help").
+MCAST_IFACE="any"
+# Extra arguments for "mcast serve", e.g. "--watch 239.192.2.1:10000".
+MCAST_EXTRA_ARGS=""
+
+# --- LLDP ------------------------------------------------------------------
+# Announce this Pi to the switch (and see which switch port it's on).
+ENABLE_LLDP=yes
+# Also speak CDP, for Cisco gear that doesn't do LLDP (only sent when a CDP
+# neighbor is seen).
+LLDP_CDP=yes
+# Interfaces to announce on (lldpd pattern).
+LLDP_INTERFACES="eth*,end*,wlan*"
+LLDP_DESCRIPTION="mcast paging/monitoring appliance (Raspberry Pi)"
+
+# --- SSH -------------------------------------------------------------------
+# Turn off password logins. Only applied when ADMIN_USER has an
+# authorized_keys file, so you can't lock yourself out.
+SSH_KEYS_ONLY=yes
+
+# --- Remote access ---------------------------------------------------------
+# Cockpit: web admin with a terminal, logs, services and updates on :9090.
+ENABLE_COCKPIT=yes
+# Tailscale: reach the Pi from anywhere without port forwarding. You still
+# need to run "sudo tailscale up --ssh" once to log it in.
+ENABLE_TAILSCALE=no
+
+# --- Network and system ----------------------------------------------------
+# nftables firewall that allows only what this build uses.
+ENABLE_FIREWALL=yes
+# Advertise the web GUI and SSH over mDNS (http://<hostname>.local:8650/).
+ENABLE_AVAHI=yes
+# Multicast tuning: more IGMP memberships, bigger socket buffers, loose
+# reverse-path filtering.
+ENABLE_SYSCTL=yes
+# Hardware watchdog: reboot if the system hangs.
+ENABLE_WATCHDOG=yes
+# Install security updates automatically.
+ENABLE_UNATTENDED_UPGRADES=yes
+# Keep the journal in RAM only (saves SD card wear, loses logs on reboot).
+JOURNAL_VOLATILE=no
+# Network troubleshooting tools: tcpdump, tshark, iperf3, ethtool, mtr, ...
+INSTALL_NET_TOOLS=yes
+# Show IP, LLDP neighbor (switch/port/VLAN) and mcast status at SSH login.
+ENABLE_MOTD=yes

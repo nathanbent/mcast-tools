@@ -462,6 +462,7 @@ API: it needs `mcast serve` running, and every client sees the same jobs.
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
+| `pi/` | Raspberry Pi appliance build: `mcast serve` as a service, LLDP/CDP, SSH, Cockpit, firewall ([pi/README.md](pi/README.md)) |
 
 New tool families go in their own crate (e.g. `crates/mcast-<thing>`) and get a
 subcommand in the CLI.
