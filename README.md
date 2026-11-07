@@ -3,17 +3,25 @@
 A collection of multicast tools, written in Rust. The first set is audio:
 uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
 
-## Build
-
-```bash
-cargo build --release
-```
+## Build and install
 
 On Debian/Ubuntu install the build dependencies first (ALSA for audio devices, libopus for Opus):
 
 ```bash
 sudo apt-get install build-essential pkg-config libasound2-dev libopus-dev
 ```
+
+Then install the `mcast` command into `~/.cargo/bin`:
+
+```bash
+cargo install --path crates/mcast
+```
+
+If the shell then says `Command 'mcast' not found`, `~/.cargo/bin` is not on your
+`PATH` (rustup normally adds it; open a new shell, or run `source "$HOME/.cargo/env"`).
+
+To build without installing, use `cargo build --release` and run the binary as
+`./target/release/mcast`.
 
 ## Audio
 
