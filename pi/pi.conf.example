@@ -9,8 +9,11 @@ PI_HOSTNAME=""
 ADMIN_USER=""
 
 # --- mcast -----------------------------------------------------------------
-# Install the latest release binary into /usr/local/bin and run "mcast serve".
+# Install the latest release binary into /usr/local/bin.
 INSTALL_MCAST=yes
+# Run "mcast serve" (the web GUI/API, paging). Set to "no" on a Pi that is
+# only a probe.
+MCAST_SERVE=yes
 # Address the web GUI/API listens on. Anything but loopback needs a token;
 # leave MCAST_TOKEN empty to have one generated (it's printed at the end and
 # kept in /etc/mcast/mcast.env).
@@ -21,6 +24,27 @@ MCAST_TOKEN=""
 MCAST_IFACE="any"
 # Extra arguments for "mcast serve", e.g. "--watch 239.192.2.1:10000".
 MCAST_EXTRA_ARGS=""
+# A token that only lets probes check in, so the one copied onto every probe
+# can't be used to page. Leave empty to have one generated (printed at the end).
+MCAST_PROBE_TOKEN=""
+
+# --- Probe -----------------------------------------------------------------
+# Run "mcast probe": watch the multicast streams here and report to an mcast
+# server (see docs/probes.md). For a probe-only Pi set MCAST_SERVE=no too.
+ENABLE_PROBE=no
+# The server, e.g. "http://10.0.0.5:8650". Empty: find it by its multicast
+# beacon (it must know PROBE_TOKEN).
+PROBE_SERVER=""
+# The server's probe token (MCAST_PROBE_TOKEN on the server). Required.
+PROBE_TOKEN=""
+# This probe's name on the server (empty: the hostname).
+PROBE_ID=""
+# When finding the server by beacon, only one whose hostname contains this.
+PROBE_SERVER_NAME=""
+# UDP port for the server's unicast copies (the firewall opens it).
+PROBE_UNICAST_PORT=5104
+# Extra arguments for "mcast probe run", e.g. "--verbose".
+PROBE_EXTRA_ARGS=""
 
 # --- LLDP ------------------------------------------------------------------
 # Announce this Pi to the switch (and see which switch port it's on).

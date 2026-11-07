@@ -36,8 +36,8 @@ if command -v lldpcli >/dev/null 2>&1; then
         }'
 fi
 
-# mcast service.
-if systemctl list-unit-files mcast.service >/dev/null 2>&1; then
+# mcast services.
+if systemctl list-unit-files mcast.service >/dev/null 2>&1 && systemctl is-enabled --quiet mcast.service 2>/dev/null; then
     if systemctl is-active --quiet mcast.service; then
         # shellcheck source=/dev/null
         listen=$(. /etc/mcast/mcast.env 2>/dev/null; echo "${MCAST_LISTEN:-}")
@@ -47,5 +47,18 @@ if systemctl list-unit-files mcast.service >/dev/null 2>&1; then
     else
         printf '  mcast      %s%s%s  %s(journalctl -u mcast)%s\n' \
             "$red" "$(systemctl is-active mcast.service)" "$reset" "$dim" "$reset"
+    fi
+fi
+
+if systemctl list-unit-files mcast-probe.service >/dev/null 2>&1 && systemctl is-enabled --quiet mcast-probe.service 2>/dev/null; then
+    # The probe logs which server it found or reports to.
+    server=$(journalctl -u mcast-probe -o cat -n 50 --no-pager 2>/dev/null |
+        sed -n 's/^found server "\([^"]*\)" at \(.*\)/\1 (\2)/p; s/^probe "[^"]*" checking in with \([^ ]*\).*/\1/p' | tail -n 1)
+    if systemctl is-active --quiet mcast-probe.service; then
+        printf '  probe      %srunning%s  %s  %s(journalctl -u mcast-probe)%s\n' \
+            "$green" "$reset" "${server:-looking for a server}" "$dim" "$reset"
+    else
+        printf '  probe      %s%s%s  %s(journalctl -u mcast-probe)%s\n' \
+            "$red" "$(systemctl is-active mcast-probe.service)" "$reset" "$dim" "$reset"
     fi
 fi

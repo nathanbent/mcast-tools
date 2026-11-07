@@ -1,7 +1,9 @@
 # mcast on a Raspberry Pi
 
 A recipe for turning a Raspberry Pi into a small, headless mcast appliance:
-plug it into a switch port and it pages, monitors and announces itself to the network.
+plug it into a switch port and it pages, monitors and announces itself to the
+network, or watches multicast where it sits and reports to a server as a
+[probe](../docs/probes.md).
 
 `install.sh` sets up a fresh Raspberry Pi OS Lite install. You choose what it
 installs in `pi.conf`:
@@ -9,6 +11,7 @@ installs in `pi.conf`:
 | Piece | Default | What you get |
 |---|---|---|
 | `mcast serve` | on | Web GUI and API on `:8650` as a systemd service, under its own user, restarted if it crashes |
+| `mcast probe` | off | Watches multicast here and reports to a server, as a systemd service (see [Probes](#probes)) |
 | LLDP (+ CDP) | on | The switch sees the Pi's name and role, and the Pi can show you which switch, port and VLAN it's on |
 | SSH | on | Root login off. Password logins off once you have a key installed |
 | Cockpit | on | Web admin on `:9090`: terminal, logs, services, network, updates |
@@ -52,11 +55,49 @@ and the token is kept between runs. Upgrade mcast later with `sudo mcast update`
 
 The release binaries are 64-bit only, so the 32-bit OS isn't supported.
 
+## Probes
+
+The same script sets up a Pi as a [probe](../docs/probes.md): it watches the
+multicast streams where it's plugged in and reports loss, jitter and gaps to
+your `mcast serve` server, which shows them on its Probes page.
+
+1. On the **server** (a Pi set up as above, or any `mcast serve`), get its
+   probe token: `install.sh` prints it at the end, and it's
+   `MCAST_PROBE_TOKEN` in `/etc/mcast/mcast.env`. A probe token can only
+   check in, so it's safe to copy onto every probe.
+2. On each **probe** Pi, in `pi.conf`:
+
+   ```bash
+   MCAST_SERVE=no          # a probe-only Pi: no web GUI, no paging
+   ENABLE_PROBE=yes
+   PROBE_TOKEN="the server's probe token"
+   ```
+
+   then `sudo ./install.sh`. The probe finds the server by its multicast
+   beacon, and only uses one that knows its token. Where multicast doesn't
+   reach the server (another subnet, say), set
+   `PROBE_SERVER="http://10.0.0.5:8650"`.
+3. It shows up on the server's Probes page under its hostname
+   (`PROBE_ID` to choose another name). Configure it there: which groups to
+   watch, the report interval, and unicast copies for comparison.
+
+A Pi can be both a server and a probe (leave `MCAST_SERVE=yes`). The probe
+runs as `mcast-probe.service`, as the `mcast` user, and restarts on its own.
+Reports it can't deliver are queued in memory and sent when the server is
+back, but they're lost if the probe itself restarts. The firewall opens
+`PROBE_UNICAST_PORT` (UDP 5104) for the server's unicast copies. Logs:
+`journalctl -u mcast-probe -f`; the login summary shows which server it found.
+
+To change a probe's settings later, edit `/etc/mcast/probe.env` and
+`sudo systemctl restart mcast-probe`, or change `pi.conf` and re-run
+`install.sh`.
+
 ## What goes where
 
 | File | Installed as |
 |---|---|
-| `files/mcast.service` | `/etc/systemd/system/mcast.service`; settings in `/etc/mcast/mcast.env` (root and the `mcast` group only, because it holds the token) |
+| `files/mcast.service` | `/etc/systemd/system/mcast.service`; settings in `/etc/mcast/mcast.env` (root and the `mcast` group only, because it holds the tokens) |
+| `files/mcast-probe.service` | `/etc/systemd/system/mcast-probe.service`; settings in `/etc/mcast/probe.env` (root and the `mcast` group only) |
 | `files/lldpd.conf` | `/etc/lldpd.d/mcast.conf`; CDP is switched on in `/etc/default/lldpd` |
 | `files/sshd.conf` | `/etc/ssh/sshd_config.d/10-mcast-pi.conf` (plus `11-…-keys-only.conf`) |
 | `files/nftables.conf` | `/etc/nftables.conf` |

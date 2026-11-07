@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install.sh - turn a fresh Raspberry Pi OS Lite (64-bit) install into an mcast
-# appliance: mcast serve as a service, LLDP/CDP, hardened SSH, optional Cockpit
+# appliance: mcast serve and/or an mcast probe as services, LLDP/CDP, hardened SSH, optional Cockpit
 # and Tailscale, a firewall, mDNS, multicast tuning and a watchdog.
 #
 # Usage: sudo ./install.sh [path/to/pi.conf]   (default: pi.conf next to this script)
@@ -18,10 +18,19 @@ REPO="nathanbent/mcast-tools"
 PI_HOSTNAME=""
 ADMIN_USER=""
 INSTALL_MCAST=yes
+MCAST_SERVE=yes
 MCAST_LISTEN="0.0.0.0:8650"
 MCAST_TOKEN=""
 MCAST_IFACE="any"
 MCAST_EXTRA_ARGS=""
+MCAST_PROBE_TOKEN=""
+ENABLE_PROBE=no
+PROBE_SERVER=""
+PROBE_TOKEN=""
+PROBE_ID=""
+PROBE_SERVER_NAME=""
+PROBE_UNICAST_PORT=5104
+PROBE_EXTRA_ARGS=""
 ENABLE_LLDP=yes
 LLDP_CDP=yes
 LLDP_INTERFACES="eth*,end*,wlan*"
@@ -87,6 +96,14 @@ if ! command -v apt-get >/dev/null; then
     echo "this script is for Raspberry Pi OS / Debian (apt-get not found)" >&2
     exit 1
 fi
+if on "$ENABLE_PROBE" && ! on "$INSTALL_MCAST"; then
+    echo "ENABLE_PROBE needs INSTALL_MCAST=yes (the probe is the mcast binary)" >&2
+    exit 1
+fi
+if on "$ENABLE_PROBE" && [ -z "$PROBE_TOKEN" ]; then
+    echo "ENABLE_PROBE=yes needs PROBE_TOKEN: the server's probe token (MCAST_PROBE_TOKEN there)" >&2
+    exit 1
+fi
 if ! grep -qi 'raspberry pi' /proc/device-tree/model 2>/dev/null; then
     echo "warning: this doesn't look like a Raspberry Pi; carrying on anyway" >&2
 fi
@@ -143,35 +160,97 @@ install_mcast() {
         useradd --system --home-dir /var/lib/mcast --no-create-home --shell /usr/sbin/nologin mcast
     fi
     usermod -aG audio mcast
-
     install -d -m 0750 -o root -g mcast /etc/mcast
-    local env=/etc/mcast/mcast.env
-    # Keep a token from an earlier run unless pi.conf sets one.
-    if [ -z "$MCAST_TOKEN" ] && [ -f "$env" ]; then
+}
+
+# Print one variable from an env file an earlier run wrote (nothing if none).
+saved() {
+    [ -f "$1" ] || return 0
+    (
         # shellcheck source=/dev/null
-        MCAST_TOKEN=$(. "$env" && echo "${MCAST_TOKEN:-}")
+        . "$1"
+        printf '%s' "${!2:-}"
+    )
+}
+
+# Write stdin to an env file only root and the mcast group can read (it holds tokens).
+write_env() {
+    local dest=$1
+    cat >"$dest.tmp"
+    chown root:mcast "$dest.tmp"
+    chmod 0640 "$dest.tmp"
+    mv "$dest.tmp" "$dest"
+}
+
+setup_serve() {
+    on "$INSTALL_MCAST" || return 0
+    if ! on "$MCAST_SERVE"; then
+        if [ -f /etc/systemd/system/mcast.service ]; then
+            step "mcast serve: off"
+            systemctl disable --now mcast.service || true
+        fi
+        return 0
     fi
+    step "mcast serve"
+    local env=/etc/mcast/mcast.env
+    # Keep tokens from an earlier run unless pi.conf sets them.
+    [ -n "$MCAST_TOKEN" ] || MCAST_TOKEN=$(saved "$env" MCAST_TOKEN)
     if [ -z "$MCAST_TOKEN" ]; then
         MCAST_TOKEN=$(head -c 18 /dev/urandom | base64 | tr '+/' '-_')
         note "mcast token (also in $env): $MCAST_TOKEN"
     fi
-    umask 027
-    cat >"$env" <<EOF
+    [ -n "$MCAST_PROBE_TOKEN" ] || MCAST_PROBE_TOKEN=$(saved "$env" MCAST_PROBE_TOKEN)
+    if [ -z "$MCAST_PROBE_TOKEN" ]; then
+        MCAST_PROBE_TOKEN=$(head -c 18 /dev/urandom | base64 | tr '+/' '-_')
+        note "probe token, for PROBE_TOKEN on probes (also in $env): $MCAST_PROBE_TOKEN"
+    fi
+    write_env "$env" <<EOF
 # Read by mcast.service. Written by install.sh; edit and "systemctl restart mcast".
 MCAST_LISTEN=$MCAST_LISTEN
 MCAST_TOKEN=$MCAST_TOKEN
+MCAST_PROBE_TOKEN=$MCAST_PROBE_TOKEN
 MCAST_IFACE=$MCAST_IFACE
 MCAST_EXTRA_ARGS="$MCAST_EXTRA_ARGS"
 EOF
-    umask 022
-    chown root:mcast "$env"
-    chmod 0640 "$env"
 
     render mcast.service /etc/systemd/system/mcast.service 0644
     systemctl daemon-reload
     systemctl enable mcast.service
     systemctl restart mcast.service
     note "mcast web GUI: http://$(hostname).local:$MCAST_PORT/   (sudo mcast update to upgrade)"
+}
+
+setup_probe() {
+    on "$INSTALL_MCAST" || return 0
+    if ! on "$ENABLE_PROBE"; then
+        if [ -f /etc/systemd/system/mcast-probe.service ]; then
+            step "mcast probe: off"
+            systemctl disable --now mcast-probe.service || true
+        fi
+        return 0
+    fi
+    step "mcast probe"
+    write_env /etc/mcast/probe.env <<EOF
+# Read by mcast-probe.service. Written by install.sh; edit and "systemctl restart mcast-probe".
+# Empty MCAST_URL: find the server by its multicast beacon. Empty MCAST_PROBE_ID: the hostname.
+MCAST_URL=$PROBE_SERVER
+MCAST_TOKEN=$PROBE_TOKEN
+MCAST_PROBE_ID=$PROBE_ID
+MCAST_SERVER_NAME=$PROBE_SERVER_NAME
+PROBE_IFACE=$MCAST_IFACE
+PROBE_UNICAST_PORT=$PROBE_UNICAST_PORT
+PROBE_EXTRA_ARGS="$PROBE_EXTRA_ARGS"
+EOF
+    render mcast-probe.service /etc/systemd/system/mcast-probe.service 0644
+    systemctl daemon-reload
+    systemctl enable mcast-probe.service
+    systemctl restart mcast-probe.service
+    local id=${PROBE_ID:-$(hostname)}
+    if [ -n "$PROBE_SERVER" ]; then
+        note "probe '$id' reports to $PROBE_SERVER   (journalctl -u mcast-probe -f)"
+    else
+        note "probe '$id' finds its server by multicast beacon   (journalctl -u mcast-probe -f)"
+    fi
 }
 
 setup_lldp() {
@@ -236,7 +315,7 @@ setup_tailscale() {
 setup_avahi() {
     on "$ENABLE_AVAHI" || return 0
     step "mDNS"
-    if on "$INSTALL_MCAST"; then
+    if on "$INSTALL_MCAST" && on "$MCAST_SERVE"; then
         render mcast-http.service /etc/avahi/services/mcast.service 0644 PORT "$MCAST_PORT"
     fi
     if [ -f /usr/share/doc/avahi-daemon/examples/ssh.service ]; then
@@ -256,10 +335,14 @@ setup_sysctl() {
 setup_firewall() {
     on "$ENABLE_FIREWALL" || return 0
     step "Firewall"
-    local ports=22
-    on "$INSTALL_MCAST" && ports+=", $MCAST_PORT"
+    local ports=22 udp=""
+    on "$INSTALL_MCAST" && on "$MCAST_SERVE" && ports+=", $MCAST_PORT"
     on "$ENABLE_COCKPIT" && ports+=", 9090"
-    render nftables.conf /etc/nftables.conf 0755 TCP_PORTS "$ports"
+    # A probe receives the server's unicast copies of its streams here.
+    if on "$INSTALL_MCAST" && on "$ENABLE_PROBE"; then
+        udp="udp dport $PROBE_UNICAST_PORT accept"
+    fi
+    render nftables.conf /etc/nftables.conf 0755 TCP_PORTS "$ports" PROBE_UDP "$udp"
     nft -c -f /etc/nftables.conf
     systemctl enable nftables.service
     systemctl restart nftables.service
@@ -303,6 +386,8 @@ set_hostname
 install_base
 setup_sysctl
 install_mcast
+setup_serve
+setup_probe
 setup_lldp
 setup_ssh
 setup_cockpit

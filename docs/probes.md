@@ -54,6 +54,9 @@ idf-3 [3rd floor IDF]  online  host pi-idf3  v0.1.1
   Lobby vs. its unicast copy: multicast 2488 pkts, 12 lost (0.48%) | unicast 2500 pkts, 0 lost (0.00%) -> LOSS ON MULTICAST ONLY: ...
 ```
 
+On a Raspberry Pi, `pi/install.sh` sets this up as a systemd service: see
+[pi/README.md](../pi/README.md#probes).
+
 ## What each side does
 
 ### Server (`mcast serve`)
@@ -183,6 +186,8 @@ Done (this change):
 - [x] Discovery: the server's multicast beacon, `/probe-hello` token check,
       `mcast probe discover`
 - [x] TUI Probes tab
+- [x] Raspberry Pi packaging: `mcast-probe.service`, and `pi/install.sh`
+      with `ENABLE_PROBE=yes` (see [pi/README.md](../pi/README.md#probes))
 
 Next:
 
@@ -199,6 +204,4 @@ Next:
       ping`-style round-trip tests
 - [ ] Measure one-way delay of both paths (RTCP SR to the probe, or
       server timestamps) and clock offset from `server_time_ms`
-- [ ] Packaging for Pis: a systemd unit (`mcast probe run` with
-      `EnvironmentFile=`), and a one-line installer
 - [ ] Mutual TLS or per-probe tokens if probes go beyond a trusted LAN

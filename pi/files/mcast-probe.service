@@ -1,0 +1,40 @@
+# Installed by mcast-tools/pi/install.sh as /etc/systemd/system/mcast-probe.service.
+# Settings are in /etc/mcast/probe.env; after editing it: systemctl restart mcast-probe
+[Unit]
+Description=mcast probe: watch multicast here and report to an mcast server
+Documentation=https://github.com/nathanbent/mcast-tools/blob/main/docs/probes.md
+Wants=network-online.target
+After=network-online.target mcast.service
+
+[Service]
+Type=simple
+User=mcast
+Group=mcast
+# MCAST_URL (empty: find the server by its multicast beacon), MCAST_TOKEN,
+# MCAST_PROBE_ID (empty: the hostname), MCAST_SERVER_NAME, and the variables below.
+EnvironmentFile=/etc/mcast/probe.env
+Environment=HOME=/var/lib/mcast
+ExecStart=/usr/local/bin/mcast probe run --iface ${PROBE_IFACE} --unicast-port ${PROBE_UNICAST_PORT} $PROBE_EXTRA_ARGS
+# A probe should always be running: it keeps reports queued while the server
+# is away, and after a crash or a bad config it should come straight back.
+Restart=always
+RestartSec=5
+# Measuring jitter needs packets timestamped promptly.
+Nice=-5
+
+StateDirectory=mcast
+WorkingDirectory=/var/lib/mcast
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

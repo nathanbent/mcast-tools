@@ -61,21 +61,23 @@ pub enum ProbeCommand {
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// The `mcast serve` server to report to [default: find one by its multicast beacon]
+    /// The `mcast serve` server to report to [default: find one by its
+    /// multicast beacon]. Empty also means find one
     #[arg(short, long, env = "MCAST_URL")]
     server: Option<String>,
     /// Its probe token (or its admin token). When finding a server by beacon,
     /// only one that knows this token is used
     #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
     token: Option<String>,
-    /// Group servers announce themselves on
-    #[arg(long, default_value = mcast_probe::DEFAULT_BEACON_GROUP, value_name = "ADDR:PORT", conflicts_with = "server")]
+    /// Group servers announce themselves on (ignored with --server)
+    #[arg(long, default_value = mcast_probe::DEFAULT_BEACON_GROUP, value_name = "ADDR:PORT")]
     beacon_group: SocketAddr,
     /// Only use a discovered server whose name (its hostname) contains this
-    #[arg(long, value_name = "NAME", conflicts_with = "server")]
+    /// (ignored with --server)
+    #[arg(long, value_name = "NAME", env = "MCAST_SERVER_NAME")]
     server_name: Option<String>,
     /// This probe's name on the server [default: the hostname]
-    #[arg(long)]
+    #[arg(long, env = "MCAST_PROBE_ID")]
     id: Option<String>,
     /// Interface to join groups on: IPv4 address or interface index
     #[arg(short, long, default_value = "any")]
@@ -159,7 +161,9 @@ pub struct ConfigArgs {
 pub fn run(c: ProbeCommand, stop: &AtomicBool) -> Result<()> {
     match c {
         ProbeCommand::Run(a) => {
-            let id = a.id.unwrap_or_else(|| {
+            // Empty values (from an env file left blank) mean "the default".
+            let nonempty = |v: Option<String>| v.filter(|v| !v.trim().is_empty());
+            let id = nonempty(a.id).unwrap_or_else(|| {
                 // Hostnames can have characters IDs can't.
                 mcast_control::request::hostname()
                     .chars()
@@ -181,11 +185,11 @@ pub fn run(c: ProbeCommand, stop: &AtomicBool) -> Result<()> {
             } else {
                 a.sap.sap_groups
             };
-            let server = match a.server {
+            let server = match nonempty(a.server) {
                 Some(u) => mcast_probe::Server::Url(u),
                 None => mcast_probe::Server::Discover {
                     group: a.beacon_group,
-                    name: a.server_name,
+                    name: nonempty(a.server_name),
                 },
             };
             mcast_probe::run(
