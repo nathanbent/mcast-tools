@@ -75,6 +75,7 @@ impl PageForm {
                     ("file", "Audio file"),
                     ("capture", "Live input"),
                     ("tone", "Test tone"),
+                    ("pad", "Chord pad"),
                 ]),
                 "file",
             ),
@@ -243,6 +244,7 @@ impl PageForm {
                 let d = self.get("device");
                 json!({"type": "capture", "device": if d.is_empty() { Value::Null } else { d.into() }})
             }
+            "pad" => json!({"type": "pad"}),
             _ => json!({"type": "tone", "frequency": self.number("tone")?.unwrap_or(440.0)}),
         };
         let name = self.get("name").trim();
@@ -286,7 +288,7 @@ mod tests {
         // Source -> tone: the file fields go and frequency appears.
         f.move_by(2);
         assert_eq!(f.current().key, "source");
-        f.cycle(-1);
+        f.cycle(-2);
         assert_eq!(f.get("source"), "tone");
         f.move_by(1);
         assert_eq!(f.current().key, "tone");
@@ -301,6 +303,22 @@ mod tests {
         assert_eq!(f.current().key, "duration_s");
         f.type_char('5');
         assert_eq!(f.request().unwrap()["duration_s"], 5.0);
+    }
+
+    #[test]
+    fn pad_needs_no_other_fields() {
+        let mut f = PageForm::new();
+        f.move_by(2);
+        f.cycle(-1);
+        assert_eq!(f.get("source"), "pad");
+        let keys: Vec<&str> = f.visible().iter().map(|&i| f.fields[i].key).collect();
+        assert!(
+            !keys
+                .iter()
+                .any(|k| ["file", "loop", "device", "tone"].contains(k)),
+            "{keys:?}"
+        );
+        assert_eq!(f.request().unwrap()["source"], json!({"type": "pad"}));
     }
 
     #[test]

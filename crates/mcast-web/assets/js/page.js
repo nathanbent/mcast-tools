@@ -53,6 +53,7 @@ function request(v) {
   const source =
     v.source === "file" ? { type: "file", path: v.file, loop: v.loop }
     : v.source === "capture" ? { type: "capture", device: v.device || null }
+    : v.source === "pad" ? { type: "pad" }
     : { type: "tone", frequency: v.tone };
   return {
     group: v.group, encoding: v.encoding, mode: v.mode, source,
@@ -106,6 +107,8 @@ function sourceFields() {
       ];
     case "capture":
       return field("Input", select("device", [["", "Default input"], ...inputs]));
+    case "pad":
+      return h("p", { class: "muted" }, "A soft, slowly changing chord: something pleasant to test speakers and levels with.");
     default:
       return field("Frequency (Hz)", bind("tone", { type: "number", min: 20, max: 20000 }));
   }
@@ -131,7 +134,7 @@ function render() {
       field("Name", bind("name", { placeholder: "announced via SAP" }))),
     h("datalist", { id: "known-groups" }, groupOptions()),
     h("fieldset", {}, h("legend", {}, "Source"),
-      h("div", { class: "radios" }, radio("file", "Audio file"), radio("capture", "Live input"), radio("tone", "Test tone")),
+      h("div", { class: "radios" }, radio("file", "Audio file"), radio("capture", "Live input"), radio("tone", "Test tone"), radio("pad", "Chord pad")),
       sourceFields()),
     h("div", { class: "row" },
       field("Codec", select("encoding", CODECS)),

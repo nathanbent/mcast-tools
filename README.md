@@ -430,7 +430,7 @@ A page to a group that one of its jobs is already sending to is refused with
 Listening on anything but loopback requires a token. See
 [docs/api.md](docs/api.md) for every route and field.
 
-The GUI pages from uploaded files, live input or a test tone, shows what's
+The GUI pages from uploaded files, live input, a test tone or the chord pad, shows what's
 playing with a stop button, lists announced streams with a Listen button, and
 shows the monitor with level meters. It asks for the token if one is set.
 `--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
