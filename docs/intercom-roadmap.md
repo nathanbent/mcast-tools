@@ -195,7 +195,11 @@ Admins drag the sections of a tab into the order they want. The layout is kept i
 - **Colors** come from a fixed palette with separate light and dark shades. High and emergency keep their amber or red edge whatever the color.
 - **Per screen:** categories fold away, remembered on that screen.
 
-**Still to do:** per-screen views (an operator token limited to some categories) and a kiosk mode.
+**Per-screen views and kiosk mode, built:**
+- **Category-limited tokens:** an operator token can be limited to categories, and the server enforces it on play, stop, runs, push to talk and the trigger API. An announcement in no category isn't in any.
+- **Kiosk mode:** `?kiosk=1` shows only the Panel, with a full-screen button, and keeps the screen awake.
+- **URL narrowing:** `categories=`, `tag=`, `size=` and `mode=` narrow or size one screen's view. That's a view only, not a lock.
+- **Link builder:** Settings → Panel builds the link.
 
 The plan:
 

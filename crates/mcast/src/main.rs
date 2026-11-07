@@ -597,6 +597,10 @@ enum TokenCommand {
         /// Trigger tokens: an announcement (id or name) it may play; repeat for more. None: any
         #[arg(long = "announcement", value_name = "ANNOUNCEMENT")]
         announcements: Vec<String>,
+        /// Operator tokens: a category (id or name) whose announcements it sees and
+        /// plays; repeat for more. None: all
+        #[arg(long = "category", value_name = "CATEGORY")]
+        categories: Vec<String>,
         /// The last day it works (YYYY-MM-DD, in the panel's time zone)
         #[arg(long, value_name = "DATE")]
         expires: Option<String>,
@@ -670,6 +674,7 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
                 name,
                 role,
                 announcements,
+                categories,
                 expires,
             } => mcast_intercom::cli::token_add(
                 &path,
@@ -678,6 +683,7 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
                     name,
                     role,
                     announcements,
+                    categories,
                     expires,
                 },
             ),

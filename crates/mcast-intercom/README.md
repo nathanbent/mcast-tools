@@ -62,6 +62,20 @@ server, but repeats still to come are dropped.
 On a Raspberry Pi, `ENABLE_INTERCOM=yes` in `pi/pi.conf` sets it up as a
 service next to `mcast serve` ([pi/README.md](../../pi/README.md#the-intercom-panel)).
 
+### Screens and kiosks
+
+Open the panel with `?kiosk=1` on a wall tablet: only the Panel shows (no
+tabs), with a full-screen button, and the screen is kept awake. The URL can
+also narrow and size what that screen shows: `categories=bells,other`
+(`other` for announcements in none), `tag=Building A`, `size=large`,
+`mode=list`. Settings → Panel builds the link. Narrowing by URL is only a
+view: to make sure a screen can only play some announcements, sign it in with
+an operator token limited to those categories.
+
+```
+https://pager.local:8651/?kiosk=1&categories=reception&size=large#panel
+```
+
 ### Access tokens
 
 Give each person, screen or system its own token, with only what it needs.
@@ -70,7 +84,7 @@ Each token has one role:
 | Role | For | Can |
 |---|---|---|
 | `admin` | Whoever sets the panel up | Everything, tokens included |
-| `operator` | A wall tablet, a reception desk | The Panel, History and Sounds tabs: play, stop, push to talk, listen. Changes nothing |
+| `operator` | A wall tablet, a reception desk | The Panel, History and Sounds tabs: play, stop, push to talk, listen. Changes nothing. Optionally limited to some **categories**: it then sees, plays and stops only announcements in them |
 | `trigger` | Other systems (a doorbell, a PBX, Home Assistant) | Play announcements through the API, and stop them. Optionally limited to some announcements |
 | `media` | A recording or upload script | Sound files: list, upload, download, delete, folders, move, hide |
 
@@ -78,7 +92,7 @@ Make them in **Settings → Access tokens**, or from the command line:
 
 ```bash
 mcast intercom token add "Front doorbell" --role trigger --announcement doorbell
-mcast intercom token add Reception --role operator --expires 2027-06-30
+mcast intercom token add Reception --role operator --category reception --expires 2027-06-30
 mcast intercom token list
 mcast intercom token revoke "Front doorbell"
 ```
@@ -389,7 +403,7 @@ only their runs.
 
 | Route | |
 |---|---|
-| `GET /health` | `{"ok": true, "version", "name", "role", "announcements"}`: who the token is (`name` is `null` without one) |
+| `GET /health` | `{"ok": true, "version", "name", "role", "announcements", "categories"}`: who the token is (`name` is `null` without one) |
 | `GET /backend` | The mcast server: `{"url", "connected", "error", "since_ms"}` |
 | `GET /config` | The whole config, as in `intercom.json` |
 | `GET`, `POST /zones` | List, or add one (without `id`, one is made from `name`) |
@@ -422,8 +436,8 @@ only their runs.
 | `GET`, `POST /webhooks` | Outbound webhooks (admin): list them (`[{"id", "name", "url", "events", "enabled", "signed", "created_ms", "last_delivery"}]`), or add one (`{"name", "url", "events", "enabled", "sign"}`; returns `{"webhook", "secret"}`, the only time the secret is shown) |
 | `PUT`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` | Change one (`{"name", "url", "events", "enabled"}`), delete it, or send it a `test` event and get how it went: `{"event", "at_ms", "ok", "status", "error", "attempts", "took_ms"}` |
 | `GET /tokens` | Access tokens (admin): `[{"id", "name", "role", "announcements", "created_ms", "expires", "expires_ms", "expired", "last_used_ms", "uses"}]`, never their secrets |
-| `POST /tokens` | `{"name", "role", "announcements", "expires"}` (`announcements`, ids or names, for trigger tokens only; `expires` a date like `2027-06-30`): make one. Returns `{"token", "secret"}` (`201`), the only time the secret is shown |
-| `PUT /tokens/{id}` | `{"name", "announcements", "expires"}`: change those given (`"expires": null` clears it). The role can't change |
+| `POST /tokens` | `{"name", "role", "announcements", "categories", "expires"}` (`announcements`, ids or names, for trigger tokens only; `categories`, ids or names, for operator tokens only; `expires` a date like `2027-06-30`): make one. Returns `{"token", "secret"}` (`201`), the only time the secret is shown |
+| `PUT /tokens/{id}` | `{"name", "announcements", "categories", "expires"}`: change those given (`"expires": null` clears it). The role can't change |
 | `DELETE /tokens/{id}` | Revoke it; returns it |
 
 A run:

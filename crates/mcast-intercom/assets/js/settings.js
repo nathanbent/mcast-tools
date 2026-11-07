@@ -118,11 +118,53 @@ function panelLook() {
         h("div", { class: "checks column" }, details.el, next.el, playing.el, confirmE.el),
         h("div", { class: "buttons" },
           h("button", { type: "submit", class: "primary" }, "Save"),
-          h("button", { type: "button", onclick: draw }, "Undo changes"))));
+          h("button", { type: "button", onclick: draw }, "Undo changes"))),
+      kioskLink());
   };
   draw();
   subscribe(["config"], () => { if (!dirty) draw(); });
   return el;
+}
+
+// A link for one screen: kiosk (only the Panel, kept awake), and what it
+// shows. What it shows isn't a lock: for that, sign the screen in with an
+// operator token limited to categories.
+function kioskLink() {
+  const cats = state.config.categories ?? [];
+  const chosen = new Set();
+  const tags = [...new Set(state.config.announcements.flatMap((a) => a.tags ?? []))].sort();
+  const kiosk = h("input", { type: "checkbox", checked: true });
+  const tag = select([["", "Any"], ...tags.map((t) => [t, t])], "");
+  const size = select([["", "The Panel's"], ...SIZES], "");
+  const mode = select([["", "The Panel's"], ["tiles", "Tiles"], ["list", "List"]], "");
+  const out = h("code", {});
+  const url = () => {
+    const q = new URLSearchParams();
+    if (kiosk.checked) q.set("kiosk", "1");
+    if (chosen.size) q.set("categories", [...chosen].join(","));
+    if (tag.value) q.set("tag", tag.value);
+    if (size.value) q.set("size", size.value);
+    if (mode.value) q.set("mode", mode.value);
+    const qs = q.toString().replace(/%2C/g, ",");
+    return `${location.origin}${location.pathname}${qs ? `?${qs}` : ""}#panel`;
+  };
+  const update = () => { out.textContent = url(); };
+  const box = h("fieldset", { class: "part", oninput: update, onchange: update },
+    h("legend", {}, "A link for one screen"),
+    h("p", { class: "muted small" },
+      "Open this on a wall tablet or kiosk. Kiosk shows only the Panel and keeps the screen awake. Choosing categories or a tag only narrows what that screen shows; to make sure a screen can only play some categories, sign it in with an operator token limited to them (Access tokens)."),
+    h("label", { class: "check" }, kiosk, " Kiosk: only the Panel, no tabs"),
+    cats.length > 0 && h("div", { class: "checks" }, h("span", { class: "muted small" }, "Categories:"),
+      [...cats, { id: "other", name: "Other (none)" }].map((c) => h("label", { class: "check" },
+        h("input", { type: "checkbox", onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); } }), ` ${c.name}`))),
+    h("div", { class: "row" }, field("Tag", tag), field("Button size", size), field("Layout", mode)),
+    h("div", { class: "kiosk-link" }, out,
+      h("button", { type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(url()); toast("Copied", "ok"); } catch { toast("Select the link and copy it", "info"); }
+      } }, "Copy"),
+      h("a", { href: "#", class: "link", onclick: (e) => { e.preventDefault(); window.open(url(), "_blank", "noopener"); } }, "Open")));
+  update();
+  return box;
 }
 
 // The time zone, with a way to change it.

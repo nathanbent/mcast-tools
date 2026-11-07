@@ -384,7 +384,7 @@ pub(super) async fn play(
     Path(id): Path<String>,
 ) -> ApiResult<(StatusCode, Json<Run>)> {
     let cfg = s.load().await?;
-    if !caller.may_play(&id) {
+    if !caller.may_play(&cfg, &id) {
         return Err(caller.cant(&format!("play \"{id}\"")));
     }
     match cfg.announcements.iter().find(|a| a.id == id) {
@@ -414,7 +414,8 @@ pub(super) async fn list_runs(
     Extension(caller): Extension<Caller>,
 ) -> Json<Vec<Run>> {
     let mut runs = s.0.runner.list();
-    runs.retain(|r| caller.may_play(&r.announcement));
+    let cfg = s.load().await.unwrap_or_default();
+    runs.retain(|r| caller.may_play(&cfg, &r.announcement));
     Json(runs)
 }
 
@@ -423,9 +424,9 @@ fn no_run(id: u64) -> ApiError {
 }
 
 /// A run the caller may see and stop.
-fn their_run(s: &AppState, caller: &Caller, id: u64) -> ApiResult<Run> {
+async fn their_run(s: &AppState, caller: &Caller, id: u64) -> ApiResult<Run> {
     let run = s.0.runner.get(id).ok_or_else(|| no_run(id))?;
-    if !caller.may_play(&run.announcement) {
+    if !caller.may_play(&s.load().await?, &run.announcement) {
         return Err(caller.cant(&format!("see or stop runs of \"{}\"", run.name)));
     }
     Ok(run)
@@ -436,7 +437,7 @@ pub(super) async fn get_run(
     Extension(caller): Extension<Caller>,
     Path(id): Path<u64>,
 ) -> ApiResult<Json<Run>> {
-    their_run(&s, &caller, id).map(Json)
+    their_run(&s, &caller, id).await.map(Json)
 }
 
 /// Stop a run; returns once its senders have stopped.
@@ -445,7 +446,7 @@ pub(super) async fn stop_run(
     Extension(caller): Extension<Caller>,
     Path(id): Path<u64>,
 ) -> ApiResult<Json<Run>> {
-    their_run(&s, &caller, id)?;
+    their_run(&s, &caller, id).await?;
     let runner = s.0.runner.clone();
     tokio::task::spawn_blocking(move || runner.stop(id))
         .await?

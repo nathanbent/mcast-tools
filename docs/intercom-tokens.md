@@ -19,6 +19,10 @@ One role per token.
 | `trigger` | Other systems (webhooks, buttons, PBX) | Play announcements and stop the runs they're allowed to; read a run's state |
 | `media` | A recording or upload script | The Sounds tab's operations: list, upload, download, delete, folders, move, hide |
 
+An `operator` token can carry an optional **category list**: it then sees,
+plays and stops only announcements in those categories, for a reception
+tablet, say. (Added with the Panel's categories.)
+
 A `trigger` token can carry an optional **announcement list**. Empty means
 any announcement. Otherwise it may play only those, and stop only runs of
 those.

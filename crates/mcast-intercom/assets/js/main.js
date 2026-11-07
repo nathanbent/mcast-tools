@@ -34,8 +34,25 @@ function showPhonebook() {
     state.phonebook.map((e) => h("option", { value: e.name }, `${e.group}${e.description ? ` · ${e.description}` : ""}`)));
 }
 
+// Kiosk: only the Panel, nothing to wander off to, and the screen kept on.
+function kiosk() {
+  document.body.classList.add("kiosk");
+  let lock = null;
+  const keepAwake = async () => {
+    try { if (document.visibilityState === "visible") lock = await navigator.wakeLock?.request("screen"); } catch {}
+  };
+  keepAwake();
+  document.addEventListener("visibilitychange", keepAwake);
+  const full = $("fullscreen");
+  if (document.documentElement.requestFullscreen) {
+    full.hidden = false;
+    full.onclick = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
+  }
+  void lock;
+}
+
 function tabs() {
-  const allowed = TABS[state.me.role] ?? [];
+  const allowed = (TABS[state.me.role] ?? []).filter((t) => !state.view.kiosk || t === "panel");
   const all = [...document.querySelectorAll("nav.tabs button")];
   for (const b of all) {
     if (!allowed.includes(b.dataset.tab)) {
@@ -77,7 +94,7 @@ async function authenticate() {
   for (;;) {
     try {
       const me = await api("GET", "/health");
-      state.me = { name: me.name ?? null, role: me.role ?? "admin", announcements: me.announcements ?? [] };
+      state.me = { name: me.name ?? null, role: me.role ?? "admin", announcements: me.announcements ?? [], categories: me.categories ?? [] };
       return me;
     } catch (e) {
       if (e.status !== 401) throw e;
@@ -122,6 +139,7 @@ async function start() {
   else $("all-stop").hidden = true;
 
   await refreshAll().catch(() => {});
+  if (state.view.kiosk) kiosk();
   tabs();
   const mounts = {
     panel: () => panel.mount($("panel")),
@@ -133,7 +151,7 @@ async function start() {
     sounds: () => sounds.mount($("sounds")),
     playlists: () => playlists.mount($("playlists")),
   };
-  for (const t of TABS[state.me.role] ?? []) mounts[t]?.();
+  for (const t of TABS[state.me.role] ?? []) if (!state.view.kiosk || t === "panel") mounts[t]?.();
   // "in 5 min" moves on, and once-only times drop off the list.
   if (can.operate()) setInterval(() => refreshUpcoming(), 60000);
   subscribe(["server"], () => { showBackend(); showPhonebook(); });

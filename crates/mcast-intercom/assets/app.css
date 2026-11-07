@@ -503,3 +503,11 @@ button.group-head:focus-visible { outline: 2px solid var(--accent); outline-offs
 button.group-head .count { text-transform: none; letter-spacing: 0; font-weight: 400; }
 select.has-swatch { border-left: 6px solid var(--c); }
 input.icon-input { font-size: 18px; }
+
+/* Kiosk: only the Panel. */
+body.kiosk nav.tabs, body.kiosk #logout, body.kiosk #whoami { display: none; }
+body.kiosk header h1 { font-size: 18px; }
+body.kiosk main { max-width: none; }
+#fullscreen { font-size: 18px; padding: 2px 8px; }
+.kiosk-link { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.kiosk-link code { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }

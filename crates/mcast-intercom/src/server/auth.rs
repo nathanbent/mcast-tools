@@ -33,6 +33,8 @@ pub struct Caller {
     pub role: Role,
     /// A trigger token's announcements; empty for any.
     pub announcements: Vec<String>,
+    /// An operator token's categories; empty for all.
+    pub categories: Vec<String>,
     /// The token came in the URL (`?access_token=`), not a header.
     pub in_url: bool,
 }
@@ -43,6 +45,7 @@ impl Caller {
             name: None,
             role: Role::Admin,
             announcements: Vec::new(),
+            categories: Vec::new(),
             in_url: false,
         }
     }
@@ -52,15 +55,27 @@ impl Caller {
             name: Some(t.name.clone()),
             role: t.role,
             announcements: t.announcements.clone(),
+            categories: t.categories.clone(),
             in_url,
         }
     }
 
-    /// Whether it may play, see and stop runs of announcement `id`.
-    pub fn may_play(&self, id: &str) -> bool {
-        self.role != Role::Trigger
-            || self.announcements.is_empty()
-            || self.announcements.iter().any(|a| a == id)
+    /// Whether it may play, see and stop runs of announcement `id`: a
+    /// trigger token's announcements, an operator token's categories (an
+    /// announcement in none, or gone, isn't in them).
+    pub fn may_play(&self, cfg: &crate::model::Config, id: &str) -> bool {
+        match self.role {
+            Role::Trigger => {
+                self.announcements.is_empty() || self.announcements.iter().any(|a| a == id)
+            }
+            Role::Operator if !self.categories.is_empty() => cfg
+                .announcements
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| a.category.as_ref())
+                .is_some_and(|c| self.categories.contains(c)),
+            _ => true,
+        }
     }
 
     /// What runs it starts record.
@@ -386,6 +401,7 @@ fn view(t: &Token) -> Value {
         o.remove("hash");
         o.insert("expired".into(), t.expired(now_ms()).into());
         o.entry("announcements").or_insert(json!([]));
+        o.entry("categories").or_insert(json!([]));
         o.entry("expires").or_insert(Value::Null);
         o.entry("last_used_ms").or_insert(Value::Null);
     }
@@ -449,6 +465,7 @@ pub(super) async fn create_token(
             .parse()
             .map_err(bad)?,
         announcements: strings(&v, "announcements")?.unwrap_or_default(),
+        categories: strings(&v, "categories")?.unwrap_or_default(),
         expires: string(&v, "expires")?,
     };
     let cfg = s.load().await?;
@@ -477,6 +494,7 @@ pub(super) async fn put_token(
     }
     let name = string(&v, "name")?;
     let announcements = strings(&v, "announcements")?;
+    let categories = strings(&v, "categories")?;
     let expires: Option<Option<String>> = match v.get("expires") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -506,6 +524,7 @@ pub(super) async fn put_token(
                 &id,
                 name.as_deref(),
                 announcements.as_deref(),
+                categories.as_deref(),
                 expires.as_ref().map(|e| e.as_deref()),
                 &cfg,
                 now_ms(),
@@ -544,5 +563,6 @@ pub(super) async fn health(Extension(caller): Extension<Caller>) -> Json<Value> 
         "name": caller.name,
         "role": caller.role,
         "announcements": caller.announcements,
+        "categories": caller.categories,
     }))
 }

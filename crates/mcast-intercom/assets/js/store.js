@@ -6,7 +6,20 @@ import { api } from "./api.js";
 export const state = {
   // Who's signed in, from /health: { name, role, announcements }. No token
   // on an open panel: admin, with no name.
-  me: { name: null, role: "admin", announcements: [] },
+  me: { name: null, role: "admin", announcements: [], categories: [] },
+  // This screen's view, from the URL: ?kiosk (only the Panel, full screen),
+  // categories=a,b and tag=x (what it shows), size= and mode= (how).
+  view: (() => {
+    const q = new URLSearchParams(location.search);
+    const list = (k) => (q.get(k) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+    return {
+      kiosk: q.has("kiosk") && q.get("kiosk") !== "0",
+      categories: list("categories"),
+      tag: q.get("tag") || null,
+      size: ["small", "medium", "large"].includes(q.get("size")) ? q.get("size") : null,
+      mode: ["tiles", "list"].includes(q.get("mode")) ? q.get("mode") : null,
+    };
+  })(),
   config: { zones: [], announcements: [] },
   configError: null,
   runs: new Map(),
@@ -37,6 +50,17 @@ export const TABS = {
   media: ["sounds"],
   trigger: [],
 };
+
+// The announcements this screen shows on the Panel: those the token may
+// play (an operator token can be limited to categories), narrowed by the
+// URL's categories.
+export function panelAnnouncements() {
+  const mine = state.me.categories ?? [];
+  const wanted = state.view.categories;
+  return state.config.announcements.filter((a) =>
+    (!mine.length || mine.includes(a.category))
+    && (!wanted.length || wanted.includes(a.category ?? "other")));
+}
 
 const listeners = [];
 

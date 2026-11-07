@@ -2,14 +2,20 @@
 
 import { api } from "./api.js";
 import { h, replace, toast, saved } from "./dom.js";
-import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow, can } from "./store.js";
+import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow, can, panelAnnouncements } from "./store.js";
 import { ordered, sortableList, saveLayouts, arrangeDialog } from "./layout.js";
 import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
 
 // How the Panel looks (Settings → Panel), with the defaults filled in.
 export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, confirm_emergency: false };
-const look = () => ({ ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) });
+// The URL can set this screen's size and layout.
+const look = () => {
+  const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
+  if (state.view.size) l.size = state.view.size;
+  if (state.view.mode) l.mode = state.view.mode;
+  return l;
+};
 
 const categoryOf = (a) => (state.config.categories ?? []).find((c) => c.id === a.category);
 const colorOf = (a) => a.color ?? categoryOf(a)?.color ?? null;
@@ -87,7 +93,7 @@ function tile(a) {
 }
 
 // The tag the Panel is filtered to, per screen ("" for all).
-let filter = saved.get("panel.tag", "");
+let filter = state.view.tag ?? saved.get("panel.tag", "");
 // Categories folded away on this screen.
 const collapsed = new Set(saved.get("panel.collapsed", []));
 const OTHER = "other"; // announcements in no category
@@ -125,9 +131,12 @@ function arrangePanel() {
 }
 
 function tagBar(anns) {
+  // A screen whose URL picks the tag shows no chips.
+  if (state.view.tag) return null;
+  const arrangeLink = can.edit() && !state.view.kiosk;
   const tags = [...new Map(anns.flatMap((a) => a.tags ?? []).map((t) => [t.toLowerCase(), t])).values()]
     .sort((a, b) => a.localeCompare(b));
-  if (!tags.length && !can.edit()) return null;
+  if (!tags.length && !arrangeLink) return null;
   const chip = (label, value) => h("button", {
     class: `tag${filter.toLowerCase() === value.toLowerCase() ? " on" : ""}`,
     onclick: () => { filter = value; saved.set("panel.tag", value); renderPanel(); },
@@ -135,7 +144,7 @@ function tagBar(anns) {
   return h("div", { class: "tag-bar panel-bar" },
     tags.length > 0 && [chip("All", ""), tags.map((t) => chip(t, t))],
     h("span", { class: "spacer" }),
-    can.edit() && h("button", { class: "link", onclick: arrangePanel }, "Arrange the Panel…"));
+    arrangeLink && h("button", { class: "link", onclick: arrangePanel }, "Arrange the Panel…"));
 }
 
 let renderPanel = () => {};
@@ -146,7 +155,7 @@ export function mount(el) {
       replace(el, h("p", { class: "error" }, `The intercom config has a problem: ${state.configError}`));
       return;
     }
-    const anns = state.config.announcements;
+    const anns = panelAnnouncements();
     // A redraw replaces the buttons: keep the keyboard on the one it was on.
     const focused = document.activeElement?.dataset?.talk;
     const active = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
@@ -171,14 +180,16 @@ export function mount(el) {
               shut && h("span", { class: "count" }, `(${g.anns.length})`)),
               !shut && h("div", { class: `tiles size-${size} mode-${look().mode}` }, g.anns.map(tile)));
           })
-        : h("p", { class: "muted" }, "No announcements yet: add zones, then announcements, from the tabs above."),
+        : h("p", { class: "muted" }, state.config.announcements.length
+          ? "Nothing to show here: this screen or token is limited to categories with no announcements."
+          : "No announcements yet: add zones, then announcements, from the tabs above."),
       look().show_playing && active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
       look().show_playing && active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
     if (focused) el.querySelector(`[data-talk="${CSS.escape(focused)}"]`)?.focus();
   };
   renderPanel = render;
   // A tag that's gone shows everything.
-  if (filter && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";
+  if (filter && !state.view.tag && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";
   subscribe(["config", "runs", "upcoming"], render);
   onTalk((t) => {
     const changed = t?.id !== talkState?.id || t?.phase !== talkState?.phase || t?.latched !== talkState?.latched;

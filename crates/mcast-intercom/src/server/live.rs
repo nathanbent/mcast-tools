@@ -78,6 +78,9 @@ pub(super) async fn live(
             a.name
         )));
     }
+    if !caller.may_play(&cfg, &a.id) {
+        return Err(caller.cant(&format!("talk on \"{}\"", a.name)));
+    }
     let id = a.id.clone();
     let trigger = caller.trigger();
     Ok(ws.on_upgrade(move |socket| talk(s, cfg, id, trigger, socket)))

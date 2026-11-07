@@ -443,6 +443,9 @@ pub fn token_add(config: &Path, tokens: &Path, new: crate::tokens::NewToken) -> 
     if !t.announcements.is_empty() {
         about.push(format!("plays only {}", t.announcements.join(", ")));
     }
+    if !t.categories.is_empty() {
+        about.push(format!("only categories {}", t.categories.join(", ")));
+    }
     if let Some(d) = &t.expires {
         about.push(format!("works until the end of {d}"));
     }
@@ -478,6 +481,19 @@ pub fn token_list(config: &Path, tokens: &Path) -> Result<()> {
                 })
                 .collect();
             about.push(format!("plays only {}", names.join(", ")));
+        }
+        if !t.categories.is_empty() {
+            let names: Vec<&str> = t
+                .categories
+                .iter()
+                .map(|id| {
+                    cfg.categories
+                        .iter()
+                        .find(|c| c.id == *id)
+                        .map_or(id.as_str(), |c| c.name.as_str())
+                })
+                .collect();
+            about.push(format!("only {}", names.join(", ")));
         }
         match &t.expires {
             Some(d) if t.expired(now) => about.push(format!("EXPIRED after {d}")),

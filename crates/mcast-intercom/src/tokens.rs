@@ -72,6 +72,10 @@ pub struct Token {
     /// Trigger tokens: the announcement ids they may play. Empty: any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub announcements: Vec<String>,
+    /// Operator tokens: the categories (ids) whose announcements they see
+    /// and play. Empty: all of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
     /// `sha256:` and the hex SHA-256 of the secret.
     pub hash: String,
     pub created_ms: u64,
@@ -114,6 +118,8 @@ pub struct NewToken {
     pub role: Role,
     /// Announcement ids or names; trigger tokens only.
     pub announcements: Vec<String>,
+    /// Category ids or names; operator tokens only.
+    pub categories: Vec<String>,
     /// The last day it works (`2027-01-31`).
     pub expires: Option<String>,
 }
@@ -148,6 +154,7 @@ impl TokenFile {
     pub fn add(&mut self, new: NewToken, cfg: &Config, now_ms: u64) -> Result<(Token, String)> {
         let name = self.check_name(&new.name, None)?;
         let announcements = announcement_ids(new.role, &new.announcements, cfg)?;
+        let categories = category_ids(new.role, &new.categories, cfg)?;
         let (expires, expires_ms) = expiry(new.expires.as_deref(), cfg, now_ms)?;
         let secret = new_secret()?;
         let id = loop {
@@ -161,6 +168,7 @@ impl TokenFile {
             name,
             role: new.role,
             announcements,
+            categories,
             hash: hash(&secret),
             created_ms: now_ms,
             expires,
@@ -174,11 +182,13 @@ impl TokenFile {
 
     /// Rename a token, or change its announcements or expiry. `None` leaves
     /// that alone; `Some(None)` clears the expiry.
+    #[allow(clippy::too_many_arguments)]
     pub fn change(
         &mut self,
         which: &str,
         name: Option<&str>,
         announcements: Option<&[String]>,
+        categories: Option<&[String]>,
         expires: Option<Option<&str>>,
         cfg: &Config,
         now_ms: u64,
@@ -192,6 +202,7 @@ impl TokenFile {
         let announcements = announcements
             .map(|a| announcement_ids(role, a, cfg))
             .transpose()?;
+        let categories = categories.map(|c| category_ids(role, c, cfg)).transpose()?;
         let expires = expires.map(|e| expiry(e, cfg, now_ms)).transpose()?;
         let t = &mut self.tokens[i];
         if let Some(n) = name {
@@ -199,6 +210,9 @@ impl TokenFile {
         }
         if let Some(a) = announcements {
             t.announcements = a;
+        }
+        if let Some(c) = categories {
+            t.categories = c;
         }
         if let Some((e, ms)) = expires {
             t.expires = e;
@@ -257,6 +271,34 @@ fn announcement_ids(role: Role, given: &[String], cfg: &Config) -> Result<Vec<St
             .with_context(|| format!("no announcement \"{which}\""))?;
         if !ids.contains(&a.id) {
             ids.push(a.id.clone());
+        }
+    }
+    Ok(ids)
+}
+
+/// Resolve category ids or names; only operator tokens have them.
+fn category_ids(role: Role, given: &[String], cfg: &Config) -> Result<Vec<String>> {
+    if given.is_empty() {
+        return Ok(Vec::new());
+    }
+    if role != Role::Operator {
+        bail!("only operator tokens are limited to categories; a {role} token isn't");
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for which in given {
+        let w = which.trim();
+        let c = cfg
+            .categories
+            .iter()
+            .find(|c| c.id == w)
+            .or_else(|| {
+                cfg.categories
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(w))
+            })
+            .with_context(|| format!("no category \"{which}\""))?;
+        if !ids.contains(&c.id) {
+            ids.push(c.id.clone());
         }
     }
     Ok(ids)
@@ -501,6 +543,7 @@ mod tests {
             name: name.into(),
             role,
             announcements: vec![],
+            categories: vec![],
             expires: None,
         }
     }
@@ -559,7 +602,7 @@ mod tests {
         assert!(f.add(gone, &c, end.as_millisecond() as u64).is_err());
 
         let t = f
-            .change("contractor", Some("Builder"), None, Some(None), &c, 1)
+            .change("contractor", Some("Builder"), None, None, Some(None), &c, 1)
             .unwrap();
         assert_eq!((t.name.as_str(), t.expires_ms), ("Builder", None));
         assert!(f.remove("builder").is_ok());

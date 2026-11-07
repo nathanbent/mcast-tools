@@ -1262,6 +1262,7 @@ async fn tokens_changed_on_disk_and_expired_ones() {
         name: name.into(),
         role: crate::tokens::Role::Operator,
         announcements: vec![],
+        categories: vec![],
         expires: None,
     };
     let (_, fresh) = f.add(new("Fresh"), &cfg, 1).unwrap();
@@ -1332,6 +1333,7 @@ async fn listens_on_the_network_with_an_admin_token_from_the_file() {
         name: format!("{role}"),
         role,
         announcements: vec![],
+        categories: vec![],
         expires: None,
     };
     f.add(new(crate::tokens::Role::Operator), &Default::default(), 1)
@@ -2172,4 +2174,96 @@ async fn the_panel_look_colors_icons_and_confirming() {
             .await;
         assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
     }
+}
+
+#[tokio::test]
+async fn operator_tokens_limited_to_categories() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    p.set_up_two(admin).await;
+    for name in ["Reception", "Yard"] {
+        let (s, _) = p
+            .call_with(
+                Method::POST,
+                "/categories",
+                Some(json!({"name": name})),
+                admin,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+    }
+    for (id, cat) in [("bell", "reception"), ("gate", "yard")] {
+        let (_, mut a) = p
+            .call_with(Method::GET, &format!("/announcements/{id}"), None, admin)
+            .await;
+        a["category"] = json!(cat);
+        let (s, v) = p
+            .call_with(Method::PUT, &format!("/announcements/{id}"), Some(a), admin)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    let tablet = p
+        .token(
+            admin,
+            json!({"name": "Front desk", "role": "operator", "categories": ["Reception"]}),
+        )
+        .await;
+    let t = Some(tablet.as_str());
+    let (_, me) = p.call_with(Method::GET, "/health", None, t).await;
+    assert_eq!(me["categories"], json!(["reception"]));
+
+    let (s, run) = p
+        .call_with(Method::POST, "/announcements/bell/play", None, t)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    let (s, _) = p
+        .call_with(Method::POST, "/announcements/gate/play", None, t)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "another category");
+    let (s, _) = p.call_with(Method::POST, "/trigger/gate", None, t).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Talk (live, in no category) isn't in its categories either.
+    let (s, _) = p
+        .call_with(Method::POST, "/announcements/talk/play", None, t)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // It sees and stops only its runs.
+    let (_, gate) = p
+        .call_with(Method::POST, "/announcements/gate/play", None, admin)
+        .await;
+    let (_, runs) = p.call_with(Method::GET, "/runs", None, t).await;
+    assert!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["announcement"] == "bell"),
+        "{runs}"
+    );
+    let (s, _) = p
+        .call_with(Method::DELETE, &format!("/runs/{}", gate["id"]), None, t)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, stopped) = p.call_with(Method::POST, "/stop-all", None, t).await;
+    assert_eq!(stopped.as_array().unwrap().len(), 1, "{stopped}");
+
+    // Only operator tokens have categories, and they must exist.
+    let (s, _) = p
+        .call_with(
+            Method::POST,
+            "/tokens",
+            Some(json!({"name": "X", "role": "trigger", "categories": ["yard"]})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = p
+        .call_with(
+            Method::POST,
+            "/tokens",
+            Some(json!({"name": "Y", "role": "operator", "categories": ["nope"]})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }

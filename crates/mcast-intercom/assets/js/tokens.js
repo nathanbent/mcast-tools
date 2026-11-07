@@ -56,7 +56,16 @@ function edit(t) {
     h("legend", {}, "Announcements it may play"),
     h("p", { class: "muted small" }, "None ticked: any announcement."),
     state.config.announcements.length ? anns : h("p", { class: "muted" }, "No announcements yet."));
-  const showAnns = () => { annField.hidden = role.value !== "trigger"; };
+  const cats = new Set(t?.categories ?? []);
+  const catField = h("fieldset", { class: "part" },
+    h("legend", {}, "Categories it shows and plays"),
+    h("p", { class: "muted small" }, "None ticked: all of them. Ticked: only announcements in those categories, on any screen it's used on (a reception tablet, say)."),
+    (state.config.categories ?? []).length
+      ? h("div", { class: "checks" }, state.config.categories.map((c) => h("label", { class: "check" },
+          h("input", { type: "checkbox", checked: cats.has(c.id), onchange: (e) => { if (e.target.checked) cats.add(c.id); else cats.delete(c.id); } }),
+          ` ${c.name}`)))
+      : h("p", { class: "muted" }, "No categories yet (Announcements tab)."));
+  const showAnns = () => { annField.hidden = role.value !== "trigger"; catField.hidden = role.value !== "operator"; };
   role.onchange = showAnns;
   showAnns();
   replace(d, h("form", {
@@ -65,6 +74,7 @@ function edit(t) {
       const body = {
         name: name.value.trim(),
         announcements: role.value === "trigger" ? [...chosen] : [],
+        categories: role.value === "operator" ? [...cats] : [],
         expires: expires.value || null,
       };
       try {
@@ -87,6 +97,7 @@ function edit(t) {
     field("Name", name, "What or who it's for; shown in the history"),
     field("Role", role, t ? "A token's role can't change: make a new token instead" : null),
     annField,
+    catField,
     field("Last day it works", expires, "Optional; it stops at the end of that day in the panel's time zone"),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, t ? "Save" : "Make token"),
@@ -139,8 +150,11 @@ async function revoke(t) {
 function render() {
   if (!el) return;
   const used = (t) => (t.last_used_ms ? `${ago(t.last_used_ms)} · ${t.uses} use${t.uses === 1 ? "" : "s"}` : "never");
-  const limits = (t) => t.role !== "trigger" ? h("span", { class: "muted" }, "—")
-    : t.announcements.length ? t.announcements.map(announcementName).join(", ") : "any announcement";
+  const catName = (id) => (state.config.categories ?? []).find((c) => c.id === id)?.name ?? id;
+  const limits = (t) => t.role === "trigger"
+    ? (t.announcements.length ? t.announcements.map(announcementName).join(", ") : "any announcement")
+    : t.role === "operator" && t.categories?.length ? `categories: ${t.categories.map(catName).join(", ")}`
+    : h("span", { class: "muted" }, "—");
   replace(el,
     h("p", { class: "muted" },
       "Give each person, screen or system its own token, so it gets only what it needs and can be revoked on its own. The startup token (",

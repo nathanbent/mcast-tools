@@ -117,7 +117,7 @@ fn find<'a>(
             format!("no announcement \"{which}\""),
         )
     })?;
-    if !caller.may_play(&a.id) {
+    if !caller.may_play(cfg, &a.id) {
         return Err(caller.cant(&format!("play \"{}\"", a.name)));
     }
     Ok(a)
@@ -206,11 +206,12 @@ async fn stop_where(
     caller: &Caller,
     pick: impl Fn(&Run) -> bool,
 ) -> ApiResult<Json<Vec<Run>>> {
+    let cfg = s.load().await?;
     let ids: Vec<u64> =
         s.0.runner
             .list()
             .into_iter()
-            .filter(|r| !r.state.is_over() && caller.may_play(&r.announcement) && pick(r))
+            .filter(|r| !r.state.is_over() && caller.may_play(&cfg, &r.announcement) && pick(r))
             .map(|r| r.id)
             .collect();
     let runner = s.0.runner.clone();
