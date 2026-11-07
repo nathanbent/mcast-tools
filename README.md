@@ -245,7 +245,7 @@ the options). It needs only bash and ffmpeg (with libopus for Opus):
 ```bash
 scripts/mcast-play.sh page.wav -p -C default -L 1000 -E 1000      # G.711u to 239.192.2.1:10000
 scripts/mcast-play.sh page.wav -p -C default -o preview.wav       # render instead of sending
-scripts/mcast-play.sh pad -l                                       # test pad (same as --tone pad), looped
+scripts/mcast-play.sh pad -l                                      # test pad (same as --tone pad), looped
 scripts/mcast-play.sh -h                                          # all options
 ```
 
