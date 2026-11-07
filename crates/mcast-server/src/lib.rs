@@ -8,6 +8,7 @@
 mod events;
 mod files;
 mod media;
+mod phonebook;
 mod probes;
 mod routes;
 mod text;
@@ -16,6 +17,7 @@ mod webhook;
 use events::events;
 use files::{start_file_receiver, start_file_sender};
 use media::{delete_media, download_media, list_media, upload_media};
+use phonebook::{delete_phonebook, list_phonebook, put_phonebook};
 use probes::*;
 use routes::*;
 use text::{send_text, start_text, text_history};
@@ -55,6 +57,8 @@ pub struct ServerConfig {
     pub monitor: Option<Vec<SocketAddr>>,
     /// Largest upload accepted, in bytes.
     pub max_upload: u64,
+    /// The phonebook file (named groups), shared with the CLI.
+    pub phonebook: PathBuf,
     /// A second token that only lets probes check in (so a token copied
     /// onto many Pis can't be used to page). Probes may use `token` too.
     pub probe_token: Option<String>,
@@ -85,6 +89,9 @@ struct Inner {
     probe_token: Option<String>,
     media_dir: PathBuf,
     max_upload: u64,
+    phonebook: PathBuf,
+    /// Held while changing the phonebook file.
+    phonebook_lock: tokio::sync::Mutex<()>,
     closing: watch::Receiver<bool>,
 }
 
@@ -123,7 +130,7 @@ impl AppState {
             Some(groups) => Some(
                 Watch::start(
                     MonitorConfig {
-                        targets: groups.iter().map(|&g| Target::new(g)).collect(),
+                        targets: named_targets(groups, &cfg.phonebook),
                         sap: Some(cfg.sap_groups.clone()),
                         interface: cfg.interface,
                         default_spec: None,
@@ -147,6 +154,8 @@ impl AppState {
             probe_token: cfg.probe_token.clone().filter(|t| !t.is_empty()),
             media_dir,
             max_upload: cfg.max_upload,
+            phonebook: cfg.phonebook.clone(),
+            phonebook_lock: tokio::sync::Mutex::new(()),
             closing,
         })))
     }
@@ -155,6 +164,22 @@ impl AppState {
     pub fn shutdown(&self) {
         self.0.jobs.shutdown();
     }
+}
+
+/// Monitor targets for `groups`, named from the phonebook where they're in it.
+fn named_targets(groups: &[SocketAddr], phonebook: &std::path::Path) -> Vec<Target> {
+    let book = mcast_control::Phonebook::load_from(phonebook).ok();
+    groups
+        .iter()
+        .map(|&g| {
+            let mut t = Target::new(g);
+            t.name = book
+                .as_ref()
+                .and_then(|b| b.name_of(g))
+                .map(|e| e.name.clone());
+            t
+        })
+        .collect()
 }
 
 /// Serve the API, plus `extra` routes outside `/api/v1` (such as a web
@@ -247,6 +272,11 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs/{id}/text", get(text_history).post(send_text))
         .route("/file-senders", post(start_file_sender))
         .route("/file-receivers", post(start_file_receiver))
+        .route("/phonebook", get(list_phonebook))
+        .route(
+            "/phonebook/{name}",
+            axum::routing::put(put_phonebook).delete(delete_phonebook),
+        )
         .route("/events", get(events))
         .route("/probe-hello", get(probe_hello))
         .route("/alerts", get(list_alerts))

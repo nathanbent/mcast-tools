@@ -68,6 +68,9 @@ Errors are JSON: `{"error": "message"}`.
 | GET | `/media/{name}` | Download a file. Pictures and audio come with their type; anything else downloads as `application/octet-stream`, so nothing received can run in a browser |
 | PUT | `/media/{name}` | Upload a file (raw body). Replaces any file of that name |
 | DELETE | `/media/{name}` | Delete a file |
+| GET | `/phonebook` | Saved groups, by name: `[{"name", "group", "description"}]` |
+| PUT | `/phonebook/{name}` | `{"group": "ADDR:PORT", "description": "...", "name": "new name"}`: add or replace an entry (`name` renames it; `description` and `name` are optional). `201` when new, else `200`, with the entry |
+| DELETE | `/phonebook/{name}` | Remove an entry; returns it |
 | GET | `/events` | Server-sent events (below) |
 | GET | `/probes` | Probes (below) |
 | GET | `/probes/{id}` | One probe |
@@ -80,6 +83,13 @@ Errors are JSON: `{"error": "message"}`.
 | GET, PUT | `/probe-defaults` | The configuration of probes without their own |
 | GET | `/alerts` | `{"active": [ALERT...], "recent": [ALERT...]}`: alerts about probes, active ones oldest first, then the last 200 resolved, newest first (below) |
 | GET, PUT | `/alert-rules` | When alerts are raised (below). `PUT` returns the rules saved; turning a kind off resolves its active alerts |
+
+In every request below, `group` can be a phonebook name in place of an
+address (`"group": "zone-1"`); names match without regard to case. The job
+shows the address. The phonebook is the same file `mcast book` edits
+(`~/.config/mcast/phonebook.conf`, or `$MCAST_PHONEBOOK`), read on each
+request, so changes from the command line apply at once. Names are letters,
+digits, spaces, `-`, `_` and `.`, up to 64 characters; descriptions are one line.
 
 `POST /senders` returns once the sender is ready: files are decoded and
 loudness-measured first, so a bad file fails the request instead of the job.
@@ -413,6 +423,7 @@ its data is JSON with that `type` too:
 | `alert_raised`, `alert_resolved` | `{"alert": ALERT}` |
 | `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one |
 | `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
+| `phonebook_changed` | `{}`: the phonebook was changed through the API; fetch it again |
 | `lagged` | `{"missed": N}`: the client fell behind; refetch the lists |
 
 Fetch the lists first, then apply events. For example:

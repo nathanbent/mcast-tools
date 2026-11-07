@@ -1,5 +1,6 @@
 //! Drawing. One module per tab, plus the overlays (forms, prompts, help).
 
+mod book;
 mod form;
 mod jobs;
 mod media;
@@ -31,6 +32,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Streams => streams::draw(f, app, inner),
         Tab::Monitor => monitor::draw(f, app, inner),
         Tab::Media => media::draw(f, app, inner),
+        Tab::Book => book::draw(f, app, inner),
         Tab::Probes => probes::draw(f, app, inner),
     }
     draw_footer(f, app, footer);
@@ -76,6 +78,13 @@ pub fn draw(f: &mut Frame, app: &App) {
                 "Forget probe \"{id}\"? It comes back with the defaults if it checks in again. (y/n)"
             ))],
         ),
+        Mode::ConfirmRemove(name) => prompt(
+            f,
+            "Remove",
+            vec![Line::from(format!(
+                "Remove \"{name}\" from the phonebook? (y/n)"
+            ))],
+        ),
         Mode::Help => help(f),
         // Typed on the Text tab itself.
         Mode::Normal | Mode::Compose(_) => {}
@@ -88,24 +97,49 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         Ok(()) => (Span::raw("● ").fg(Color::Green), "live".to_string()),
         Err(why) => (Span::raw("● ").fg(Color::Red), why.clone()),
     };
-    let conn = Line::from(vec![
-        dot,
-        Span::raw(text),
+    // Active alerts are counted beside the Probes tab's name.
+    let alerts = app.alerts.len();
+    let alert_tag = |t: Tab| (t == Tab::Probes && alerts > 0).then(|| format!(" {alerts}"));
+    let titles: Vec<String> = Tab::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| {
+            format!(
+                "{} {}{}",
+                i + 1,
+                t.title(),
+                alert_tag(t).unwrap_or_default()
+            )
+        })
+        .collect();
+    // Tabs are separated by " │ " and padded by a space each side.
+    let tabs_width = titles.iter().map(|t| t.chars().count() + 3).sum::<usize>() as u16;
+    let mut conn = Line::from(vec![
+        dot.clone(),
+        Span::raw(text.clone()),
         Span::raw(format!("  {} ", app.client.base())).dim(),
     ]);
+    // Leave the server's address out before cutting the tabs short.
+    if 7 + tabs_width + conn.width() as u16 > top.width {
+        conn = Line::from(vec![dot, Span::raw(format!("{text} "))]);
+    }
+    // Then the title (an 80-column terminal fits the tabs and status).
+    let title = if 7 + tabs_width + conn.width() as u16 > top.width {
+        0
+    } else {
+        7
+    };
     let [name, tabs_area, conn_area] = Layout::horizontal([
-        Constraint::Length(7),
+        Constraint::Length(title),
         Constraint::Min(10),
         Constraint::Length(conn.width() as u16),
     ])
     .areas(top);
     f.render_widget(Paragraph::new(Span::raw(" mcast").bold()), name);
-    // Active alerts, beside the Probes tab's name.
-    let alerts = app.alerts.len();
-    let titles = Tab::ALL.iter().enumerate().map(|(i, t)| {
+    let titles = Tab::ALL.iter().enumerate().map(|(i, &t)| {
         let mut l = Line::from(format!("{} {}", i + 1, t.title()));
-        if *t == Tab::Probes && alerts > 0 {
-            l.push_span(Span::raw(format!(" {alerts}")).fg(Color::Red).bold());
+        if let Some(tag) = alert_tag(t) {
+            l.push_span(Span::raw(tag).fg(Color::Red).bold());
         }
         l
     });
@@ -140,6 +174,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 Tab::Streams => "Enter listen/join/receive · o output",
                 Tab::Monitor => "",
                 Tab::Media => "Enter page · f send · r receive · u upload · d delete",
+                Tab::Book => "Enter page · a add · e edit · d remove",
                 Tab::Probes => {
                     "u unicast · s SAP · l label · g groups · i interval · D defaults · f forget"
                 }

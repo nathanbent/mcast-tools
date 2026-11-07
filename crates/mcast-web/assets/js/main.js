@@ -9,6 +9,7 @@ import * as monitor from "./monitor.js";
 import * as media from "./media.js";
 import * as text from "./text.js";
 import * as files from "./files.js";
+import * as phonebook from "./phonebook.js";
 import * as probes from "./probes.js";
 
 const $ = (id) => document.getElementById(id);
@@ -91,6 +92,7 @@ async function start() {
   files.mount($("files"));
   streams.mount($("streams"));
   monitor.mount($("monitor"));
+  phonebook.mount($("phonebook"));
   probes.mount($("probes"));
   probeBadge();
   subscribe((what) => what === "alerts" && probeBadge());

@@ -34,8 +34,8 @@ pub struct FileSendArgs {
     /// Files to send, one after another
     #[arg(required = true)]
     files: Vec<PathBuf>,
-    /// Multicast group and port
-    #[arg(short, long, default_value = DEFAULT_FILE_GROUP)]
+    /// Multicast group and port, or a phonebook name
+    #[arg(short, long, default_value = DEFAULT_FILE_GROUP, value_parser = crate::book::parse_group)]
     group: SocketAddr,
     #[command(flatten)]
     net: NetArgs,
@@ -73,8 +73,8 @@ pub struct FileSendArgs {
 
 #[derive(Args)]
 pub struct FileRecvArgs {
-    /// Multicast group and port; skips SAP discovery
-    #[arg(short, long)]
+    /// Multicast group and port, or a phonebook name; skips SAP discovery
+    #[arg(short, long, value_parser = crate::book::parse_group)]
     group: Option<SocketAddr>,
     /// Pick the announced file stream whose name contains this text
     #[arg(short, long, conflicts_with = "group")]

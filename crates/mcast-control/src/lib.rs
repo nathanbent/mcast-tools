@@ -6,6 +6,7 @@ pub mod alerts;
 pub mod announcements;
 pub mod describe;
 pub mod jobs;
+pub mod phonebook;
 pub mod probes;
 pub mod request;
 pub mod watch;
@@ -15,6 +16,7 @@ pub use announcements::{Announced, Announcements};
 pub use jobs::{
     JobId, JobInfo, JobKind, JobState, Jobs, ReceivedFile, StartError, TextError, TextLine,
 };
+pub use phonebook::Phonebook;
 pub use probes::{ProbeConfig, ProbeInfo, Probes};
 pub use request::{FileRecvRequest, FileSendRequest, RecvRequest, SendRequest, TextRequest};
 pub use watch::{MonitorSnapshot, Watch};
@@ -73,6 +75,8 @@ pub enum Event {
         job: JobId,
         file: jobs::ReceivedFile,
     },
+    /// The phonebook was changed through the API; fetch it again.
+    PhonebookChanged,
 }
 
 /// Where services send their events. Must not block.

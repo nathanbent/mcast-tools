@@ -4,7 +4,7 @@
 use crate::api::{ApiError, Client, Feed};
 use crate::form::{FormKind, Forms};
 use crate::model::{
-    Alert, AlertList, Device, Job, MediaFile, Probe, Report, Snapshot, Stream, TextLine,
+    Alert, AlertList, BookEntry, Device, Job, MediaFile, Probe, Report, Snapshot, Stream, TextLine,
 };
 pub use crate::probes::ProbeField;
 use serde_json::Value;
@@ -24,16 +24,18 @@ pub enum Tab {
     Streams,
     Monitor,
     Media,
+    Book,
     Probes,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Jobs,
         Tab::Text,
         Tab::Streams,
         Tab::Monitor,
         Tab::Media,
+        Tab::Book,
         Tab::Probes,
     ];
 
@@ -44,6 +46,7 @@ impl Tab {
             Tab::Streams => "Streams",
             Tab::Monitor => "Monitor",
             Tab::Media => "Media",
+            Tab::Book => "Phonebook",
             Tab::Probes => "Probes",
         }
     }
@@ -72,6 +75,8 @@ pub enum Mode {
     },
     /// Waiting for y/n to forget a probe.
     ConfirmForget(String),
+    /// Waiting for y/n to remove a phonebook entry.
+    ConfirmRemove(String),
     Help,
 }
 
@@ -98,6 +103,9 @@ pub enum Msg {
     Reports(String, Result<Vec<Report>, ApiError>),
     /// A probe after a change to it.
     ProbeChanged(Result<Box<Probe>, ApiError>, String),
+    Phonebook(Result<Vec<BookEntry>, ApiError>),
+    /// A phonebook entry was saved (or wasn't), from the form.
+    Saved(Result<String, ApiError>),
     /// A text channel's lines so far.
     TextHistory(u64, Result<Vec<TextLine>, ApiError>),
     /// A job was started (or failed to), from this form.
@@ -116,6 +124,11 @@ pub struct App {
     pub streams: Vec<Stream>,
     pub media: Vec<MediaFile>,
     pub devices: Vec<Device>,
+    /// Groups saved under a name, sorted by name.
+    pub phonebook: Vec<BookEntry>,
+    /// The phonebook entry the form is editing (its name before any
+    /// rename); `None` when adding one.
+    pub editing: Option<String>,
     /// `None` until loaded; `Some(None)` when the server's monitor is off.
     pub monitor: Option<Option<Snapshot>>,
     /// Lines per text channel, oldest first.
@@ -135,7 +148,7 @@ pub struct App {
     /// A probe whose reports are being fetched.
     pub(crate) reports_loading: Option<String>,
     /// Selected row per tab.
-    pub selected: [usize; 6],
+    pub selected: [usize; Tab::ALL.len()],
     pub forms: Forms,
     /// Output device for Listen ("" = default).
     pub output: String,
@@ -158,6 +171,8 @@ impl App {
             streams: Vec::new(),
             media: Vec::new(),
             devices: Vec::new(),
+            phonebook: Vec::new(),
+            editing: None,
             monitor: None,
             texts: HashMap::new(),
             channel: None,
@@ -167,7 +182,7 @@ impl App {
             alert_events: 0,
             reports: None,
             reports_loading: None,
-            selected: [0; 6],
+            selected: [0; Tab::ALL.len()],
             forms: Forms::default(),
             output: String::new(),
             status: None,
@@ -187,6 +202,14 @@ impl App {
         let (text, level, at) = self.status.as_ref()?;
         let ttl = if *level == Level::Error { 12 } else { 5 };
         (at.elapsed() < Duration::from_secs(ttl)).then_some((text.as_str(), *level))
+    }
+
+    /// The phonebook entry a group field's value names, if it is one.
+    pub fn book_entry(&self, name: &str) -> Option<&BookEntry> {
+        let name = name.trim();
+        self.phonebook
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(name))
     }
 
     /// Jobs as listed: running ones newest first, then recent ones.
@@ -231,6 +254,7 @@ impl App {
                 .and_then(|m| m.as_ref())
                 .map_or(0, |m| m.streams.len()),
             Tab::Media => self.media.len(),
+            Tab::Book => self.phonebook.len(),
             Tab::Probes => self.probes.len(),
         }
     }
@@ -313,6 +337,29 @@ impl App {
                 Err(e) if e.status == 404 => self.monitor = Some(None),
                 Err(e) => fail(self, e),
             },
+            Msg::Phonebook(r) => match r {
+                Ok(b) => {
+                    self.forms
+                        .set_book(b.iter().map(|e| e.name.clone()).collect());
+                    self.phonebook = b;
+                }
+                Err(e) => fail(self, e),
+            },
+            Msg::Saved(r) => {
+                self.busy = false;
+                match r {
+                    Ok(text) => {
+                        self.say(text, Level::Ok);
+                        self.editing = None;
+                        if self.mode == Mode::Form(FormKind::Book) {
+                            self.mode = Mode::Normal;
+                        }
+                        self.refresh("phonebook");
+                    }
+                    // The form stays open to fix it.
+                    Err(e) => fail(self, e),
+                }
+            }
             Msg::TextHistory(id, r) => {
                 if let Ok(lines) = r {
                     // Lines that arrived meanwhile came after these.
@@ -367,6 +414,7 @@ impl App {
                     FormKind::Text => "j to join again",
                     FormKind::SendFiles => "f to send again",
                     FormKind::ReceiveFiles => "r to receive again",
+                    FormKind::Book => "try again",
                 };
                 self.say(
                     format!("{} · x stops it, then {again}", e.message),
@@ -408,6 +456,7 @@ impl App {
                 );
                 self.refresh("media");
             }
+            "phonebook_changed" => self.refresh("phonebook"),
             "lagged" => self.refresh_all(),
             _ => {}
         }

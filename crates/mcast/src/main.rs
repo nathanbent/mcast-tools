@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod book;
 mod file;
 mod presets;
 mod probe;
@@ -43,6 +44,11 @@ enum Command {
     File(file::FileCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
+    /// Phonebook: save multicast groups under a name and description; use the name in place of the group
+    Book {
+        #[command(subcommand)]
+        command: Option<book::BookCommand>,
+    },
     /// Save options for `audio send`, `recv`, `discover`, `monitor` or `update` under a name; run with `mcast @NAME`
     #[command(subcommand)]
     Preset(PresetCommand),
@@ -229,8 +235,8 @@ struct SendArgs {
     /// Start from a saved preset (`mcast preset`); options given here win. Repeatable
     #[arg(short = 'P', long, value_name = "NAME")]
     preset: Vec<String>,
-    /// Multicast group and port, e.g. 239.69.0.1:5004 or [ff15::69]:5004
-    #[arg(short, long, default_value = DEFAULT_GROUP)]
+    /// Multicast group and port, e.g. 239.69.0.1:5004 or [ff15::69]:5004, or a phonebook name (`mcast book`)
+    #[arg(short, long, default_value = DEFAULT_GROUP, value_parser = crate::book::parse_group)]
     group: SocketAddr,
     #[command(flatten)]
     net: NetArgs,
@@ -368,8 +374,9 @@ struct RecvArgs {
     #[arg(short = 'P', long, value_name = "NAME")]
     preset: Vec<String>,
     /// Multicast group and port; skips SAP discovery. The codec comes from
-    /// --encoding, or from the payload type for G.711/G.722 (else L16/48000/2)
-    #[arg(short, long)]
+    /// --encoding, or from the payload type for G.711/G.722 (else L16/48000/2).
+    /// ADDR:PORT or a phonebook name
+    #[arg(short, long, value_parser = crate::book::parse_group)]
     group: Option<SocketAddr>,
     /// Pick the announced stream whose name contains this text
     #[arg(short, long, conflicts_with = "group")]
@@ -413,8 +420,8 @@ struct MonitorArgs {
     /// Start from a saved preset (`mcast preset`); options and groups given here win. Repeatable
     #[arg(short = 'P', long, value_name = "NAME")]
     preset: Vec<String>,
-    /// Groups to watch (ADDR:PORT). With none, watches every stream announced via SAP
-    #[arg(value_name = "GROUP")]
+    /// Groups to watch (ADDR:PORT or phonebook names). With none, watches every stream announced via SAP
+    #[arg(value_name = "GROUP", value_parser = crate::book::parse_group)]
     groups: Vec<SocketAddr>,
     /// Also watch SAP-announced streams when groups are given
     #[arg(long)]
@@ -475,8 +482,8 @@ struct ServeArgs {
     iface: Interface,
     #[command(flatten)]
     sap: SapListenArgs,
-    /// Also monitor these groups (ADDR:PORT), besides SAP-announced streams
-    #[arg(long = "watch", value_name = "ADDR:PORT")]
+    /// Also monitor these groups (ADDR:PORT or phonebook names), besides SAP-announced streams
+    #[arg(long = "watch", value_name = "GROUP", value_parser = crate::book::parse_group)]
     watch: Vec<SocketAddr>,
     /// Don't run the stream monitor
     #[arg(long, conflicts_with = "watch")]
@@ -547,6 +554,7 @@ fn main() -> Result<()> {
         Command::Text(c) => text::run(c, &stop),
         Command::File(c) => file::run(c, &stop),
         Command::Monitor(a) => monitor(a, &stop),
+        Command::Book { command } => book::run(command),
         Command::Preset(c) => preset(c),
         Command::Update(a) => update::run(a),
         Command::Serve(a) => serve(a, stop),
@@ -916,8 +924,25 @@ fn format_stats(s: &receiver::ReceiverStats) -> String {
     line
 }
 
+/// Monitor targets for `groups`, named from the phonebook where they're in it
+/// (an SAP announcement for the group names it instead).
+fn named_targets(groups: &[SocketAddr]) -> Vec<mcast_monitor::Target> {
+    let book = book::load_quietly();
+    groups
+        .iter()
+        .map(|&g| {
+            let mut t = mcast_monitor::Target::new(g);
+            t.name = book
+                .as_ref()
+                .and_then(|b| b.name_of(g))
+                .map(|e| e.name.clone());
+            t
+        })
+        .collect()
+}
+
 fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
-    use mcast_monitor::{Monitor, MonitorConfig, Target};
+    use mcast_monitor::{Monitor, MonitorConfig};
     use std::io::{IsTerminal, Write};
 
     let watch_sap = a.groups.is_empty() || a.sap;
@@ -927,7 +952,7 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
         a.sap_listen.sap_groups.clone()
     };
     let mut m = Monitor::start(MonitorConfig {
-        targets: a.groups.iter().map(|&g| Target::new(g)).collect(),
+        targets: named_targets(&a.groups),
         sap: watch_sap.then_some(sap_groups),
         interface: a.iface,
         default_spec: a.encoding.map(|c| StreamSpec::new(c, 48_000, 1)),
@@ -1013,6 +1038,7 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
             a.sap.sap_groups
         },
         monitor: (!a.no_monitor).then_some(a.watch),
+        phonebook: mcast_control::phonebook::default_path()?,
         max_upload: a.max_upload_mb.saturating_mul(1 << 20),
         probe_token: a.probe_token,
         probe_state: Some(probe_state),

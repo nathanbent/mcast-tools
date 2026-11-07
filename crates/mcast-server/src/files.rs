@@ -10,9 +10,9 @@ use mcast_control::{FileRecvRequest, FileSendRequest, JobInfo};
 /// Send uploaded media files; `files` are media names.
 pub(crate) async fn start_file_sender(
     State(s): State<AppState>,
-    body: Result<Json<FileSendRequest>, JsonRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<JobInfo>)> {
-    let Json(mut req) = body?;
+    let mut req: FileSendRequest = s.named(body)?;
     let shown = req.clone();
     for f in &mut req.files {
         *f = s.media_path(f)?;
@@ -26,9 +26,9 @@ pub(crate) async fn start_file_sender(
 /// downloaded, and paged or sent on.
 pub(crate) async fn start_file_receiver(
     State(s): State<AppState>,
-    body: Result<Json<FileRecvRequest>, JsonRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<JobInfo>)> {
-    let Json(mut req) = body?;
+    let mut req: FileRecvRequest = s.named(body)?;
     // No bigger than an upload could be.
     let cap = (s.0.max_upload / (1 << 20)).max(1);
     match req.max_size_mb {

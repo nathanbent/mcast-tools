@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, replace, saved, toast } from "./dom.js";
-import { state, subscribe, putJob } from "./store.js";
+import { state, subscribe, putJob, bookName } from "./store.js";
 import { joinChannel } from "./text.js";
 import { receive } from "./files.js";
 
@@ -64,11 +64,17 @@ function kind(s) {
   return { group: "–", format: "unknown", action: null };
 }
 
+// The address, and its phonebook name if it has one.
+export function groupCell(group) {
+  const name = bookName(group);
+  return h("td", {}, h("span", { class: "mono" }, group), name && h("div", { class: "muted small" }, name));
+}
+
 function row(s) {
   const k = kind(s);
   return h("tr", {},
     h("td", {}, h("strong", {}, s.name), h("div", { class: "muted small" }, `from ${s.origin}`)),
-    h("td", { class: "mono" }, k.group),
+    groupCell(k.group),
     h("td", {}, k.format),
     h("td", { class: "actions" }, k.action));
 }
@@ -86,5 +92,5 @@ export function mount(el) {
   const body = h("div");
   el.append(body);
   render(body);
-  subscribe((what) => (what === "streams" || what === "devices") && render(body));
+  subscribe((what) => (what === "streams" || what === "devices" || what === "phonebook") && render(body));
 }

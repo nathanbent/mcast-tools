@@ -197,6 +197,17 @@ tr:last-child td { border-bottom: none; }
 td.num { text-align: right; white-space: nowrap; }
 td.bad { color: var(--bad); }
 td.actions { text-align: right; }
+.nowrap { flex-wrap: nowrap; justify-content: flex-end; }
+.book-form { margin-top: 12px; }
+.book-add { margin-top: 12px; }
+.book-add > .book-form { margin-top: 0; }
+.narrow-only { display: none; }
+
+@media (max-width: 600px) {
+  /* The group goes under the name, leaving room for the buttons. */
+  table.book th:nth-child(2), table.book td:nth-child(2) { display: none; }
+  table.book .narrow-only { display: block; }
+}
 tr.idle { opacity: 0.55; }
 
 @media (max-width: 600px) {

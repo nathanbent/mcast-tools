@@ -27,6 +27,7 @@ and reload the page to see changes.
 | `js/text.js` | Real-time text channels |
 | `js/files.js` | Sending and receiving files |
 | `js/probes.js` | The Probes view (`#probes`): alerts and alert rules, probes, verdicts, loss timeline, configuration |
+| `js/phonebook.js` | Saved groups (names and descriptions), and suggestions for group fields |
 
 Each panel is one module exporting `mount(element)`; add a panel by adding a
 module and a `<section>` in `index.html`. There are two views, the console

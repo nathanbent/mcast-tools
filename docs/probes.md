@@ -76,7 +76,7 @@ announced with SAP and reports every 10 s.
 state, the streams it sees, the unicast comparison and a loss timeline, plus
 the alerts. The tab's red count is the number of active alerts.
 
-**Terminal**: `mcast tui` has a Probes tab (6). It shows active alerts at
+**Terminal**: `mcast tui` has a Probes tab (7). It shows active alerts at
 the top, a row per probe, and the selected probe's streams, verdicts and
 timeline.
 
