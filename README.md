@@ -642,6 +642,9 @@ Probes connect out to the server, so they need no open port except UDP 5104
 for the unicast copies. Reports that can't be delivered are queued and sent
 when the server is back. See [docs/probes.md](docs/probes.md) for the design,
 verdicts and roadmap, and [docs/api.md](docs/api.md#probes) for the routes.
+The web GUI has a Probes view (the Probes tab, or `/#probes`) with each
+probe's state, verdicts and loss timeline, where probes can be configured
+and added before they're deployed.
 
 ## Layout
 

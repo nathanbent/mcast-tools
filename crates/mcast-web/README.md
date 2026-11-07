@@ -24,9 +24,11 @@ and reload the page to see changes.
 | `js/streams.js` | SAP-announced streams and Listen |
 | `js/monitor.js` | Monitor table and level meters |
 | `js/media.js` | Uploads |
+| `js/probes.js` | The Probes view (`#probes`): probes, verdicts, loss timeline, configuration |
 
 Each panel is one module exporting `mount(element)`; add a panel by adding a
-module and a `<section>` in `index.html`.
+module and a `<section>` in `index.html`. There are two views, the console
+(`#`) and the probes (`#probes`), switched by the links in the header.
 
 Rules worth keeping:
 

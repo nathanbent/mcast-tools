@@ -13,6 +13,10 @@
   <header>
     <h1>mcast</h1>
     <span id="version" class="muted small"></span>
+    <nav aria-label="Views">
+      <a href="#" data-view="console">Console</a>
+      <a href="#probes" data-view="probes">Probes <span id="probe-alerts" class="count" hidden></span></a>
+    </nav>
     <span class="spacer"></span>
     <span id="status" data-state="connecting" aria-live="polite">Connecting…</span>
     <button id="logout" class="subtle" hidden>Sign out</button>
@@ -20,7 +24,7 @@
 
   <p id="fatal" class="fatal" role="alert" hidden></p>
 
-  <main>
+  <main id="view-console">
     <div class="col">
       <section aria-labelledby="h-page">
         <h2 id="h-page">Page</h2>
@@ -45,6 +49,11 @@
         <div id="monitor"></div>
       </section>
     </div>
+  </main>
+
+  <main id="view-probes" class="single" hidden>
+    <h2 class="visually-hidden">Probes</h2>
+    <div id="probes"></div>
   </main>
 
   <div id="toasts" aria-live="polite"></div>

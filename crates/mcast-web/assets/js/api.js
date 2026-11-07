@@ -60,7 +60,7 @@ export function upload(name, file, onProgress) {
 const EVENT_TYPES = [
   "job_started", "job_updated", "job_ended",
   "stream_added", "stream_changed", "stream_removed",
-  "monitor", "lagged",
+  "monitor", "probe_updated", "probe_removed", "lagged",
 ];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch lists then: events

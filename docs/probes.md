@@ -139,8 +139,9 @@ Done (this change):
 
 Next:
 
-- [ ] Web GUI and TUI tab: probes, online state, verdicts, a loss timeline
-      per probe from `/probes/{id}/reports`
+- [x] Web GUI Probes view (`#probes`): online state, verdicts, loss timeline,
+      configuration, adding probes ahead of deployment
+- [ ] TUI tab for probes
 - [ ] Alerts: a probe offline, `multicast_loss` or `no_multicast` for N
       intervals, as events (and optionally a webhook)
 - [ ] Persist report history (not only configurations), e.g. a JSON-lines file

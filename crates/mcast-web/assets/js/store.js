@@ -9,6 +9,8 @@ export const state = {
   media: [],
   devices: [],
   monitor: null,     // null: not loaded; false: monitor is off
+  probes: new Map(), // id -> probe
+  probeDefaults: null,
 };
 
 const subscribers = new Set();
@@ -17,8 +19,9 @@ export function subscribe(fn) {
   subscribers.add(fn);
 }
 
-function changed(what) {
-  for (const fn of subscribers) fn(what);
+// `detail` narrows it down where useful (the probe ID for "probes").
+function changed(what, detail) {
+  for (const fn of subscribers) fn(what, detail);
 }
 
 export async function refresh(what) {
@@ -43,12 +46,19 @@ export async function refresh(what) {
         state.monitor = false;
       }
       break;
+    case "probes":
+      state.probes = new Map((await api("GET", "/probes")).map((p) => [p.id, p]));
+      break;
+    case "probe-defaults":
+      state.probeDefaults = await api("GET", "/probe-defaults");
+      what = "probes";
+      break;
   }
   changed(what);
 }
 
 export function refreshAll() {
-  return Promise.all(["jobs", "streams", "media", "devices", "monitor"].map(refresh));
+  return Promise.all(["jobs", "streams", "media", "devices", "monitor", "probes"].map(refresh));
 }
 
 export function putJob(job) {
@@ -71,6 +81,14 @@ export function apply(event) {
     case "monitor":
       state.monitor = event.snapshot;
       changed("monitor");
+      break;
+    case "probe_updated":
+      state.probes.set(event.probe.id, event.probe);
+      changed("probes", event.probe.id);
+      break;
+    case "probe_removed":
+      state.probes.delete(event.id);
+      changed("probes", event.id);
       break;
     case "lagged":
       refreshAll();
