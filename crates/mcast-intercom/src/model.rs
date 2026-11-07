@@ -48,7 +48,14 @@ pub struct Config {
     /// Lists of sounds that play one after another; announcements use them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub playlists: Vec<Playlist>,
+    /// How admins arranged the page: a tab's id → its sections' ids, in
+    /// order. Sections left out follow in their usual order.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub layout: BTreeMap<String, Vec<String>>,
 }
+
+/// Most sections a tab's layout lists.
+pub const MAX_LAYOUT: usize = 50;
 
 /// Most items in a playlist.
 pub const MAX_PLAYLIST: usize = 100;
@@ -951,6 +958,19 @@ impl Config {
             }
         }
         check_days_off(&self.days_off)?;
+        for (tab, order) in &self.layout {
+            check_id("layout tab", tab)?;
+            if order.len() > MAX_LAYOUT {
+                bail!("layout \"{tab}\": at most {MAX_LAYOUT} sections");
+            }
+            let mut seen = HashSet::new();
+            for id in order {
+                check_id(&format!("layout \"{tab}\" section"), id)?;
+                if !seen.insert(id.as_str()) {
+                    bail!("layout \"{tab}\": \"{id}\" is listed twice");
+                }
+            }
+        }
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
         for p in &self.playlists {

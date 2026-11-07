@@ -43,7 +43,7 @@ A page with a tab for each part:
 | **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
 Sound files and phonebook names come from the mcast server, so its own web
 page and TUI see the same files and folders.
@@ -378,6 +378,7 @@ only their runs.
 | `GET`, `POST /sites`, `GET`, `PUT`, `DELETE /sites/{id}` | The same; a site with zones or schedules can't be deleted (`409`) |
 | `GET`, `POST /schedule-groups`, `GET`, `PUT`, `DELETE /schedule-groups/{id}` | The same; switch one with `PUT` and `"enabled"`. One with schedules can't be deleted |
 | `GET`, `POST /playlists`, `GET`, `PUT`, `DELETE /playlists/{id}` | As zones; one an announcement plays can't be deleted (`409`) |
+| `PUT /layout/{tab}`, `DELETE /layout/{tab}` | Admins: `{"order": [section ids]}` arranges a tab's sections for everyone (kept in `intercom.json` as `layout`; sections left out follow in their usual order); `DELETE` goes back to the usual order. Returns the whole layout. So far the Settings tab (`settings`: `defaults`, `time-zone`, `sites`, `chimes`, `tokens`, `other-systems`, `connection`) |
 | `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
 | `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`). Not for live announcements (`422`) |

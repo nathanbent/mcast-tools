@@ -165,6 +165,15 @@ To design before building:
 
 ### 9. Arrangeable layout (requested)
 
+**Started: the Settings tab.**
+- The layout is kept in `intercom.json` (`layout`: tab → section ids).
+- `PUT` and `DELETE /layout/{tab}` set and reset it; admins only.
+- A reusable `arrangeable(tab, sections)` in the page adds *Arrange this page…*: a dialog to drag sections (or use the arrows), with a way back to the usual order.
+- Sections are moved, not rebuilt, so what's typed in them stays.
+- **Next, if it works well:** the Panel's buttons, then other tabs with several sections (Schedules).
+
+The plan:
+
 Admins drag the sections of a tab into the order they want. The layout is kept in `intercom.json` and every screen shows it (good for wall tablets), with a way to reset it. Start with one tab (Settings, which has the most sections), then roll out to the Panel's buttons and the other tabs if it works well.
 
 ## v0.6.0: observe and harden

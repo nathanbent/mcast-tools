@@ -636,3 +636,38 @@ pub(super) async fn put_settings(
     .await
     .map(Json)
 }
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Layout {
+    order: Vec<String>,
+}
+
+/// `{"order": [section ids]}`: how a tab's sections are arranged, for
+/// everyone. Returns the whole layout.
+pub(super) async fn put_layout(
+    State(s): State<AppState>,
+    Path(tab): Path<String>,
+    body: Result<Json<Layout>, JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    let Json(l) = body?;
+    change(&s, move |c| {
+        c.layout.insert(tab, l.order);
+        Ok(json!(c.layout))
+    })
+    .await
+    .map(Json)
+}
+
+/// Back to a tab's usual order. Returns the whole layout.
+pub(super) async fn delete_layout(
+    State(s): State<AppState>,
+    Path(tab): Path<String>,
+) -> ApiResult<Json<Value>> {
+    change(&s, move |c| {
+        c.layout.remove(&tab);
+        Ok(json!(c.layout))
+    })
+    .await
+    .map(Json)
+}

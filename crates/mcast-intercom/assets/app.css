@@ -438,3 +438,7 @@ ol.playlist-items .handle { color: var(--muted); }
 .part-row { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .part-row .row { align-items: flex-end; }
 .add-item > button, .part-row .row > button { justify-self: start; align-self: end; width: auto; }
+
+/* Arranging a tab */
+.arrange-bar { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
+ol.arrange { margin: 8px 0 14px; }

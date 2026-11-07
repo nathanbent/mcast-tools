@@ -324,6 +324,10 @@ pub fn router(state: AppState) -> Router {
                 .put(put::<Playlist>)
                 .delete(delete::<Playlist>),
         )
+        .route(
+            "/layout/{tab}",
+            axum::routing::put(put_layout).delete(delete_layout),
+        )
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))

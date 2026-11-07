@@ -865,6 +865,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/playlists/{id}"),
     ("PUT", "/playlists/{id}"),
     ("DELETE", "/playlists/{id}"),
+    ("PUT", "/layout/{tab}"),
+    ("DELETE", "/layout/{tab}"),
     ("GET", "/upcoming"),
     ("GET", "/settings"),
     ("PUT", "/settings"),
@@ -1982,4 +1984,42 @@ async fn playlists_and_parts_play_together_in_one_run() {
         StatusCode::UNPROCESSABLE_ENTITY,
         "emptying a playlist in use"
     );
+}
+
+#[tokio::test]
+async fn admins_arrange_a_tab_for_everyone() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    let desk = p
+        .token(admin, json!({"name": "Desk", "role": "operator"}))
+        .await;
+    let order = json!({"order": ["tokens", "defaults", "time-zone"]});
+    let (s, v) = p
+        .call_with(Method::PUT, "/layout/settings", Some(order.clone()), admin)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"settings": ["tokens", "defaults", "time-zone"]}));
+    // Everyone who can read the config sees it; only admins change it.
+    let (_, cfg) = p.call_with(Method::GET, "/config", None, Some(&desk)).await;
+    assert_eq!(cfg["layout"]["settings"][0], "tokens");
+    let (s, _) = p
+        .call_with(Method::PUT, "/layout/settings", Some(order), Some(&desk))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    for bad in [
+        json!({"order": ["a", "a"]}),
+        json!({"order": ["no spaces"]}),
+        json!({"sections": []}),
+    ] {
+        let (s, _) = p
+            .call_with(Method::PUT, "/layout/settings", Some(bad.clone()), admin)
+            .await;
+        assert!(s.is_client_error(), "{bad}");
+    }
+    let (s, v) = p
+        .call_with(Method::DELETE, "/layout/settings", None, admin)
+        .await;
+    assert_eq!((s, v), (StatusCode::OK, json!({})));
+    let (_, cfg) = p.call_with(Method::GET, "/config", None, admin).await;
+    assert!(cfg.get("layout").is_none(), "{cfg}");
 }

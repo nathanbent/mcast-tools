@@ -12,6 +12,7 @@ import { MODES } from "./announcements.js";
 import { ENCODINGS, encodingValue } from "./zones.js";
 import * as tokens from "./tokens.js";
 import * as webhooks from "./webhooks.js";
+import { arrangeable } from "./layout.js";
 
 export async function putSettings(body, done) {
   try {
@@ -197,12 +198,14 @@ export function mount(el) {
     replace(document.getElementById("time-zones"),
       Intl.supportedValuesOf("timeZone").map((z) => h("option", { value: z })));
   } catch {}
-  el.replaceChildren(
-    card("Announcement defaults", defaults()),
-    card("Time zone", timeZone()),
-    card("Sites", sitesEditor()),
-    card("Chime lists", chimes()),
-    card("Access tokens", tokens.mount()),
-    card("Other systems", webhooks.mount()),
-    card("Connection", connection()));
+  const sections = [
+    ["defaults", "Announcement defaults", defaults],
+    ["time-zone", "Time zone", timeZone],
+    ["sites", "Sites", sitesEditor],
+    ["chimes", "Chime lists", chimes],
+    ["tokens", "Access tokens", tokens.mount],
+    ["other-systems", "Other systems", webhooks.mount],
+    ["connection", "Connection", connection],
+  ].map(([id, title, make]) => ({ id, title, el: card(title, make()) }));
+  el.replaceChildren(arrangeable("settings", sections));
 }
