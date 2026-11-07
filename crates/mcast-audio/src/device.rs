@@ -1,12 +1,14 @@
 //! Audio device lookup and cpal stream helpers.
 
 use crate::format::AudioFormat;
-use crate::jitter::JitterBuffer;
+use crate::jitter::JitterReader;
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
-use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Mutex};
+use rtrb::Producer;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread::Thread;
 
 /// Human-readable list of input and output devices on the default host.
 pub fn list() -> Result<Vec<String>> {
@@ -79,11 +81,7 @@ fn stream_config(format: &AudioFormat) -> StreamConfig {
 }
 
 /// Start playing from `buffer` on `device`.
-pub fn play(
-    device: &Device,
-    format: &AudioFormat,
-    buffer: Arc<Mutex<JitterBuffer>>,
-) -> Result<Stream> {
+pub fn play(device: &Device, format: &AudioFormat, buffer: JitterReader) -> Result<Stream> {
     let sample_format = device.default_output_config()?.sample_format();
     let config = stream_config(format);
     let stream = match sample_format {
@@ -101,22 +99,23 @@ pub fn play(
 fn build_output<T>(
     device: &Device,
     config: &StreamConfig,
-    buffer: Arc<Mutex<JitterBuffer>>,
+    mut buffer: JitterReader,
 ) -> Result<Stream>
 where
     T: SizedSample + FromSample<f32>,
 {
-    let mut scratch: Vec<f32> = Vec::new();
+    // Converted in fixed-size blocks so the callback never allocates.
+    let mut scratch = [0.0f32; 1024];
+    let block = scratch.len() / buffer.channels() * buffer.channels();
     let stream = device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            scratch.resize(data.len(), 0.0);
-            match buffer.lock() {
-                Ok(mut jb) => jb.pull(&mut scratch),
-                Err(_) => scratch.fill(0.0),
-            }
-            for (d, s) in data.iter_mut().zip(&scratch) {
-                *d = T::from_sample(*s);
+            for chunk in data.chunks_mut(block) {
+                let s = &mut scratch[..chunk.len()];
+                buffer.pull(s);
+                for (d, x) in chunk.iter_mut().zip(s.iter()) {
+                    *d = T::from_sample(*x);
+                }
             }
         },
         |e| eprintln!("audio output error: {e}"),
@@ -132,16 +131,22 @@ pub fn input_format(device: &Device) -> Result<(u32, u16)> {
 }
 
 /// Start capturing from `device` at its default rate and channel count (see
-/// [`input_format`]), sending interleaved f32 chunks to `tx`. Chunks are
-/// dropped (not blocked on) if the consumer falls behind.
-pub fn capture(device: &Device, tx: SyncSender<Vec<f32>>) -> Result<Stream> {
+/// [`input_format`]), writing interleaved f32 samples to `ring` and waking
+/// `reader` after each callback. Whole frames are dropped (never blocked on)
+/// if the reader falls behind; the count is added to `dropped`.
+pub fn capture(
+    device: &Device,
+    ring: Producer<f32>,
+    reader: Thread,
+    dropped: Arc<AtomicU64>,
+) -> Result<Stream> {
     let supported = device.default_input_config()?;
     let config = supported.config();
     let stream = match supported.sample_format() {
-        SampleFormat::F32 => build_input::<f32>(device, &config, tx),
-        SampleFormat::I16 => build_input::<i16>(device, &config, tx),
-        SampleFormat::U16 => build_input::<u16>(device, &config, tx),
-        SampleFormat::I32 => build_input::<i32>(device, &config, tx),
+        SampleFormat::F32 => build_input::<f32>(device, &config, ring, reader, dropped),
+        SampleFormat::I16 => build_input::<i16>(device, &config, ring, reader, dropped),
+        SampleFormat::U16 => build_input::<u16>(device, &config, ring, reader, dropped),
+        SampleFormat::I32 => build_input::<i32>(device, &config, ring, reader, dropped),
         other => bail!("unsupported input sample format {other:?}"),
     }
     .context("opening input device")?;
@@ -152,17 +157,27 @@ pub fn capture(device: &Device, tx: SyncSender<Vec<f32>>) -> Result<Stream> {
 fn build_input<T>(
     device: &Device,
     config: &StreamConfig,
-    tx: SyncSender<Vec<f32>>,
+    mut ring: Producer<f32>,
+    reader: Thread,
+    dropped: Arc<AtomicU64>,
 ) -> Result<Stream>
 where
     T: SizedSample,
     f32: FromSample<T>,
 {
+    let channels = (config.channels as usize).max(1);
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _| {
-            let chunk: Vec<f32> = data.iter().map(|s| s.to_sample::<f32>()).collect();
-            let _ = tx.try_send(chunk);
+            let room = ring.slots() / channels * channels;
+            let n = data.len().min(room);
+            if n < data.len() {
+                dropped.fetch_add((data.len() - n) as u64, Ordering::Relaxed);
+            }
+            if let Ok(chunk) = ring.write_chunk_uninit(n) {
+                chunk.fill_from_iter(data[..n].iter().map(|s| s.to_sample::<f32>()));
+            }
+            reader.unpark();
         },
         |e| eprintln!("audio input error: {e}"),
         None,

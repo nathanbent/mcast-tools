@@ -64,83 +64,166 @@ pub fn map_channels(input: &[f32], from: usize, to: usize, out: &mut Vec<f32>) {
     }
 }
 
+/// Largest precomputed kernel table, in coefficients (1 MiB of f32). Rate
+/// pairs that would need more fall back to evaluating the kernel directly.
+const MAX_TABLE: usize = 1 << 18;
+
+/// Polyphase resampler. Output positions are exact rationals (`base` +
+/// `phase`/`phases` input frames), so there is no drift from accumulating a
+/// floating-point step, and for the usual rate pairs (44.1k/48k, 48k/8k,
+/// 48k/16k...) every output reuses one of a few precomputed kernel phases.
 struct Resampler {
     channels: usize,
-    /// Input samples advanced per output sample.
-    step: f64,
+    /// Kernel half-width in input frames; each output uses `2 * half` taps.
+    half: usize,
+    /// Kernel phases per input frame (`to / gcd`).
+    phases: usize,
+    /// Input frames advanced per output, in phase units (`from / gcd`).
+    advance: usize,
     /// Cutoff in cycles per input sample.
     cutoff: f64,
-    /// Kernel half-width in input samples.
-    half: usize,
+    /// `phases` rows of `2 * half` taps, or empty if too large to precompute.
+    table: Vec<f32>,
+    /// Scratch row for the direct (untabled) path.
+    weights: Vec<f32>,
     /// Interleaved input history.
     buf: Vec<f32>,
-    /// Position of the next output, in input frames from the start of `buf`.
-    t: f64,
-    weights: Vec<f64>,
+    /// Next output position: input frame `base` (from the start of `buf`)
+    /// plus `phase / phases`.
+    base: usize,
+    phase: usize,
+}
+
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 impl Resampler {
     fn new(from: u32, to: u32, channels: usize) -> Self {
         let ratio = (to as f64 / from as f64).min(1.0);
         let half = (ZERO_CROSSINGS / ratio).ceil() as usize;
-        Self {
+        let g = gcd(from as usize, to as usize);
+        let (phases, advance) = (to as usize / g, from as usize / g);
+        let mut r = Self {
             channels,
-            step: from as f64 / to as f64,
-            cutoff: 0.5 * ratio * ROLLOFF,
             half,
+            phases,
+            advance,
+            cutoff: 0.5 * ratio * ROLLOFF,
+            table: Vec::new(),
+            weights: vec![0.0; 2 * half],
             // Start with `half` frames of silence so the first output is centred on input 0.
             buf: vec![0.0; half * channels],
-            t: half as f64,
-            weights: vec![0.0; 2 * half],
+            base: half,
+            phase: 0,
+        };
+        let taps = 2 * half;
+        if phases * taps <= MAX_TABLE {
+            let mut table = vec![0.0; phases * taps];
+            for (p, row) in table.chunks_exact_mut(taps).enumerate() {
+                r.fill_row(p, row);
+            }
+            r.table = table;
         }
+        r
     }
 
-    fn kernel(&self, x: f64) -> f64 {
-        let u = x / self.half as f64;
-        if u.abs() >= 1.0 {
-            return 0.0;
+    /// Weights for an output at fractional position `phase / phases` past
+    /// frame `base`; tap `i` applies to input frame `base + 1 - half + i`.
+    fn fill_row(&self, phase: usize, row: &mut [f32]) {
+        let frac = phase as f64 / self.phases as f64;
+        for (i, w) in row.iter_mut().enumerate() {
+            *w = kernel(
+                self.half,
+                self.cutoff,
+                frac + (self.half - 1) as f64 - i as f64,
+            ) as f32;
         }
-        let window = 0.42 + 0.5 * (PI * u).cos() + 0.08 * (2.0 * PI * u).cos();
-        let arg = 2.0 * self.cutoff * x;
-        let sinc = if arg.abs() < 1e-12 {
-            1.0
-        } else {
-            (PI * arg).sin() / (PI * arg)
-        };
-        2.0 * self.cutoff * sinc * window
     }
 
     fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.buf.extend_from_slice(input);
-        let frames = self.buf.len() / self.channels;
         let ch = self.channels;
-        while (self.t.floor() as usize) + self.half < frames {
-            let base = self.t.floor() as usize;
-            let first = base + 1 - self.half;
-            for (i, w) in (0..2 * self.half).zip(0..) {
-                self.weights[w] = self.kernel(self.t - (first + i) as f64);
-            }
-            for c in 0..ch {
-                let mut acc = 0.0f64;
-                for (i, w) in self.weights.iter().enumerate() {
-                    acc += self.buf[(first + i) * ch + c] as f64 * w;
+        let taps = 2 * self.half;
+        let frames = self.buf.len() / ch;
+        while self.base + self.half < frames {
+            let first = self.base + 1 - self.half;
+            let weights = if self.table.is_empty() {
+                let mut row = std::mem::take(&mut self.weights);
+                self.fill_row(self.phase, &mut row);
+                self.weights = row;
+                &self.weights[..]
+            } else {
+                &self.table[self.phase * taps..(self.phase + 1) * taps]
+            };
+            let window = &self.buf[first * ch..(first + taps) * ch];
+            if ch == 1 {
+                out.push(dot(window, weights));
+            } else {
+                for c in 0..ch {
+                    let acc = window[c..]
+                        .iter()
+                        .step_by(ch)
+                        .zip(weights)
+                        .map(|(x, w)| x * w)
+                        .sum();
+                    out.push(acc);
                 }
-                out.push(acc as f32);
             }
-            self.t += self.step;
+            self.phase += self.advance;
+            self.base += self.phase / self.phases;
+            self.phase %= self.phases;
         }
         // Drop history the next output no longer needs.
-        let keep_from = (self.t.floor() as usize + 1)
-            .saturating_sub(self.half)
-            .min(frames);
+        let keep_from = (self.base + 1).saturating_sub(self.half).min(frames);
         self.buf.drain(..keep_from * ch);
-        self.t -= keep_from as f64;
+        self.base -= keep_from;
     }
 
     fn flush(&mut self, out: &mut Vec<f32>) {
         let zeros = vec![0.0; self.half * self.channels];
         self.process(&zeros, out);
     }
+}
+
+/// Blackman-windowed sinc, `half` input frames wide on each side, scaled for
+/// `cutoff` (cycles per input sample), evaluated `x` input frames from its centre.
+fn kernel(half: usize, cutoff: f64, x: f64) -> f64 {
+    let u = x / half as f64;
+    if u.abs() >= 1.0 {
+        return 0.0;
+    }
+    let window = 0.42 + 0.5 * (PI * u).cos() + 0.08 * (2.0 * PI * u).cos();
+    let arg = 2.0 * cutoff * x;
+    let sinc = if arg.abs() < 1e-12 {
+        1.0
+    } else {
+        (PI * arg).sin() / (PI * arg)
+    };
+    2.0 * cutoff * sinc * window
+}
+
+/// Dot product with eight independent accumulators, which the compiler can
+/// keep in SIMD registers (NEON on a Raspberry Pi, SSE/AVX on x86).
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    let mut acc = [0.0f32; 8];
+    let (ac, bc) = (a.chunks_exact(8), b.chunks_exact(8));
+    let tail: f32 = ac
+        .remainder()
+        .iter()
+        .zip(bc.remainder())
+        .map(|(x, y)| x * y)
+        .sum();
+    for (x, y) in ac.zip(bc) {
+        for i in 0..8 {
+            acc[i] += x[i] * y[i];
+        }
+    }
+    acc.iter().sum::<f32>() + tail
 }
 
 #[cfg(test)]
@@ -199,6 +282,30 @@ mod tests {
         let mid = &out[800..7200];
         let atten_db = 20.0 * (rms(mid) / (0.5 / 2f64.sqrt())).log10();
         assert!(atten_db < -60.0, "only {atten_db:.1} dB");
+    }
+
+    #[test]
+    fn untabled_rates_match_tabled_quality() {
+        // 48000/47999 needs 47999 phases, too many to tabulate.
+        assert!(Resampler::new(48_000, 47_999, 1).table.is_empty());
+        let out = convert_all(&sine(48_000, 440.0, 1.0), 48_000, 47_999);
+        assert!(out.len().abs_diff(47_999) <= 2);
+        let level = rms(&out[4_800..43_200]) / (0.5 / 2f64.sqrt());
+        assert!((level - 1.0).abs() < 0.01, "gain {level}");
+    }
+
+    #[test]
+    fn stereo_channels_stay_separate() {
+        // Left: 440 Hz tone, right: silence.
+        let left = sine(44_100, 440.0, 0.5);
+        let input: Vec<f32> = left.iter().flat_map(|&l| [l, 0.0]).collect();
+        let mut c = Converter::new(44_100, 2, 48_000, 2);
+        let mut out = Vec::new();
+        c.process(&input, &mut out);
+        c.flush(&mut out);
+        let (l, r): (Vec<f32>, Vec<f32>) = out.chunks_exact(2).map(|f| (f[0], f[1])).unzip();
+        assert!(rms(&l[2_400..21_600]) > 0.3);
+        assert!(r.iter().all(|&x| x == 0.0));
     }
 
     #[test]

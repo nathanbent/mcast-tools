@@ -23,8 +23,9 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const FADE_IN: Duration = Duration::from_millis(50);
@@ -85,6 +86,8 @@ pub struct SenderStats {
     pub packets: u64,
     pub frames: u64,
     pub send_errors: u64,
+    /// Captured samples dropped because processing fell behind the device.
+    pub capture_dropped: u64,
 }
 
 /// Result of measuring a file's loudness before sending.
@@ -521,15 +524,27 @@ impl Sender {
         let mut stages = Stages::default();
         if let Source::Capture { device } = &self.source {
             let dev = device::input_device(device.as_deref())?;
-            let (tx, rx) = mpsc::sync_channel(64);
-            let _stream = device::capture(&dev, tx)?;
+            // One second of headroom between the device callback and us.
+            let (ring, mut captured) = rtrb::RingBuffer::new(rate as usize * src_channels as usize);
+            let dropped = Arc::new(AtomicU64::new(0));
+            let _stream = device::capture(&dev, ring, std::thread::current(), dropped.clone())?;
+            let mut chunk = vec![0.0f32; 4096 / src_channels as usize * src_channels as usize];
             while !stop.load(Ordering::Relaxed) && !out.done() {
-                match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(chunk) => stages.run(&mut self, &chunk, false, &mut out)?,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                let n = captured.slots().min(chunk.len()) / src_channels as usize
+                    * src_channels as usize;
+                if n == 0 {
+                    if captured.is_abandoned() {
+                        break;
+                    }
+                    // The capture callback unparks us when it writes.
+                    std::thread::park_timeout(Duration::from_millis(100));
+                    continue;
                 }
+                let (got, _) = captured.pop_partial_slice(&mut chunk[..n]);
+                let got = got.len();
+                stages.run(&mut self, &chunk[..got], false, &mut out)?;
             }
+            out.stats.capture_dropped = dropped.load(Ordering::Relaxed);
         } else {
             // Read roughly one packet of source audio at a time.
             let chunk_frames = ((rate as f64 * self.ptime.as_secs_f64()).ceil() as usize).max(64);

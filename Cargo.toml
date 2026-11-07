@@ -14,6 +14,7 @@ cpal = "0.15"
 ctrlc = "3"
 hound = "3.5"
 opus = "0.3"
+rtrb = "0.4"
 rustfft = "6"
 symphonia = { version = "0.5", features = ["all"] }
 libc = "0.2"
@@ -21,3 +22,9 @@ socket2 = { version = "0.5", features = ["all"] }
 mcast-core = { path = "crates/mcast-core" }
 mcast-audio = { path = "crates/mcast-audio" }
 mcast-monitor = { path = "crates/mcast-monitor" }
+
+[profile.release]
+# Whole-program optimisation: slower builds, faster and smaller binaries.
+lto = "fat"
+codegen-units = 1
+strip = true
