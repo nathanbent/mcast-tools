@@ -46,6 +46,8 @@ pub struct StreamReport {
     pub rms_dbfs: Option<f64>,
     /// Time since the last packet.
     pub idle: Duration,
+    /// The sender's RTCP reports, if it sends them.
+    pub rtcp: Option<crate::SenderRtcp>,
 }
 
 impl StreamReport {
@@ -72,6 +74,7 @@ impl StreamReport {
             peak_dbfs: None,
             rms_dbfs: None,
             idle: Duration::ZERO,
+            rtcp: None,
         }
     }
 
@@ -176,6 +179,14 @@ impl StreamState {
             max_jitter_ms: 0.0,
             ptime_ms: None,
         }
+    }
+
+    pub fn ssrc(&self) -> Option<u32> {
+        self.ssrc
+    }
+
+    pub fn clock(&self) -> Option<f64> {
+        self.clock
     }
 
     pub fn packet(

@@ -5,8 +5,13 @@ use crate::device;
 use crate::dsp::db_to_lin;
 use crate::format::{AudioFormat, Encoding};
 use crate::jitter::{jitter_buffer, JitterWriter};
+use crate::rtcp::{ReceiverRtcp, RtcpConfig};
 use anyhow::{anyhow, Context, Result};
 use mcast_core::net::{open_receiver, MulticastOptions};
+use mcast_core::rtcp::{
+    ntp_diff_secs, ntp_now, sdes_for, ClockMapping, Packet, Playout, ReceptionStats, SDES_CNAME,
+    SDES_NAME,
+};
 use mcast_core::rtp::{self, SeqEvent, SequenceTracker};
 use std::fs::File;
 use std::io::{BufWriter, ErrorKind};
@@ -46,6 +51,8 @@ pub struct ReceiverConfig {
     pub duration: Option<Duration>,
     /// How often to emit `Event::Stats`.
     pub stats_interval: Duration,
+    /// Listen for the sender's RTCP and send receiver reports (RTP port + 1).
+    pub rtcp: Option<RtcpConfig>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -58,6 +65,12 @@ pub struct ReceiverStats {
     pub underruns: u64,
     pub overflows: u64,
     pub buffered: Duration,
+    /// RTCP sender reports heard from the current source.
+    pub sender_reports: u64,
+    /// How long packets take to get here from the sender's clock (smoothed;
+    /// only meaningful if both hosts' clocks are synced). Negative values
+    /// mean our clock is behind the sender's.
+    pub transit_secs: Option<f64>,
 }
 
 pub enum Event<'a> {
@@ -74,6 +87,21 @@ pub enum Event<'a> {
     },
     /// Packets couldn't be decoded (reported once per source).
     DecodeError {
+        message: String,
+    },
+    /// The sender described itself over RTCP (once per source).
+    SenderInfo {
+        ssrc: u32,
+        cname: Option<String>,
+        name: Option<String>,
+    },
+    /// The sender said the stream has ended (RTCP BYE).
+    Bye {
+        ssrc: u32,
+        reason: Option<String>,
+    },
+    /// Something non-fatal went wrong (e.g. couldn't join the RTCP group).
+    Warning {
         message: String,
     },
 }
@@ -159,6 +187,50 @@ struct Current {
     /// False if this source can't be written to the open output.
     accept: bool,
     reported_error: bool,
+    /// RTP clock rate, for RTCP statistics.
+    clock: f64,
+    reception: ReceptionStats,
+    /// From the sender's last SR: its clock, and when the SR arrived.
+    mapping: Option<ClockMapping>,
+    last_sr: Option<(u64, Instant)>,
+    sender_reports: u64,
+    transit: Option<f64>,
+    described: bool,
+}
+
+impl Current {
+    fn rtcp(&mut self, packets: &[Packet], at: Instant, on_event: &mut impl FnMut(Event<'_>)) {
+        for p in packets {
+            match p {
+                Packet::SenderReport { ssrc, info, .. } if *ssrc == self.ssrc => {
+                    self.mapping = Some(ClockMapping {
+                        ntp: info.ntp,
+                        rtp_timestamp: info.rtp_timestamp,
+                        clock_rate: self.clock,
+                    });
+                    self.last_sr = Some((info.ntp, at));
+                    self.sender_reports += 1;
+                }
+                Packet::Bye { ssrcs, reason } if ssrcs.contains(&self.ssrc) => {
+                    on_event(Event::Bye {
+                        ssrc: self.ssrc,
+                        reason: reason.clone(),
+                    })
+                }
+                _ => {}
+            }
+        }
+        if !self.described {
+            if let Some(c) = sdes_for(packets, self.ssrc) {
+                self.described = true;
+                on_event(Event::SenderInfo {
+                    ssrc: self.ssrc,
+                    cname: c.item(SDES_CNAME).map(str::to_string),
+                    name: c.item(SDES_NAME).map(str::to_string),
+                });
+            }
+        }
+    }
 }
 
 /// Receive until `stop` is set or `duration` elapses.
@@ -181,12 +253,44 @@ pub fn run(
     let mut buf = vec![0u8; 65_536];
     let mut decoded = Vec::new();
     let gain = Gain::new(cfg.volume_db);
+    let mut rtcp = match &cfg.rtcp {
+        Some(r) => match ReceiverRtcp::open(&cfg.net, r.name.as_deref(), r.interval) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                on_event(Event::Warning {
+                    message: format!("no RTCP: {e}"),
+                });
+                None
+            }
+        },
+        None => None,
+    };
 
     while !stop.load(Ordering::Relaxed) && cfg.duration.map_or(true, |d| start.elapsed() < d) {
         if last_stats.elapsed() >= cfg.stats_interval {
             last_stats = Instant::now();
             refresh(&mut stats, lost_before, current.as_ref(), output.as_ref());
             on_event(Event::Stats(&stats));
+        }
+
+        if let Some(r) = rtcp.as_mut() {
+            for m in r.listener.drain() {
+                if let Some(cur) = current.as_mut() {
+                    cur.rtcp(&m.packets, m.at, &mut on_event);
+                }
+            }
+            if r.due() {
+                let buffered = buffered(output.as_ref());
+                let (block, playout) = match current.as_mut() {
+                    Some(c) => (
+                        c.reception
+                            .report(c.ssrc, c.last_sr.map(|(ntp, at)| (ntp, at.elapsed()))),
+                        Some(Playout::new(c.ssrc, c.transit, buffered)),
+                    ),
+                    None => (None, None),
+                };
+                r.report(block, playout);
+            }
         }
 
         let (len, from) = match socket.recv_from(&mut buf) {
@@ -201,6 +305,9 @@ pub fn run(
             }
             Err(e) => return Err(e).context("receiving"),
         };
+        if mcast_core::rtcp::looks_like_rtcp(&buf[..len]) {
+            continue; // RTCP on the RTP port: not audio
+        }
         let Ok(pkt) = rtp::parse(&buf[..len]) else {
             stats.invalid += 1;
             continue;
@@ -252,6 +359,13 @@ pub fn run(
                 last_samples: 0,
                 accept,
                 reported_error: false,
+                clock: spec.rtp_clock_rate() as f64,
+                reception: ReceptionStats::new(),
+                mapping: None,
+                last_sr: None,
+                sender_reports: 0,
+                transit: None,
+                described: false,
             });
             on_event(Event::NewSource {
                 ssrc: pkt.header.ssrc,
@@ -267,6 +381,15 @@ pub fn run(
             continue;
         }
         stats.packets += 1;
+
+        let h = pkt.header;
+        let arrival = start.elapsed().as_secs_f64() * cur.clock;
+        cur.reception.packet(h.sequence, h.timestamp, arrival);
+        if let Some(m) = cur.mapping {
+            // How long since the sender's clock said this audio was sent.
+            let t = ntp_diff_secs(ntp_now(), m.ntp_for(h.timestamp));
+            cur.transit = Some(cur.transit.map_or(t, |prev| prev + (t - prev) / 32.0));
+        }
 
         decoded.clear();
         match cur.tracker.update(pkt.header.sequence) {
@@ -352,12 +475,24 @@ fn refresh(
     if let Some(c) = current {
         stats.lost = lost_before + c.tracker.lost;
         stats.late = c.tracker.late;
+        stats.sender_reports = c.sender_reports;
+        stats.transit_secs = c.transit;
     }
     if let Some(Output::Play { buffer, format, .. }) = output {
         let jb = buffer.stats();
         stats.underruns = jb.underruns;
         stats.overflows = jb.overflows;
         stats.buffered = format.duration_of(jb.buffered_frames);
+    }
+}
+
+/// Audio queued for playback.
+fn buffered(output: Option<&Output>) -> Duration {
+    match output {
+        Some(Output::Play { buffer, format, .. }) => {
+            format.duration_of(buffer.stats().buffered_frames)
+        }
+        _ => Duration::ZERO,
     }
 }
 

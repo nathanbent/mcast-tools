@@ -5,16 +5,25 @@
 //! interarrival jitter (RFC 3550), packet time, received TTL and DSCP, and
 //! for audio codecs we can decode, the audio level. Non-RTP traffic is
 //! counted too.
+//!
+//! It also listens on each group's RTCP port (RTP port + 1): sender reports
+//! give a heartbeat, the one-way delay and media clock drift; receiver
+//! reports show who is listening, with their loss, jitter and (for
+//! mcast-tools receivers) how far behind the sender they play.
 
+mod rtcp;
 mod stats;
 
+pub use rtcp::{ListenerReport, SenderRtcp};
 pub use stats::{dscp_name, StreamReport};
 
 use mcast_audio::{StreamInfo, StreamSpec};
 use mcast_core::net::{
     enable_packet_info, open_receiver, recv_with_info, Interface, MulticastOptions,
 };
+use mcast_core::rtcp::{ntp_now, rtcp_addr, Packet};
 use mcast_core::sap::{Directory, DirectoryEvent};
+use rtcp::Participant;
 use stats::{StreamKey, StreamState};
 use std::collections::BTreeMap;
 use std::io::{self, ErrorKind};
@@ -78,6 +87,14 @@ enum Event {
         tos: Option<u8>,
         at: Instant,
     },
+    Rtcp {
+        group: usize,
+        packets: Vec<Packet>,
+        from: SocketAddr,
+        /// Local wall-clock arrival time (NTP format).
+        ntp: u64,
+        at: Instant,
+    },
     Sap(Box<DirectoryEvent>),
     JoinError {
         group: usize,
@@ -100,6 +117,8 @@ pub struct Monitor {
     default_spec: Option<StreamSpec>,
     groups: Vec<Group>,
     streams: BTreeMap<StreamKey, StreamState>,
+    /// RTCP participants by (group, SSRC).
+    participants: BTreeMap<(usize, u32), Participant>,
     started: Instant,
     last_report: Instant,
     sap_stop: Arc<AtomicBool>,
@@ -116,6 +135,7 @@ impl Monitor {
             default_spec: cfg.default_spec,
             groups: Vec::new(),
             streams: BTreeMap::new(),
+            participants: BTreeMap::new(),
             started: now,
             last_report: now,
             sap_stop: Arc::new(AtomicBool::new(false)),
@@ -149,53 +169,12 @@ impl Monitor {
         let stop = Arc::new(AtomicBool::new(false));
         let mut opts = MulticastOptions::new(target.group)?;
         opts.interface = self.interface;
-        let (tx, thread_stop) = (self.tx.clone(), stop.clone());
-        thread::spawn(move || {
-            let socket = match open_receiver(&opts).and_then(|s| {
-                enable_packet_info(&s)?;
-                s.set_read_timeout(Some(Duration::from_millis(200)))?;
-                Ok(s)
-            }) {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = tx.send(Event::JoinError {
-                        group: index,
-                        error: e.to_string(),
-                    });
-                    return;
-                }
-            };
-            let mut buf = vec![0u8; 65_536];
-            while !thread_stop.load(Ordering::Relaxed) {
-                match recv_with_info(&socket, &mut buf) {
-                    Ok(r) => {
-                        let event = Event::Packet {
-                            group: index,
-                            data: buf[..r.len].to_vec(),
-                            from: r.from,
-                            ttl: r.ttl,
-                            tos: r.tos,
-                            at: Instant::now(),
-                        };
-                        if tx.send(event).is_err() {
-                            return;
-                        }
-                    }
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                        ) => {}
-                    Err(e) => {
-                        let _ = tx.send(Event::JoinError {
-                            group: index,
-                            error: e.to_string(),
-                        });
-                        return;
-                    }
-                }
-            }
-        });
+        if let Some(group) = rtcp_addr(target.group) {
+            let mut rtcp = opts.clone();
+            rtcp.group = group;
+            listen(rtcp, index, true, self.tx.clone(), stop.clone());
+        }
+        listen(opts, index, false, self.tx.clone(), stop.clone());
         self.groups.push(Group {
             target,
             from_sap,
@@ -246,6 +225,26 @@ impl Monitor {
                     .entry(key)
                     .or_insert_with(|| StreamState::new(at, announced, fallback, clock))
                     .packet(&data, ttl, tos, at, started);
+            }
+            Event::Rtcp {
+                group,
+                packets,
+                from,
+                ntp,
+                at,
+            } => {
+                // Each packet in a compound may come from a different SSRC
+                // (SDES chunks), but in practice it's the sender's own.
+                let Some(ssrc) = packets.iter().find_map(packet_ssrc) else {
+                    return;
+                };
+                let p = self
+                    .participants
+                    .entry((group, ssrc))
+                    .or_insert_with(|| Participant::new(from, at));
+                for packet in &packets {
+                    p.update(ssrc, packet, from, ntp, at);
+                }
             }
             Event::JoinError { group, error } => self.groups[group].error = Some(error),
             Event::Sap(e) => self.handle_sap(*e),
@@ -329,6 +328,7 @@ impl Monitor {
         self.streams.retain(|k, s| {
             !ended.contains(&k.group) || now.duration_since(s.last_seen) < Duration::from_secs(5)
         });
+        self.participants.retain(|_, p| !p.expired(now));
         rows
     }
 
@@ -338,8 +338,46 @@ impl Monitor {
         let now = Instant::now();
         self.streams
             .iter()
-            .map(|(k, s)| s.totals(self.base(k), elapsed, now))
+            .map(|(k, s)| {
+                let mut r = s.totals(self.base(k), elapsed, now);
+                r.rtcp = self.sender_rtcp(k.group, r.ssrc, now);
+                r
+            })
             .collect()
+    }
+
+    /// Receivers heard on each group's RTCP port.
+    pub fn listeners(&self) -> Vec<ListenerReport> {
+        let now = Instant::now();
+        self.participants
+            .iter()
+            .filter(|(_, p)| !p.is_sender())
+            .map(|(&(group, ssrc), p)| {
+                p.listener_report(
+                    self.groups[group].target.group,
+                    ssrc,
+                    |about| self.clock(group, about),
+                    now,
+                )
+            })
+            .collect()
+    }
+
+    /// RTP clock rate of the stream `ssrc` on `group`.
+    fn clock(&self, group: usize, ssrc: u32) -> Option<f64> {
+        self.streams
+            .iter()
+            .filter(|(k, _)| k.group == group)
+            .find(|(_, s)| s.ssrc() == Some(ssrc))
+            .and_then(|(_, s)| s.clock())
+            .or(self.groups[group].target.clock_rate.map(f64::from))
+    }
+
+    fn sender_rtcp(&self, group: usize, ssrc: Option<u32>, now: Instant) -> Option<SenderRtcp> {
+        let ssrc = ssrc?;
+        self.participants
+            .get(&(group, ssrc))?
+            .sender_report(self.clock(group, ssrc), now)
     }
 
     fn base(&self, k: &StreamKey) -> StreamReport {
@@ -352,10 +390,13 @@ impl Monitor {
         mut f: impl FnMut(&mut StreamState, StreamReport) -> StreamReport,
     ) -> Vec<StreamReport> {
         let keys: Vec<StreamKey> = self.streams.keys().cloned().collect();
+        let now = Instant::now();
         keys.into_iter()
             .map(|k| {
                 let base = self.base(&k);
-                f(self.streams.get_mut(&k).unwrap(), base)
+                let mut r = f(self.streams.get_mut(&k).unwrap(), base);
+                r.rtcp = self.sender_rtcp(k.group, r.ssrc, now);
+                r
             })
             .collect()
     }
@@ -368,4 +409,92 @@ impl Drop for Monitor {
             g.stop.store(true, Ordering::Relaxed);
         }
     }
+}
+
+fn packet_ssrc(p: &Packet) -> Option<u32> {
+    match p {
+        Packet::SenderReport { ssrc, .. }
+        | Packet::ReceiverReport { ssrc, .. }
+        | Packet::App { ssrc, .. } => Some(*ssrc),
+        Packet::Bye { ssrcs, .. } => ssrcs.first().copied(),
+        Packet::Sdes(chunks) => chunks.first().map(|c| c.ssrc),
+        Packet::Other { .. } => None,
+    }
+}
+
+/// Receive on a group in a background thread, until `stop`. RTP-port
+/// errors are reported; the RTCP port is best effort.
+fn listen(
+    opts: MulticastOptions,
+    group: usize,
+    rtcp: bool,
+    tx: Sender<Event>,
+    stop: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let socket = match open_receiver(&opts).and_then(|s| {
+            enable_packet_info(&s)?;
+            s.set_read_timeout(Some(Duration::from_millis(200)))?;
+            Ok(s)
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                if !rtcp {
+                    let _ = tx.send(Event::JoinError {
+                        group,
+                        error: e.to_string(),
+                    });
+                }
+                return;
+            }
+        };
+        let mut buf = vec![0u8; 65_536];
+        while !stop.load(Ordering::Relaxed) {
+            match recv_with_info(&socket, &mut buf) {
+                Ok(r) => {
+                    let at = Instant::now();
+                    // RTCP sharing the RTP port (RFC 5761 mux) is recognisable
+                    // by its packet type.
+                    let event = if rtcp || mcast_core::rtcp::looks_like_rtcp(&buf[..r.len]) {
+                        let Ok(packets) = mcast_core::rtcp::parse(&buf[..r.len]) else {
+                            continue;
+                        };
+                        Event::Rtcp {
+                            group,
+                            packets,
+                            from: r.from,
+                            ntp: ntp_now(),
+                            at,
+                        }
+                    } else {
+                        Event::Packet {
+                            group,
+                            data: buf[..r.len].to_vec(),
+                            from: r.from,
+                            ttl: r.ttl,
+                            tos: r.tos,
+                            at,
+                        }
+                    };
+                    if tx.send(event).is_err() {
+                        return;
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) => {}
+                Err(e) => {
+                    if !rtcp {
+                        let _ = tx.send(Event::JoinError {
+                            group,
+                            error: e.to_string(),
+                        });
+                    }
+                    return;
+                }
+            }
+        }
+    });
 }

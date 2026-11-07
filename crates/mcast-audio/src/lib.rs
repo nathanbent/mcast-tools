@@ -14,6 +14,7 @@ pub mod jitter;
 pub mod packetizer;
 pub mod process;
 pub mod receiver;
+pub mod rtcp;
 pub mod sender;
 pub mod session;
 

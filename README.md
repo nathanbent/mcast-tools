@@ -206,6 +206,46 @@ mcast audio send --file page.wav -e g711u -p -C -L 500 -o mcast.wav
   `ffplay -protocol_whitelist file,udp,rtp stream.sdp` or VLC.
 - ffmpeg can play our streams straight from SAP: `ffplay sap://239.255.255.255`.
 
+### RTCP: heartbeat and sync
+
+Senders and receivers also talk RTCP (RFC 3550) on the RTP port + 1
+(5005 for a stream on 5004). This is the same port ffmpeg's RTP output, and
+so `mcast-play.sh`, has always used.
+
+- **Senders** send a Sender Report about every 5 s. It maps the stream's
+  RTP timestamps to the sender's wall clock and includes the stream name. When
+  the stream ends they send a BYE.
+- **Receivers** (`mcast audio recv`) send Receiver Reports with their loss
+  and jitter, their name (`-n Kitchen`, default the hostname), and how far
+  behind the sender they're playing.
+
+```bash
+mcast audio send --file page.wav -e g711u -n "Page"
+mcast audio recv --stream page -n Kitchen
+#   rtcp: ssrc 319ca154 is "Page" (mcast@10.0.0.5)
+#   packets 377 lost 0 ... | transit 1.2ms, playing 41.2ms behind sender
+#   rtcp: ssrc 319ca154 ended the stream
+```
+
+"Transit" compares the arrival time against the sender's clock, so it is only
+the real network delay if both machines' clocks are in sync (NTP gets within a
+few ms; PTP within µs). Without synced clocks it shows the difference between
+the clocks instead, which is still steady unless the clocks drift.
+"Playing behind" adds the audio waiting in the playout buffer. It doesn't
+include the sound card's own latency, which isn't visible to us.
+
+| Option | Meaning |
+|---|---|
+| `--no-rtcp` | Don't send or listen for RTCP |
+| `--rtcp-interval SECS` | Average time between reports (default 5; each is randomised ±50% as RFC 3550 asks) |
+| `-n, --name` | (`recv`) Name to report, e.g. the room |
+
+RTCP is a few hundred bytes every few seconds. If your phones page on
+consecutive ports (e.g. channel 1 on 10000, channel 2 on 10001), channel 1's
+RTCP lands on channel 2's port. Phones should drop it, since it looks like an
+RTP packet with payload type 72, which no codec uses. `mcast` receivers
+recognise it and skip it. To be safe, `--no-rtcp` stops it being sent at all.
+
 Defaults: group `239.69.0.1:5004`, 48 kHz, 2 channels, L16, 1 ms packets, TTL 16.
 
 Network options:
@@ -251,13 +291,40 @@ Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   163
 
 TTL and DSCP are reported on Linux.
 
+The monitor also listens on each group's RTCP port and adds lines under each
+stream: the sender's heartbeat, and everyone listening:
+
+```
+Page 239.69.0.11:5004          10.0.0.5:59325        PCMU/8000/1      50.0     68.8   0.0%     0   0.1ms 20.0ms   16 EF    ██████████  -2.4 dBFS
+                               └ rtcp: "Page", SR every 5.0s, last 2s ago, one-way 0.4ms, media clock +12 ppm
+                               └ listener Kitchen (10.0.0.21): loss 0.0%, jitter 0.2ms, plays 41.3ms behind (transit 1.3 + buffer 40.0), heard 1s ago
+                               └ listener Lobby (10.0.0.22): loss 0.4%, jitter 1.1ms, plays 43.9ms behind (transit 3.9 + buffer 40.0), heard 3s ago
+                               └ sync: 2 listeners within 2.6ms of each other
+```
+
+- **SR … last Ns ago**: the sender's heartbeat. "(reports stopped)" appears
+  if none arrive for 15 s, and the status says "ended (BYE)" when the sender
+  signs off.
+- **one-way**: when the last SR arrived minus its timestamp: the network
+  delay if the clocks are synced, otherwise the offset between them.
+- **media clock**: how fast the stream's sample clock runs against the
+  sender's wall clock, after 10 s of reports. A capture card that's 50 ppm
+  fast gains 180 ms an hour, and receivers have to absorb that.
+- **listener**: any RTP receiver that sends reports, with its loss and
+  jitter. `mcast audio recv` also reports how far behind it plays. The
+  **sync** line shows the spread across listeners, which tells you whether
+  rooms are hearing the same thing at the same time.
+
+These delay figures are only as good as the clocks they're measured with.
+Listeners are forgotten 30 s after their last report.
+
 ## Layout
 
 | Crate | Purpose |
 |---|---|
-| `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
+| `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP, SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
-| `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
+| `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
 
@@ -266,5 +333,6 @@ subcommand in the CLI.
 
 ## Roadmap ideas
 
-- Audio: PTP-aligned timestamps (AES67), resampling on playback
+- Audio: PTP-aligned timestamps (AES67), resampling on playback, playing
+  in step across receivers (using the RTCP clock mapping)
 - Other: file transfer, chat, ping/latency, relay/bridge between interfaces
