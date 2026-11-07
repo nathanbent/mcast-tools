@@ -12,6 +12,7 @@ use crate::convert::{map_channels, Converter};
 use crate::device;
 use crate::file::AudioFile;
 use crate::packetizer::Packetizer;
+use crate::pad::Pad;
 use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
 use anyhow::{anyhow, bail, Context, Result};
 use mcast_core::net::{open_sender, MulticastOptions};
@@ -35,6 +36,8 @@ const FADE_OUT: Duration = Duration::from_millis(300);
 pub enum Source {
     /// Sine test tone.
     Tone { frequency: f32, amplitude: f32 },
+    /// Soft chord progression (see `pad`); `amplitude` is its peak.
+    Pad { amplitude: f32 },
     /// Audio file (WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ...), converted to
     /// the stream's rate and channels.
     File { path: PathBuf, looped: bool },
@@ -113,6 +116,7 @@ enum Input {
         phase: f32,
         amplitude: f32,
     },
+    Pad(Pad),
     File {
         file: AudioFile,
         looped: bool,
@@ -147,6 +151,7 @@ impl Reader {
                 phase: 0.0,
                 amplitude: *amplitude,
             },
+            Source::Pad { amplitude } => Input::Pad(Pad::new(rate, *amplitude)),
             Source::File { path, looped } => {
                 let mut file = AudioFile::open(path)?;
                 if let Some(s) = start {
@@ -197,6 +202,10 @@ impl Reader {
                     frame.fill(phase.sin() * *amplitude);
                     *phase = (*phase + *step) % std::f32::consts::TAU;
                 }
+                out.len()
+            }
+            Input::Pad(pad) => {
+                pad.fill(out, self.channels);
                 out.len()
             }
             Input::File { file, looped } => {
@@ -277,7 +286,7 @@ impl Sender {
     pub fn new(cfg: SenderConfig) -> Result<Self> {
         let mut spec = cfg.stream;
         let source_format = match &cfg.source {
-            Source::Tone { .. } => (spec.sample_rate, spec.channels),
+            Source::Tone { .. } | Source::Pad { .. } => (spec.sample_rate, spec.channels),
             Source::File { path, .. } => {
                 let f = AudioFile::open(path)?;
                 let (file_rate, file_channels) = (f.sample_rate(), f.channels());
@@ -299,7 +308,7 @@ impl Sender {
         }
         // Tones are generated at the stream rate.
         let source_format = match cfg.source {
-            Source::Tone { .. } => (spec.sample_rate, spec.channels),
+            Source::Tone { .. } | Source::Pad { .. } => (spec.sample_rate, spec.channels),
             _ => source_format,
         };
         if cfg.start.is_some() && !matches!(cfg.source, Source::File { .. }) {

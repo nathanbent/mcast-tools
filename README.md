@@ -88,10 +88,17 @@ Send a test tone, an audio file (WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ALAC), or 
 
 ```bash
 mcast audio send --tone 440                    # 440 Hz at -12 dBFS
+mcast audio send --tone pad                    # soft, slowly changing chord (peak -12 dBFS)
 mcast audio send --file music.mp3 --loop       # MP3, FLAC, Ogg, M4A/AAC, WAV...
 mcast audio send --capture                     # default input device
 mcast audio send --capture "USB" -g 239.69.0.5:5004 -e l24
 ```
+
+`--tone pad` is easier to listen to than a sine: four chords (Cmaj7, Am7,
+Fmaj7, G6) of 8 s each that cross-fade into one another, every note a slightly
+detuned pair for a slow chorus and some stereo width. It's steady enough that a
+dropped packet or click still stands out, and its upper notes sit at 290-530 Hz
+so it sounds much the same on G.711 as on Opus or L16. `--level` sets its peak.
 
 Senders announce their stream with SAP/SDP, so receivers find it on their own:
 

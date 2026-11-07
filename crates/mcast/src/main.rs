@@ -216,10 +216,11 @@ struct SendArgs {
     /// Disable Opus in-band forward error correction
     #[arg(long)]
     no_fec: bool,
-    /// Send a sine tone at this frequency (Hz) [default source]
-    #[arg(long, group = "source")]
-    tone: Option<f32>,
-    /// Tone level in dBFS
+    /// Send a sine tone at this frequency (Hz), or "pad" for a soft, slowly
+    /// changing chord [default source: 440]
+    #[arg(long, group = "source", value_name = "HZ|pad", value_parser = parse_tone)]
+    tone: Option<Tone>,
+    /// Tone level in dBFS (for pad, its peak)
     #[arg(long, default_value_t = -12.0, allow_negative_numbers = true)]
     level: f32,
     /// Send an audio file: WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ALAC
@@ -284,6 +285,25 @@ struct SendArgs {
     /// Also write the stream's SDP to this file (for ffplay, VLC, etc.)
     #[arg(long, value_name = "FILE")]
     sdp: Option<PathBuf>,
+}
+
+/// `--tone` value: a sine frequency or the pad.
+#[derive(Clone, Copy, Debug)]
+enum Tone {
+    Sine(f32),
+    Pad,
+}
+
+fn parse_tone(s: &str) -> Result<Tone, String> {
+    if s.eq_ignore_ascii_case("pad") {
+        return Ok(Tone::Pad);
+    }
+    match s.parse::<f32>() {
+        Ok(f) if f > 0.0 && f.is_finite() => Ok(Tone::Sine(f)),
+        _ => Err(format!(
+            "expected a frequency in Hz or \"pad\", got \"{s}\""
+        )),
+    }
 }
 
 #[derive(Args)]
@@ -540,9 +560,14 @@ fn send_request(a: &SendArgs) -> Result<SendRequest> {
             device: Some(dev.clone()).filter(|d| d != "default"),
         }
     } else {
-        SourceRequest::Tone {
-            frequency: a.tone.unwrap_or(440.0),
-            level_dbfs: a.level,
+        match a.tone.unwrap_or(Tone::Sine(440.0)) {
+            Tone::Sine(frequency) => SourceRequest::Tone {
+                frequency,
+                level_dbfs: a.level,
+            },
+            Tone::Pad => SourceRequest::Pad {
+                level_dbfs: a.level,
+            },
         }
     };
     Ok(SendRequest {

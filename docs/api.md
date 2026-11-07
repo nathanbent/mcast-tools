@@ -71,7 +71,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_mode` | follows `mode` | `voice` or `music` |
 | `opus_bandwidth` | | `nb`, `wb`, `swb`, `fb` |
 | `opus_fec` | `true` | |
-| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "file", "path": "NAME", "loop": false}`, or `{"type": "capture", "device": "USB"}` |
+| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, or `{"type": "capture", "device": "USB"}` |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | |
 | `chime` | | `"default"` (built-in, or `$MCAST_CHIME`) or `{"file": "NAME"}` |

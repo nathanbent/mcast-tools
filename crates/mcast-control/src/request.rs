@@ -93,6 +93,11 @@ pub enum SourceRequest {
         #[serde(default = "default_level")]
         level_dbfs: f32,
     },
+    /// A soft, slowly changing chord progression; the level is its peak.
+    Pad {
+        #[serde(default = "default_level")]
+        level_dbfs: f32,
+    },
     /// An audio file (WAV, MP3, FLAC, Ogg, AAC/M4A, ALAC).
     File {
         path: PathBuf,
@@ -283,6 +288,9 @@ impl SendRequest {
                 level_dbfs,
             } => sender::Source::Tone {
                 frequency: *frequency,
+                amplitude: 10f32.powf(*level_dbfs / 20.0),
+            },
+            SourceRequest::Pad { level_dbfs } => sender::Source::Pad {
                 amplitude: 10f32.powf(*level_dbfs / 20.0),
             },
         };
@@ -650,6 +658,16 @@ mod tests {
                 .to_config(Interface::Any)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn pad_source() {
+        let r: SendRequest = serde_json::from_str(r#"{"source": {"type": "pad"}}"#).unwrap();
+        let cfg = r.to_config(Interface::Any).unwrap();
+        assert!(
+            matches!(cfg.source, sender::Source::Pad { amplitude } if (amplitude - 0.251).abs() < 0.001)
+        );
+        assert!(r.endless());
     }
 
     #[test]
