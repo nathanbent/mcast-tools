@@ -69,7 +69,11 @@ fn pump(app: &mut App, rx: &Receiver<Msg>, what: &str, done: impl Fn(&App) -> bo
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done(app) {
         let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "timed out waiting for {what}");
+        assert!(
+            !left.is_zero(),
+            "timed out waiting for {what} (last status: {:?})",
+            app.status
+        );
         if let Ok(m) = rx.recv_timeout(left.min(Duration::from_millis(100))) {
             app.handle(m);
         }
@@ -285,7 +289,8 @@ fn chats_and_sends_files_by_keyboard() {
     assert_eq!(app.current_channel().unwrap().id, ear);
     key(&mut app, KeyCode::Char('i'));
     assert_eq!(app.mode, Mode::Normal);
-    assert!(screen(&app, 100, 12).contains("desk: hello from the tui"));
+    let s = screen(&app, 100, 12);
+    assert!(s.contains("desk: hello from the tui"), "{s}");
 
     // Files: upload, receive (r), send the selected file (f).
     let src = srv
@@ -433,4 +438,28 @@ fn shows_and_configures_probes() {
     key(&mut app, KeyCode::Char('y'));
     pump(&mut app, &rx, "the probe to go", |a| a.probes.is_empty());
     assert!(screen(&app, 120, 10).contains("No probes yet"));
+}
+
+#[test]
+fn a_list_fetched_before_an_event_does_not_undo_it() {
+    // Nothing listens here: the refetch this triggers just fails in the background.
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(Client::new("http://127.0.0.1:9", None), tx);
+    let alert = serde_json::json!({"type": "alert_raised", "alert": {
+        "id": 1, "kind": "probe_offline", "probe": "pi", "message": "pi stopped checking in",
+        "raised_ms": 1}});
+    app.handle(Msg::Feed(Feed::Event(alert)));
+    assert_eq!(app.alerts.len(), 1);
+    // The list asked for before that event arrives after it: ignored.
+    let empty = crate::model::AlertList::default();
+    app.handle(Msg::Alerts(0, Ok(empty.clone())));
+    assert_eq!(app.alerts.len(), 1, "a stale list mustn't hide the alert");
+    // One asked for after it is believed.
+    app.handle(Msg::Alerts(1, Ok(empty)));
+    assert!(app.alerts.is_empty());
+
+    let probe = serde_json::json!({"type": "probe_updated", "probe": {"id": "pi"}});
+    app.handle(Msg::Feed(Feed::Event(probe)));
+    app.handle(Msg::Probes(0, Ok(Vec::new())));
+    assert_eq!(app.probes.len(), 1, "a stale list mustn't hide the probe");
 }

@@ -13,7 +13,7 @@ Group=mcast
 SupplementaryGroups=audio
 EnvironmentFile=/etc/mcast/mcast.env
 Environment=HOME=/var/lib/mcast
-ExecStart=/usr/local/bin/mcast serve --listen ${MCAST_LISTEN} --iface ${MCAST_IFACE} --media-dir /var/lib/mcast/media $MCAST_EXTRA_ARGS
+ExecStart=/usr/local/bin/mcast serve --listen ${MCAST_LISTEN} --iface ${MCAST_IFACE} --media-dir /var/lib/mcast/media --probe-state /var/lib/mcast/probes.json $MCAST_EXTRA_ARGS
 Restart=on-failure
 RestartSec=3
 # Paging is latency-sensitive; stay ahead of background work.

@@ -29,6 +29,19 @@ function changed(what, detail) {
   for (const fn of subscribers) fn(what, detail);
 }
 
+// Probe and alert events applied so far. A list fetched while one arrived
+// would undo it, so it's fetched again instead of used.
+const applied = { probes: 0, alerts: 0 };
+
+// GET `path`, again if an event of `kind` arrived meanwhile.
+async function fresh(kind, path) {
+  for (;;) {
+    const before = applied[kind];
+    const value = await api("GET", path);
+    if (applied[kind] === before) return value;
+  }
+}
+
 export async function refresh(what) {
   switch (what) {
     case "jobs":
@@ -53,14 +66,14 @@ export async function refresh(what) {
       }
       break;
     case "probes":
-      state.probes = new Map((await api("GET", "/probes")).map((p) => [p.id, p]));
+      state.probes = new Map((await fresh("probes", "/probes")).map((p) => [p.id, p]));
       break;
     case "probe-defaults":
       state.probeDefaults = await api("GET", "/probe-defaults");
       what = "probes";
       break;
     case "alerts":
-      state.alerts = await api("GET", "/alerts");
+      state.alerts = await fresh("alerts", "/alerts");
       break;
     case "alert-rules":
       state.alertRules = await api("GET", "/alert-rules");
@@ -114,19 +127,23 @@ export function apply(event) {
       changed("monitor");
       break;
     case "alert_raised":
+      applied.alerts++;
       state.alerts.active = state.alerts.active.filter((a) => a.id !== event.alert.id).concat(event.alert);
       changed("alerts");
       break;
     case "alert_resolved":
+      applied.alerts++;
       state.alerts.active = state.alerts.active.filter((a) => a.id !== event.alert.id);
       state.alerts.recent = [event.alert, ...state.alerts.recent].slice(0, 200);
       changed("alerts");
       break;
     case "probe_updated":
+      applied.probes++;
       state.probes.set(event.probe.id, event.probe);
       changed("probes", event.probe.id);
       break;
     case "probe_removed":
+      applied.probes++;
       state.probes.delete(event.id);
       changed("probes", event.id);
       break;

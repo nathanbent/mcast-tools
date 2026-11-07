@@ -20,7 +20,7 @@ MCAST_SERVE=yes
 MCAST_LISTEN="0.0.0.0:8650"
 MCAST_TOKEN=""
 # Interface for jobs, discovery and monitoring: "any", an IPv4 address or an
-# interface index (see "mcast serve --help").
+# interface index (see "mcast serve --help"). A probe uses it too.
 MCAST_IFACE="any"
 # Extra arguments for "mcast serve", e.g. "--watch 239.192.2.1:10000".
 MCAST_EXTRA_ARGS=""

@@ -50,6 +50,19 @@ doesn't reach the probe, for example on another subnet, name the server:
 mcast probe run --server http://10.0.0.5:8650 --token PROBES
 ```
 
+Other `mcast probe run` options:
+- `--iface IP`: the interface to join groups and hear the beacon on.
+- `--sap-group ADDR:PORT`: the SAP groups to listen on, if your senders
+  announce somewhere other than the usual ones. The probe uses its own,
+  not the server's.
+- `--unicast-port`, `--advertise`: see [Unicast comparison](#unicast-comparison).
+- `--max-queue`: how many reports to keep while the server is unreachable.
+- `--verbose`: print every report.
+
+`--server`, `--token`, `--id` and `--server-name` can also come from
+`MCAST_URL`, `MCAST_TOKEN`, `MCAST_PROBE_ID` and `MCAST_SERVER_NAME`. An
+empty value counts as not set.
+
 On a Raspberry Pi, `pi/install.sh` sets the probe up as a systemd service
 (`ENABLE_PROBE=yes`); see [pi/README.md](../pi/README.md#probes).
 
@@ -68,7 +81,8 @@ the top, a row per probe, and the selected probe's streams, verdicts and
 timeline.
 
 **Command line**, from anywhere that can reach the server, with the admin
-token:
+token (don't start a probe in this shell: `mcast probe run` reads the same
+variables, so it would skip discovery and use the admin token):
 
 ```bash
 export MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN
@@ -86,8 +100,9 @@ idf-3 [3rd floor IDF]  online  host pi-idf3  v0.2.0
 Each report covers one interval: packets, lost and late packets, loss
 percentage, jitter (RFC 3550), the largest gap between packets, TTL, DSCP
 and audio level, per sender per group. The totals add up every report since
-the server started: packets, loss, how many intervals had loss, the largest
-gap and the worst jitter.
+the server first saw the probe (since the server started, or since the probe
+was forgotten and came back): packets, loss, how many intervals had loss,
+the largest gap and the worst jitter.
 
 **API and events**: `GET /api/v1/probes`, `/probes/{id}/reports`,
 `/alerts`, and the `probe_updated`, `alert_raised` and `alert_resolved`
@@ -114,8 +129,10 @@ mcast probe config idf-3 --reset                          # back to the defaults
 mcast probe config --defaults --group 239.192.2.1:10000   # for every probe without its own
 ```
 
-The same settings are in the web GUI (Configure on a probe's card, and
-Defaults) and the TUI (`u`, `s`, `l`, `g`, `i` and `D` on the Probes tab).
+The same settings are in the web GUI: Configure on a probe's card, and
+Defaults for the defaults. In the TUI, on the Probes tab, `u`, `s`, `l`, `g`
+and `i` change the selected probe, and `D` puts it back on the defaults. The
+defaults themselves and the alert rules can't be changed from the TUI.
 
 You can configure a probe before it's deployed: `mcast probe config NAME
 ...`, or "Add probe" in the web GUI. It gets that configuration when it
@@ -123,9 +140,11 @@ first checks in. A probe shows "config not applied yet" until it confirms it
 runs the configuration it was given.
 
 Known probes and their configurations, the defaults and the alert rules are
-kept in `~/.local/share/mcast/probes.json` (`mcast serve --probe-state
-FILE`), so they survive a server restart. Reports and totals are kept in
-memory only.
+kept in `probes.json`, so they survive a server restart. It's in
+`$XDG_DATA_HOME/mcast/` (normally `~/.local/share/mcast/`), or at
+`/var/lib/mcast/probes.json` on a Pi set up by `pi/install.sh`; `mcast serve
+--probe-state FILE` puts it elsewhere. Reports and totals are kept in memory
+only.
 
 ## Unicast comparison
 
@@ -173,7 +192,7 @@ The server raises an alert when:
 | Alert | When |
 |---|---|
 | `probe_offline` | A probe misses three check-ins in a row, plus 5 s (35 s at the default interval). Dated from its last check-in |
-| `multicast_loss` | A multicast stream loses at least `loss_percent` of its packets in `raise_after` report intervals in a row. The message says whether the stream's unicast copy was clean (look at the multicast path) or lossy too (look at the network or the sender), when the probe gets copies |
+| `multicast_loss` | A multicast stream (one sender on one group) loses at least `loss_percent` of its packets in `raise_after` report intervals in a row. If the stream's unicast copy arrived too, the message says whether the copy was clean (look at the multicast path) or lossy too (look at the network or the sender) |
 | `no_multicast` | For `raise_after` intervals in a row, a probe gets a stream's unicast copy but not the stream itself |
 
 An alert is resolved after `clear_after` clean intervals in a row, when a
@@ -260,10 +279,10 @@ each probe reports to the one whose token it was given. `--server-name NAME`
 narrows it further, to servers whose hostname contains NAME.
 
 **Staying with it.** The probe keeps its server while that keeps announcing
-itself. It follows the server to a new address (the same name heard from
-another address, after a DHCP change, say). It moves to another server that
-passes the check only when its own has been silent for 20 s. If the beacons
-stop but the server still answers, check-ins carry on.
+itself. Once its server has been silent for 20 s, it moves on. It prefers
+the same server name heard from a new address (after a DHCP change, say),
+and otherwise picks another server that passes the check. If the beacons
+stop and nothing else is heard, it keeps checking in with the server it has.
 
 **Server settings**:
 - `--no-beacon` turns the beacon off.
@@ -294,7 +313,7 @@ unicast copies.
 3. If more reports are queued, the probe checks in again at once, and also
    straight after applying a new configuration. Otherwise it checks in at its
    next report. While the server can't be reached it retries after 2 s,
-   doubling up to the report interval.
+   doubling up to 64 s or the report interval, whichever is shorter.
 
 The check-in is the heartbeat: a probe that misses three in a row, plus 5 s,
 shows as offline.
@@ -316,7 +335,10 @@ The full protocol, with every field, is in [api.md](api.md#probes).
 - **Two tokens.** `--token` is the admin token: it can page, configure and
   read everything. `--probe-token` only opens `POST
   /api/v1/probes/{id}/checkin`, so the token copied onto every probe can't be
-  used to page. Probes may use the admin token too, but shouldn't.
+  used to page. Probes may use the admin token too, but shouldn't. The probe
+  token only means something alongside an admin token: without `--token`
+  every route is open, so `mcast serve` refuses `--probe-token` alone. That
+  includes a server listening on loopback behind a proxy.
 - **Plain HTTP.** Anyone who can see the traffic can read a token. On an
   untrusted network, put the server behind a TLS reverse proxy, give probes
   `--server https://...`, and turn the beacon off (`--no-beacon`).
@@ -325,9 +347,13 @@ The full protocol, with every field, is in [api.md](api.md#probes).
   mistake. It doesn't stop an attacker on the network path. Such an attacker
   can read tokens from plain HTTP anyway, and could also relay the challenge
   to the real server.
-- **What a probe token allows.** A probe can check in under any ID, and ask
-  for unicast copies at any address it names. Copies go only to probes with
-  `unicast` turned on by an admin, and stop once the probe goes offline.
+- **What a probe token allows.** Whoever has it can check in under any ID,
+  which adds that probe and saves it in `probes.json`. A probe can also ask
+  for unicast copies at any address it names. Copies go only to probes whose
+  configuration has `unicast` on, and stop once the probe goes offline. Turn
+  `unicast` on for chosen probes, not in the defaults: in the defaults it
+  applies to new IDs too. Then anyone with the probe token could have every
+  page copied to an address of their choosing.
 
 ## Troubleshooting
 
@@ -345,8 +371,9 @@ mcast-probe -f` on a Pi, or run `mcast probe run` in a terminal).
 
 **"Config not applied yet" doesn't go away.** The probe hasn't checked in
 since the change (it's offline, or on a long report interval), or it
-couldn't start monitoring as asked. Its log says why, and it tries again at
-every check-in.
+couldn't start monitoring as asked. In that case it reports that it runs
+no configuration until it can. Its log says why, and it tries again at every
+check-in.
 
 **An error under a probe's streams, like "0.0.0.0:5104: Address already in
 use".** The probe couldn't listen on a group or its unicast port; another

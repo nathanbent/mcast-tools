@@ -171,6 +171,14 @@ pub async fn serve(
             cfg.listen
         );
     }
+    if cfg.token.as_deref().map_or(true, str::is_empty)
+        && cfg.probe_token.as_deref().is_some_and(|t| !t.is_empty())
+    {
+        bail!(
+            "--probe-token without --token would restrict nothing: without an admin token \
+             every route is open. Set --token / MCAST_TOKEN as well"
+        );
+    }
     let (close_tx, close_rx) = watch::channel(false);
     let state = {
         let cfg = cfg.clone();

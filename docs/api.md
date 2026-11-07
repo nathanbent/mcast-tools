@@ -22,12 +22,16 @@ Ctrl-C or SIGTERM stops every job (withdrawing their SAP announcements) before e
 ## Authentication
 
 With `--token` (or `MCAST_TOKEN`), every request needs
-`Authorization: Bearer TOKEN`. Browsers' `EventSource` can't set headers, so
-`?access_token=TOKEN` is accepted too. The server won't start on a
-non-loopback address without a token. `--probe-token` (or
-`MCAST_PROBE_TOKEN`) is a second token that only opens
-`POST /probes/{id}/checkin`, for the probes. It speaks plain HTTP: beyond a trusted
-LAN, put it behind a TLS reverse proxy.
+`Authorization: Bearer TOKEN`, except `GET /probe-hello`, which needs none.
+Browsers' `EventSource` can't set headers, so `?access_token=TOKEN` is
+accepted too. Without `--token` every route is open, so the server won't
+start on a non-loopback address without one.
+
+`--probe-token` (or `MCAST_PROBE_TOKEN`) is a second token that only opens
+`POST /probes/{id}/checkin`, for the probes. It needs `--token` as well.
+
+The server speaks plain HTTP: beyond a trusted LAN, put it behind a TLS
+reverse proxy.
 
 ## Errors
 
@@ -293,8 +297,10 @@ name.
 
 See [probes.md](probes.md) for what probes are and how to use them.
 
-A probe config (`PUT /probes/{id}/config`, `/probe-defaults`). Every field
-is optional and unknown fields are refused:
+A probe config (`PUT /probes/{id}/config`, `/probe-defaults`). A `PUT`
+replaces the whole config. A missing field takes the default in this table,
+not its current value (or the probe defaults), so send every field you
+want to keep. Unknown fields are refused:
 
 | Field | Default | |
 |---|---|---|
@@ -323,7 +329,8 @@ A comparison, from the latest report, for each unicast copy: `ssrc`, `name`,
 `multicast` is `null` if it wasn't seen) and `verdict`: `ok`,
 `multicast_loss`, `unicast_loss`, `both_loss`, `no_multicast` or `idle`.
 
-A total, per stream since the probe was first seen: `group`, `unicast`,
+A total, per stream since the server first saw the probe (since it started,
+or since the probe was forgotten): `group`, `unicast`,
 `name`, `ssrc`, `packets`, `lost`, `late`, `loss_percent`, `intervals`,
 `lossy_intervals`, `max_gap_ms`, `worst_jitter_ms`, `last_seen_ms`.
 
@@ -343,7 +350,7 @@ digits, `.`, `_` or `-`; a check-in from an unknown ID adds the probe.
 Only `version` and `boot` are required. `boot` is random for each run of the
 probe and `seq` counts its reports from 1, so reports the server already has
 are ignored and retries are safe. `config` is what the probe runs (`null`
-before its first reply), `unicast_addr` where it wants unicast copies
+before its first reply, or while it can't start monitoring), `unicast_addr` where it wants unicast copies
 (`null`: none), `queued` how many more reports it still holds, and `dropped`
 how many it discarded because its queue was full. At most 360 reports per
 check-in (`mcast probe run` sends 30). The reply:
@@ -369,7 +376,7 @@ An alert:
 | `raised_ms` | When it started: the report that crossed the threshold, or the probe's last check-in |
 | `resolved_ms` | When it ended, or `null` while active |
 | `worst_loss_percent` | `multicast_loss`: the worst interval's loss while active |
-| `unicast_clean` | `multicast_loss`: `true` if the stream's unicast copy arrived clean when it was raised, `false` if lossy too, `null` if the probe doesn't get copies |
+| `unicast_clean` | `multicast_loss`, in the interval that raised it: `true` if the stream's unicast copy arrived clean, `false` if it lost packets too, `null` if no copy of this stream arrived (the probe doesn't get copies, or this server doesn't send the stream) |
 
 Alert rules (`GET`/`PUT /alert-rules`). Every field is optional in a `PUT`
 (missing ones take the defaults) and unknown fields are refused:

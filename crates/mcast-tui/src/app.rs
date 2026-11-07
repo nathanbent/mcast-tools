@@ -90,8 +90,10 @@ pub enum Msg {
     Media(Result<Vec<MediaFile>, ApiError>),
     Devices(Result<Vec<Device>, ApiError>),
     Monitor(Result<Snapshot, ApiError>),
-    Probes(Result<Vec<Probe>, ApiError>),
-    Alerts(Result<AlertList, ApiError>),
+    /// The probe list, and `probe_events` when it was asked for.
+    Probes(u64, Result<Vec<Probe>, ApiError>),
+    /// The alert list, and `alert_events` when it was asked for.
+    Alerts(u64, Result<AlertList, ApiError>),
     /// A probe's stored reports, for its timeline.
     Reports(String, Result<Vec<Report>, ApiError>),
     /// A probe after a change to it.
@@ -124,6 +126,10 @@ pub struct App {
     pub probes: Vec<Probe>,
     /// Active alerts, oldest first.
     pub alerts: Vec<Alert>,
+    /// Probe and alert events applied so far. A list fetched before the
+    /// latest of them is stale (it would undo them), so it's fetched again.
+    pub(crate) probe_events: u64,
+    pub(crate) alert_events: u64,
     /// The selected probe's reports (its ID, oldest first).
     pub reports: Option<(String, Vec<Report>)>,
     /// A probe whose reports are being fetched.
@@ -157,6 +163,8 @@ impl App {
             channel: None,
             probes: Vec::new(),
             alerts: Vec::new(),
+            probe_events: 0,
+            alert_events: 0,
             reports: None,
             reports_loading: None,
             selected: [0; 6],
@@ -297,7 +305,7 @@ impl App {
                 }
                 Err(e) => fail(self, e),
             },
-            m @ (Msg::Probes(_) | Msg::Alerts(_) | Msg::Reports(..) | Msg::ProbeChanged(..)) => {
+            m @ (Msg::Probes(..) | Msg::Alerts(..) | Msg::Reports(..) | Msg::ProbeChanged(..)) => {
                 self.probe_msg(m)
             }
             Msg::Monitor(r) => match r {

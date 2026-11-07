@@ -94,6 +94,10 @@ back, but they're lost if the probe itself restarts. The firewall opens
 `PROBE_UNICAST_PORT` (UDP 5104) for the server's unicast copies. Logs:
 `journalctl -u mcast-probe -f`; the login summary shows which server it found.
 
+The probe joins groups, and listens for the server's beacon, on the
+interface set by `MCAST_IFACE` in `pi.conf`, the same setting `mcast serve`
+uses.
+
 To change a probe's settings later, edit `/etc/mcast/probe.env` and
 `sudo systemctl restart mcast-probe`, or change `pi.conf` and re-run
 `install.sh`.
@@ -102,7 +106,7 @@ To change a probe's settings later, edit `/etc/mcast/probe.env` and
 
 | File | Installed as |
 |---|---|
-| `files/mcast.service` | `/etc/systemd/system/mcast.service`; settings in `/etc/mcast/mcast.env` (root and the `mcast` group only, because it holds the tokens) |
+| `files/mcast.service` | `/etc/systemd/system/mcast.service`; settings in `/etc/mcast/mcast.env` (root and the `mcast` group only, because it holds the tokens). Known probes, their configurations and the alert rules go in `/var/lib/mcast/probes.json` |
 | `files/mcast-probe.service` | `/etc/systemd/system/mcast-probe.service`; settings in `/etc/mcast/probe.env` (root and the `mcast` group only) |
 | `files/lldpd.conf` | `/etc/lldpd.d/mcast.conf`; CDP is switched on in `/etc/default/lldpd` |
 | `files/sshd.conf` | `/etc/ssh/sshd_config.d/10-mcast-pi.conf` (plus `11-…-keys-only.conf`) |

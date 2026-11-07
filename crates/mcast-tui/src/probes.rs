@@ -29,11 +29,14 @@ impl App {
     pub(crate) fn probe_msg(&mut self, msg: Msg) {
         let fail = |app: &mut App, e: ApiError| app.say(e.message, Level::Error);
         match msg {
-            Msg::Alerts(r) => match r {
+            // Events arrived while these were fetched: they're stale.
+            Msg::Alerts(seen, Ok(_)) if seen != self.alert_events => self.refresh("alerts"),
+            Msg::Probes(seen, Ok(_)) if seen != self.probe_events => self.refresh("probes"),
+            Msg::Alerts(_, r) => match r {
                 Ok(list) => self.alerts = list.active,
                 Err(e) => fail(self, e),
             },
-            Msg::Probes(r) => match r {
+            Msg::Probes(_, r) => match r {
                 Ok(mut p) => {
                     p.sort_by(|a, b| a.id.cmp(&b.id));
                     self.probes = p;
@@ -80,6 +83,11 @@ impl App {
 
     /// A probe event from the server; false if it isn't one.
     pub(crate) fn probe_event(&mut self, e: &Value) -> bool {
+        match e["type"].as_str().unwrap_or("") {
+            "probe_updated" | "probe_removed" => self.probe_events += 1,
+            "alert_raised" | "alert_resolved" => self.alert_events += 1,
+            _ => return false,
+        }
         match e["type"].as_str().unwrap_or("") {
             "probe_updated" => {
                 if let Ok(p) = serde_json::from_value::<Probe>(e["probe"].clone()) {

@@ -735,3 +735,25 @@ async fn lists_alerts_and_changes_their_rules() {
         .unwrap()
         .ends_with("(alert turned off)"));
 }
+
+#[tokio::test]
+async fn refuses_a_probe_token_without_an_admin_token() {
+    let cfg = ServerConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        token: None,
+        media_dir: std::env::temp_dir(),
+        interface: Interface::Any,
+        sap_groups: Vec::new(),
+        monitor: None,
+        max_upload: 0,
+        probe_token: Some("probes".into()),
+        probe_state: None,
+        beacon: None,
+        alert_webhook: None,
+    };
+    let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
+    assert!(
+        err.to_string().contains("--probe-token without --token"),
+        "{err}"
+    );
+}

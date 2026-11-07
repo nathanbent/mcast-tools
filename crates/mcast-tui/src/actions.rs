@@ -31,8 +31,14 @@ impl App {
                 }))
             }),
             "monitor" => self.spawn(|c| Msg::Monitor(c.get("/monitor"))),
-            "probes" => self.spawn(|c| Msg::Probes(c.get("/probes"))),
-            "alerts" => self.spawn(|c| Msg::Alerts(c.get("/alerts"))),
+            "probes" => {
+                let seen = self.probe_events;
+                self.spawn(move |c| Msg::Probes(seen, c.get("/probes")))
+            }
+            "alerts" => {
+                let seen = self.alert_events;
+                self.spawn(move |c| Msg::Alerts(seen, c.get("/alerts")))
+            }
             _ => {}
         }
     }

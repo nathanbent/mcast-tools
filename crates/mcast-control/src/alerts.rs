@@ -97,9 +97,11 @@ pub struct Alert {
     pub resolved_ms: Option<u64>,
     /// For `multicast_loss`: the worst interval's loss while active.
     pub worst_loss_percent: Option<f64>,
-    /// For `multicast_loss`: the stream's unicast copy arrived without loss
-    /// in the interval that raised it, so the multicast path is at fault.
-    /// `None` when the probe doesn't get unicast copies.
+    /// For `multicast_loss`, in the interval that raised it: `true` if the
+    /// stream's unicast copy arrived without loss (so the multicast path is
+    /// at fault), `false` if it lost packets too, `None` if no copy of this
+    /// stream arrived (the probe doesn't get copies, or the stream isn't one
+    /// this server sends).
     pub unicast_clean: Option<bool>,
 }
 
@@ -234,9 +236,10 @@ impl Alerts {
             .iter()
             .filter(|r| r.group.ip().is_multicast())
         {
-            let stream = row.group.to_string();
+            // Per sender: a group with two senders is two streams.
+            let stream = format!("{} from {}", row.group, row.source);
             if !seen.insert(stream.clone()) {
-                continue; // a second sender on the group: the first decides
+                continue;
             }
             let expected = row.packets + row.lost;
             let loss = if expected == 0 {
@@ -245,10 +248,12 @@ impl Alerts {
                 row.lost as f64 * 100.0 / expected as f64
             };
             let bad = rules.multicast_loss && expected > 0 && loss >= rules.loss_percent;
+            // Only when its unicast copy actually arrived: clean, or lossy too.
             let unicast_clean = row
                 .ssrc
                 .and_then(|s| comparisons.iter().find(|c| c.ssrc == s))
-                .map(|c| c.unicast.lost == 0 && c.unicast.packets > 0);
+                .filter(|c| c.unicast.packets > 0)
+                .map(|c| c.unicast.lost == 0);
             let name = stream_name(row.name.as_deref(), Some(row.group));
             self.step(
                 (probe.to_string(), AlertKind::MulticastLoss, stream),
@@ -521,6 +526,42 @@ mod tests {
             r.message
         );
         assert!(a.active().is_empty());
+    }
+
+    #[test]
+    fn each_sender_on_a_group_counts() {
+        let rules = AlertRules::default();
+        let mut a = Alerts::default();
+        for seq in 1..=2 {
+            let mut second = row("239.1.1.1:5004", 8, 90, 10);
+            second.source = "10.0.0.2:40000".parse().unwrap();
+            let r = report(seq, vec![row("239.1.1.1:5004", 7, 100, 0), second]);
+            a.report(&rules, "pi", None, &r, &compare(&r));
+        }
+        assert_eq!(a.active().len(), 1, "the lossy second sender raises");
+    }
+
+    #[test]
+    fn a_missing_copy_is_not_a_lossy_one() {
+        let rules = AlertRules::default();
+        let mut a = Alerts::default();
+        for seq in 1..=2 {
+            let r = report(
+                seq,
+                vec![
+                    row("239.1.1.1:5004", 7, 90, 10),
+                    row("0.0.0.0:5104", 7, 0, 0),
+                ],
+            );
+            a.report(&rules, "pi", None, &r, &compare(&r));
+        }
+        let alert = &a.active()[0];
+        assert_eq!(alert.unicast_clean, None);
+        assert!(
+            !alert.message.contains("losing packets too"),
+            "{}",
+            alert.message
+        );
     }
 
     #[test]
