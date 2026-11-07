@@ -308,11 +308,28 @@ button.danger.solid { background: var(--bad); border-color: var(--bad); color: #
 .targets .err { grid-column: 1 / -1; color: var(--bad); font-size: 13px; margin-top: -2px; }
 
 .editor-form { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
-.target-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.target-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px; align-items: end; }
+@media (max-width: 900px) {
+  .target-row { grid-template-columns: repeat(3, minmax(0, 1fr)); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+}
+
+/* Forms in sections, and tabs made of several cards */
+fieldset.part { display: flex; flex-direction: column; gap: 10px; }
+fieldset.part > p { margin: 0; }
+.stack > section + section { margin-top: 20px; }
+.inline-form { flex-direction: row; align-items: flex-end; flex-wrap: wrap; }
+.inline-form .field { flex: 1; min-width: 220px; max-width: 360px; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; margin-bottom: 14px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius); }
+.banner.warn { border-left-color: var(--warn); }
+.tz .spacer { min-width: 8px; }
+dl.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0 0 10px; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
 .checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 
 @media (max-width: 600px) {
   .target-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .inline-form .field { max-width: none; }
   table.items .wide { display: none; }
 }
 

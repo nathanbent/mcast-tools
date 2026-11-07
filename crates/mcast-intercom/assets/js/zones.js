@@ -12,9 +12,10 @@ const ENCODINGS = [
 
 // The CLI and API also take g711u / g711a; show those as their pcm names.
 const encodingValue = (e) => ({ g711u: "pcmu", g711a: "pcma" }[e] ?? e ?? "");
+const encodingLabel = (e) => ENCODINGS.find(([v]) => v === encodingValue(e))?.[1] ?? e;
 
 function describe(t) {
-  const opts = [t.encoding, t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
+  const opts = [t.encoding && encodingLabel(t.encoding), t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
   return opts.length ? `${t.group} (${opts.join(", ")})` : t.group;
 }
 
@@ -29,11 +30,14 @@ function form(z, save, cancel) {
       group: h("input", { value: t.group ?? "", required: true, list: "phonebook-groups", placeholder: "Phonebook name or 239.x.x.x:port" }),
       encoding: select(ENCODINGS, encodingValue(t.encoding)),
       volume: numberInput(t.volume_db, { placeholder: "0" }),
-      tos: numberInput(t.tos, { min: 0, max: 255, step: 1, placeholder: "184 = EF" }),
+      tos: numberInput(t.tos, { min: 0, max: 255, step: 1, placeholder: "184", title: "IP TOS byte: 184 is DSCP EF" }),
+      ttl: numberInput(t.ttl, { min: 1, max: 255, step: 1, placeholder: "Default" }),
+      iface: h("input", { value: t.interface ?? "", placeholder: "Default" }),
     };
     row.el = h("div", { class: "target-row" },
       field("Group", row.group), field("Codec", row.encoding),
       field("Volume (dB)", row.volume), field("TOS", row.tos),
+      field("TTL", row.ttl), field("Interface", row.iface),
       h("button", { type: "button", class: "danger", title: "Remove this group", onclick: () => {
         rows.splice(rows.indexOf(row), 1);
         render();
@@ -51,20 +55,22 @@ function form(z, save, cancel) {
     e.preventDefault();
     save({
       name: name.value.trim(),
-      // Start from the original to keep options this form doesn't show (ttl, interface).
       targets: rows.map((r) => ({
-        ...r.original,
         group: r.group.value.trim(),
         encoding: r.encoding.value || null,
         volume_db: num(r.volume),
         tos: num(r.tos),
+        ttl: num(r.ttl),
+        interface: r.iface.value.trim() || null,
       })),
     });
   };
 
   return h("form", { onsubmit: submit },
-    field("Name", name),
-    h("fieldset", {}, h("legend", {}, "Groups"),
+    h("fieldset", { class: "part" }, h("legend", {}, "General"), field("Name", name)),
+    h("fieldset", { class: "part" }, h("legend", {}, "Groups"),
+      h("p", { class: "small muted" },
+        "Each group with the options its speakers need. Volume is added to the announcement's; leave an option empty for the server's default."),
       rowsEl,
       h("div", { class: "buttons", style: { marginTop: "10px" } },
         h("button", { type: "button", onclick: () => addRow() }, "Add group"))),

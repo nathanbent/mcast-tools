@@ -65,7 +65,43 @@ pub fn next_after(s: &Schedule, tz: &TimeZone, after: Timestamp) -> Option<Times
     }
 }
 
-/// Enabled schedules' times in `(from, to]`, earliest first.
+/// The next time a schedule plays, strictly after `after`: as
+/// [`next_after`], but passing over the config's days off.
+pub fn next_playing(
+    cfg: &Config,
+    s: &Schedule,
+    tz: &TimeZone,
+    after: Timestamp,
+) -> Option<Timestamp> {
+    let mut after = after;
+    // Each turn passes a whole run of days off, so this is plenty.
+    for _ in 0..MAX_DUE {
+        let t = next_after(s, tz, after)?;
+        let Some(last) = cfg.days_off_until(t.to_zoned(tz.clone()).date()) else {
+            return Some(t);
+        };
+        // Look again from just before the first day back starts.
+        let back = last
+            .tomorrow()
+            .ok()?
+            .to_datetime(jiff::civil::Time::midnight());
+        let start = tz.to_ambiguous_zoned(back).compatible().ok()?.timestamp();
+        after = start
+            .checked_sub(jiff::SignedDuration::from_nanos(1))
+            .ok()?;
+    }
+    None
+}
+
+/// The schedules that play: none while they're paused, else the enabled ones.
+fn playing(cfg: &Config) -> impl Iterator<Item = &Schedule> {
+    cfg.schedules
+        .iter()
+        .filter(move |s| s.enabled && !cfg.schedules_paused)
+}
+
+/// Enabled schedules' times in `(from, to]`, earliest first, leaving out
+/// days off (and everything while schedules are paused).
 pub fn due<'a>(
     cfg: &'a Config,
     tz: &TimeZone,
@@ -73,10 +109,10 @@ pub fn due<'a>(
     to: Timestamp,
 ) -> Vec<(&'a Schedule, Timestamp)> {
     let mut out = Vec::new();
-    for s in cfg.schedules.iter().filter(|s| s.enabled) {
+    for s in playing(cfg) {
         let mut t = from;
         for _ in 0..MAX_DUE {
-            match next_after(s, tz, t) {
+            match next_playing(cfg, s, tz, t) {
                 Some(next) if next <= to => {
                     out.push((s, next));
                     t = next;
@@ -129,13 +165,14 @@ impl Fire {
     }
 }
 
-/// The next `n` times anything is scheduled to play, after `after`.
+/// The next `n` times anything is scheduled to play, after `after`
+/// (leaving out days off; none while schedules are paused).
 pub fn upcoming(cfg: &Config, tz: &TimeZone, after: Timestamp, n: usize) -> Vec<Fire> {
     let mut all = Vec::new();
-    for s in cfg.schedules.iter().filter(|s| s.enabled) {
+    for s in playing(cfg) {
         let mut t = after;
         for _ in 0..n {
-            match next_after(s, tz, t) {
+            match next_playing(cfg, s, tz, t) {
                 Some(next) => {
                     all.push((s, next));
                     t = next;
@@ -225,11 +262,8 @@ impl Shared {
                     }
                     self.play_due(&cfg, &tz, mark, now, grace_ms);
                     mark = now;
-                    let next = cfg
-                        .schedules
-                        .iter()
-                        .filter(|s| s.enabled)
-                        .filter_map(|s| next_after(s, &tz, now))
+                    let next = playing(&cfg)
+                        .filter_map(|s| next_playing(&cfg, s, &tz, now))
                         .min();
                     if let Some(next) = next {
                         let ms = (next.as_millisecond() - now.as_millisecond()).max(0) as u64;
@@ -423,6 +457,7 @@ mod tests {
                 .collect(),
             schedules,
             time_zone: Some("Europe/London".into()),
+            ..Default::default()
         }
     }
 
@@ -483,6 +518,74 @@ mod tests {
         );
         assert_eq!(next[0].name, "b name");
         assert_eq!(next[0].schedule, "once");
+    }
+
+    #[test]
+    fn days_off_and_pausing() {
+        let all = [
+            Day::Mon,
+            Day::Tue,
+            Day::Wed,
+            Day::Thu,
+            Day::Fri,
+            Day::Sat,
+            Day::Sun,
+        ];
+        let mut cfg = config(vec![weekly(&all, &["09:00"])]);
+        let off = |from: &str, to: Option<&str>| crate::model::DayOff {
+            name: String::new(),
+            from: from.into(),
+            to: to.map(Into::into),
+        };
+        // One day, then a run made of two that touch.
+        cfg.days_off = vec![
+            off("2026-11-10", None),
+            off("2026-11-12", Some("2026-11-13")),
+            off("2026-11-14", None),
+        ];
+        cfg.validate().unwrap();
+        let tz = cfg.tz().unwrap();
+        let got: Vec<_> = due(
+            &cfg,
+            &tz,
+            local("2026-11-09T08:00"),
+            local("2026-11-16T10:00"),
+        )
+        .into_iter()
+        .map(|(_, t)| t)
+        .collect();
+        assert_eq!(
+            got,
+            [
+                local("2026-11-09T09:00"),
+                local("2026-11-11T09:00"),
+                local("2026-11-15T09:00"),
+                local("2026-11-16T09:00"),
+            ]
+        );
+        let s = &cfg.schedules[0];
+        assert_eq!(
+            next_playing(&cfg, s, &tz, local("2026-11-11T10:00")),
+            Some(local("2026-11-15T09:00"))
+        );
+
+        // Paused: nothing is due or coming up, but each still knows its next time.
+        cfg.schedules_paused = true;
+        let (from, to) = (local("2026-11-09T08:00"), local("2026-11-16T10:00"));
+        assert!(due(&cfg, &tz, from, to).is_empty());
+        assert!(upcoming(&cfg, &tz, from, 5).is_empty());
+        assert_eq!(
+            next_playing(&cfg, &cfg.schedules[0], &tz, from),
+            Some(local("2026-11-09T09:00"))
+        );
+
+        // Mistakes.
+        cfg.days_off = vec![off("2026-11-14", Some("2026-11-12"))];
+        let e = cfg.validate().unwrap_err().to_string();
+        assert!(e.contains("ends before it starts"), "{e}");
+        cfg.days_off = vec![off("14/11/2026", None)];
+        let e = cfg.validate().unwrap_err().to_string();
+        assert!(e.contains("isn't a date"), "{e}");
     }
 
     #[test]

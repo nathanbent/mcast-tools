@@ -1,10 +1,11 @@
 // Schedules: announcements that play by themselves, weekly or once, in the
-// panel's time zone; plus that time zone, and what's coming up.
+// panel's time zone; what's coming up; pausing them all; and days off.
 
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, subscribe, announcementName, fireTime, fromNow, atTime } from "./store.js";
 import { mountEditor, field, select } from "./editor.js";
+import { putSettings } from "./settings.js";
 
 const DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
 const WEEKDAYS = DAYS.slice(0, 5).map(([d]) => d);
@@ -94,40 +95,21 @@ function form(s, save, cancel) {
       h("button", { type: "button", onclick: cancel }, "Cancel")));
 }
 
-// The time zone line, with a way to change it. Made once, so a refresh
-// doesn't throw away what's being typed.
-function timeZone() {
-  const el = h("div", { class: "tz" });
-  let editing = false;
-  const show = () => {
-    editing = false;
-    replace(el,
-      h("span", {}, "Times are in ", h("strong", {}, state.upcoming.time_zone ?? "…"),
-        state.config.time_zone ? "" : " (the server's)"),
-      h("button", { class: "link", onclick: edit }, "Change"));
-  };
-  const edit = () => {
-    editing = true;
-    const input = h("input", { value: state.config.time_zone ?? "", list: "time-zones", placeholder: "e.g. Europe/London (empty: the server's)" });
-    replace(el, h("form", {
-      onsubmit: async (e) => {
-        e.preventDefault();
-        try {
-          await api("PUT", "/settings", { time_zone: input.value.trim() || null });
-          toast("Time zone saved", "ok");
-          show();
-        } catch (err) {
-          toast(`Couldn't change the time zone: ${err.message}`, "error");
-        }
-      },
-    }, input,
-      h("button", { type: "submit", class: "primary" }, "Save"),
-      h("button", { type: "button", onclick: show }, "Cancel")));
-    input.focus();
-  };
-  show();
-  subscribe(["config", "upcoming"], () => { if (!editing) show(); });
-  return el;
+// Where the times are, and pausing them all.
+function status() {
+  const paused = state.config.schedules_paused;
+  return h("div", { class: paused ? "banner warn" : "tz" },
+    paused
+      ? h("span", {}, h("strong", {}, "All schedules are paused."), " Nothing plays by itself until they're resumed.")
+      : h("span", {}, "Times are in ", h("strong", {}, state.upcoming.time_zone ?? "…"),
+        state.config.time_zone ? "" : " (the server's)", " · ",
+        h("a", { href: "#settings" }, "change")),
+    h("span", { class: "spacer" }),
+    h("button", {
+      type: "button", class: paused ? "primary" : null,
+      onclick: () => putSettings({ schedules_paused: !paused },
+        paused ? "Schedules resumed" : "Schedules paused"),
+    }, paused ? "Resume schedules" : "Pause all"));
 }
 
 function comingUp() {
@@ -145,22 +127,79 @@ function comingUp() {
   ];
 }
 
-export function mount(el) {
-  // Names for the time zone field, where the browser knows them.
-  try {
-    replace(document.getElementById("time-zones"),
-      Intl.supportedValuesOf("timeZone").map((z) => h("option", { value: z })));
-  } catch {}
+// "Mon 21 Dec", or "Mon 21 Dec – Fri 1 Jan 2027" when it isn't this year.
+function day(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const opts = { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" };
+  if (y !== new Date().getFullYear()) opts.year = "numeric";
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, opts);
+}
 
-  const tz = timeZone();
+const today = () => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+};
+
+// Days off: dates no schedule plays on. Kept as one list in the settings.
+function daysOff(el) {
+  const list = h("div");
+  const name = h("input", { maxLength: 64, placeholder: "e.g. Winter break" });
+  const from = h("input", { type: "date", required: true });
+  const to = h("input", { type: "date" });
+  from.onchange = () => { to.min = from.value; };
+
+  const saveAll = (days, done) => putSettings({ days_off: days }, done);
+  const all = () => [...(state.config.days_off ?? [])];
+
+  const add = async (e) => {
+    e.preventDefault();
+    const entry = { from: from.value };
+    if (name.value.trim()) entry.name = name.value.trim();
+    if (to.value && to.value !== from.value) entry.to = to.value;
+    const days = [...all(), entry].sort((a, b) => a.from.localeCompare(b.from));
+    if (await saveAll(days, "Day off added")) { name.value = ""; from.value = ""; to.value = ""; }
+  };
+
+  const render = () => {
+    const days = all();
+    const past = (d) => (d.to ?? d.from) < today();
+    replace(list,
+      days.length
+        ? h("div", { class: "scroll" }, h("table", {},
+            h("thead", {}, h("tr", {}, h("th", {}, "Dates"), h("th", {}, "Name"), h("th"))),
+            h("tbody", {}, days.map((d, i) => h("tr", { class: past(d) ? "off" : null },
+              h("td", {}, d.to && d.to !== d.from ? `${day(d.from)} – ${day(d.to)}` : day(d.from)),
+              h("td", {}, d.name || ""),
+              h("td", { class: "actions" }, h("button", {
+                class: "danger",
+                onclick: () => saveAll(days.filter((_, j) => j !== i), "Day off removed"),
+              }, "Remove")))))))
+        : h("p", { class: "muted" }, "None yet."),
+      days.some(past) && h("p", {}, h("button", {
+        type: "button", class: "link",
+        onclick: () => saveAll(days.filter((d) => !past(d)), "Past days off cleared"),
+      }, "Clear past days off")));
+  };
+  subscribe(["config"], render);
+  render();
+  el.replaceChildren(
+    h("p", { class: "muted" }, "No schedule plays on these dates (holidays, breaks). Playing from the panel still works."),
+    list,
+    h("form", { class: "editor-form", onsubmit: add },
+      h("div", { class: "row" }, field("From", from), field("To", to, "Leave empty for one day"), field("Name", name)),
+      h("div", { class: "buttons" }, h("button", { type: "submit", class: "primary" }, "Add day off"))));
+}
+
+export function mount(el, daysOffEl) {
+  daysOff(daysOffEl);
   mountEditor(el, {
     kind: "schedule",
     path: "/schedules",
     items: () => state.config.schedules ?? [],
     label,
     parts: ["upcoming"],
-    before: () => [tz, ...(comingUp() ?? [])],
-    rowClass: (s) => (s.enabled && nextAt(s) !== null ? "" : "off"),
+    before: () => [status(), ...(comingUp() ?? [])],
+    rowClass: (s) => (s.enabled && !state.config.schedules_paused && nextAt(s) !== null ? "" : "off"),
     columns: [
       ["Plays", label],
       ["When", (s) => describeWhen(s.when)],
@@ -168,7 +207,8 @@ export function mount(el) {
         const at = nextAt(s);
         if (at === null) return "passed";
         if (at === undefined) return "";
-        return s.enabled ? atTime(at) : "off";
+        if (!s.enabled) return "off";
+        return state.config.schedules_paused ? "paused" : atTime(at);
       }, true],
       ["On", (s) => h("input", {
         type: "checkbox",

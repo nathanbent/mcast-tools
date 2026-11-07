@@ -412,6 +412,50 @@ async fn schedules_and_whats_coming_up() {
         "{v}"
     );
 
+    // Each setting changes on its own; the others stay.
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"defaults": {"chime": "bell", "volume_db": -2},
+                        "days_off": [{"name": "Holiday", "from": "2026-12-25"}]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["time_zone"], "Europe/London");
+    assert_eq!(v["defaults"], json!({"chime": "bell", "volume_db": -2.0}));
+    assert_eq!(v["days_off"][0]["name"], "Holiday");
+    assert_eq!(v["schedules_paused"], false);
+    let (_, v) = p.call(Method::GET, "/config", None).await;
+    assert_eq!(v["defaults"]["chime"], "bell");
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"days_off": [{"from": "2026-12-25", "to": "2026-12-24"}]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"defaults": {"chimes": "bell"}})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (_, v) = p.call(Method::GET, "/settings", None).await;
+    assert_eq!(v["days_off"].as_array().unwrap().len(), 1, "{v}");
+    let (_, v) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"defaults": {}, "days_off": []})),
+        )
+        .await;
+    assert_eq!(v["defaults"], json!({}));
+    assert_eq!(v["time_zone"], "Europe/London");
+
     // Named after what it plays when it has no name of its own.
     let every_day = json!({"announcement": "bell", "when": {"weekly": {
         "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "times": ["00:00", "12:00"]}}});
@@ -443,6 +487,18 @@ async fn schedules_and_whats_coming_up() {
     assert_eq!(fires[0]["name"], "Bell");
     assert!(fires[0]["at_ms"].as_u64().unwrap() > v["now_ms"].as_u64().unwrap());
     assert_eq!(v["next"]["bell"], fires[0]["at_ms"]);
+
+    // Paused: nothing coming up, until resumed.
+    let paused = json!({"schedules_paused": true});
+    let (s, v) = p.call(Method::PUT, "/settings", Some(paused)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v) = p.call(Method::GET, "/upcoming?n=3", None).await;
+    assert_eq!(v["paused"], true);
+    assert_eq!(v["fires"], json!([]));
+    let resumed = json!({"schedules_paused": false});
+    p.call(Method::PUT, "/settings", Some(resumed)).await;
+    let (_, v) = p.call(Method::GET, "/upcoming?n=3", None).await;
+    assert_eq!(v["fires"].as_array().unwrap().len(), 3, "{v}");
     let t = fires[0]["local"].as_str().unwrap();
     assert!(t.ends_with("T00:00:00") || t.ends_with("T12:00:00"), "{t}");
 

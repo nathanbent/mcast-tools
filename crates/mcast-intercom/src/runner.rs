@@ -224,9 +224,10 @@ impl Runner {
     /// Play an announcement (by id or name). Returns once every group has
     /// been started (or found busy); follow the rest through `on_change`.
     pub fn play(&self, cfg: &Config, which: &str, trigger: Trigger) -> Result<Run, PlayError> {
-        let a = cfg
+        let a = &cfg
             .announcement(which)
-            .ok_or_else(|| PlayError::NoAnnouncement(which.to_string()))?;
+            .ok_or_else(|| PlayError::NoAnnouncement(which.to_string()))?
+            .with_defaults(&cfg.defaults);
         let targets = self.0.targets(cfg, a)?;
         let id = {
             let mut st = self.0.lock();

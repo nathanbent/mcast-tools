@@ -28,10 +28,19 @@ mcast intercom serve                                          # open http://127.
 MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651
 ```
 
-A page with a big button for each announcement (Stop and an *All stop* in
-the header), what's playing in each group right now and what's next, the
-history of recent plays, and editors for schedules, announcements and zones. Media files and phonebook
-names come from the mcast server; upload files through `mcast serve`.
+A page with a tab for each part:
+
+| Tab | |
+|---|---|
+| **Panel** | A big button for each announcement, what's playing now (with Stop) and what's next. *All stop* in the header stops everything |
+| **History** | Recent plays, and how each group fared |
+| **Schedules** | When announcements play by themselves; what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays |
+| **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
+| **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
+| **Settings** | Announcement defaults, the time zone, which chimes the lists show, and the connection to the mcast server |
+
+Media files and phonebook names come from the mcast server; upload files
+through `mcast serve`.
 
 Schedules only play while `mcast intercom serve` runs.
 
@@ -77,6 +86,11 @@ file named by `--config` or `$MCAST_INTERCOM`. Edit it in the panel or by hand;
      "when": {"weekly": {"days": ["mon", "tue", "wed", "thu", "fri"], "times": ["12:00", "12:45"]}}},
     {"id": "drill", "announcement": "fire", "when": {"once": "2026-12-04T10:30"}, "enabled": false}
   ],
+  "defaults": {"chime": "ding-dong", "mode": "voice", "lead_in_ms": 300},
+  "days_off": [
+    {"name": "Winter break", "from": "2026-12-21", "to": "2027-01-01"},
+    {"name": "Inset day", "from": "2026-11-20"}
+  ],
   "time_zone": "Europe/London"
 }
 ```
@@ -91,9 +105,9 @@ its speakers need: `encoding`, `volume_db` (added to the announcement's),
 | Field | Default | |
 |---|---|---|
 | `audio` | | `{"media": "NAME"}`, a file uploaded to the server, or `"chime_only"` |
-| `chime`, `end_chime` | none | As in the API: `"default"`, a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`. With `"chime_only"` and neither set, the default chime |
-| `mode` | | `voice`, `music` or `none` |
-| `volume_db`, `lead_in_ms` | | |
+| `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
+| `mode` | the defaults' | `voice`, `music` or `none` |
+| `volume_db`, `lead_in_ms` | the defaults' | |
 | `repeat` | `1` | Times to play it (up to 20); each repeat has its chimes |
 | `repeat_gap_s` | `2` | Seconds between repeats |
 | `priority` | `normal` | What happens to a group something else is already sending to (below) |
@@ -102,6 +116,19 @@ its speakers need: `encoding`, `volume_db` (added to the announcement's),
 an optional `name`, and `when`: `{"weekly": {"days": [...], "times": [...]}}`
 with days `mon` to `sun` and 24-hour times (`"08:30"`, or with seconds), or
 `{"once": "YYYY-MM-DDTHH:MM"}`.
+
+**`defaults`**: what announcements use for `chime`, `end_chime`, `mode`,
+`volume_db` and `lead_in_ms` when they leave them out, so one chime can be
+set for every announcement and changed in one place. An announcement's own
+value always wins. Without `defaults`, a field left out means none, as
+before.
+
+**`days_off`**: dates no schedule plays on, each `{"from": "YYYY-MM-DD"}`,
+with `"to"` (the last day, included) for more than one day and an optional
+`"name"`. Playing from the panel or the command line still works.
+
+**`schedules_paused`**: `true` stops every schedule playing, without
+turning each one off.
 
 **`time_zone`**: the IANA name the times are in, e.g. `"Europe/London"`.
 Leave it out to use the system's.
@@ -140,6 +167,10 @@ doesn't set off stale announcements. On starting, the panel looks back an hour
 for times it missed while it wasn't running. If the mcast server can't be
 reached at that moment, the play is recorded as *failed*; it isn't retried.
 
+No schedule plays on a day off, or while schedules are paused; those times
+aren't recorded as missed either. A run of days off can be as long as a
+school holiday.
+
 Changes made in the panel take effect straight away. Changes to the file made
 by hand are picked up within 30 s.
 
@@ -155,13 +186,13 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 |---|---|
 | `GET /health` | `{"ok": true, "version"}` |
 | `GET /backend` | The mcast server: `{"url", "connected", "error", "since_ms"}` |
-| `GET /config` | `{"zones": [...], "announcements": [...]}` |
+| `GET /config` | The whole config, as in `intercom.json` |
 | `GET`, `POST /zones` | List, or add one (without `id`, one is made from `name`) |
 | `GET`, `PUT`, `DELETE /zones/{id}` | `PUT` replaces it; the id can't change |
 | `GET`, `POST /announcements`, `GET`, `PUT`, `DELETE /announcements/{id}` | The same |
 | `GET`, `POST /schedules`, `GET`, `PUT`, `DELETE /schedules/{id}` | The same; without `id` or `name`, the id comes from the announcement |
-| `GET /upcoming?n=10` | `{"time_zone", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name"}], "next": {SCHEDULE: at_ms or null}}` |
-| `GET`, `PUT /settings` | `{"time_zone"}` (`null` for the system's); `GET` adds `effective_time_zone` |
+| `GET /upcoming?n=10` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name"}], "next": {SCHEDULE: at_ms or null}}`. `fires` leaves out days off, and is empty while schedules are paused; `next` leaves out days off only |
+| `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
@@ -188,14 +219,14 @@ time it was due. Run `state` is `playing`, `waiting` (between repeats), `stoppin
 
 | File | |
 |---|---|
-| `model.rs` | Zones and announcements, validation, and the send request for a target |
+| `model.rs` | Zones, announcements, defaults and days off, validation, and the send request for a target |
 | `store.rs` | Loading and saving `intercom.json` |
 | `backend.rs` | The `Backend` trait (what the panel needs from a server) and `HttpBackend` |
 | `runner.rs` | Plays announcements: fan-out, priorities, repeats, stop |
 | `scheduler.rs` | When schedules are due (time zones, clock changes), and the thread that plays them |
 | `cli.rs` | `mcast intercom list`, `check`, `play` |
 | `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`) and the web page (`web.rs`) |
-| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`); `api.js` is the only one that calls the server |
+| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `settings.js`), and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
 
 `cargo test -p mcast-intercom` runs the runner and the API against a fake
 backend and, in `tests/server.rs`, against a real in-process `mcast serve`.

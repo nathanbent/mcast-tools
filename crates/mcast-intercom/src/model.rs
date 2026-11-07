@@ -23,6 +23,82 @@ pub struct Config {
     /// system's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_zone: Option<String>,
+    /// What announcements use for the settings they leave out.
+    #[serde(skip_serializing_if = "Defaults::is_empty")]
+    pub defaults: Defaults,
+    /// While true, no schedule plays (each keeps its own on/off).
+    #[serde(skip_serializing_if = "is_false")]
+    pub schedules_paused: bool,
+    /// Dates schedules don't play on: holidays, breaks.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub days_off: Vec<DayOff>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Written in an announcement's `chime` or `end_chime` to have no chime,
+/// whatever the default is.
+pub const NO_CHIME: &str = "none";
+
+/// The panel's defaults for announcements. Each applies to announcements
+/// that don't set that field themselves.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Defaults {
+    /// Chime before the audio, as in an announcement. Unset: none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chime: Option<Value>,
+    /// Chime after the audio. Unset: none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_chime: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume_db: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead_in_ms: Option<f64>,
+}
+
+impl Defaults {
+    pub fn is_empty(&self) -> bool {
+        *self == Defaults::default()
+    }
+}
+
+/// A day, or a run of days, when schedules don't play.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DayOff {
+    /// "Christmas", "Half term"; optional.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// `YYYY-MM-DD`.
+    pub from: String,
+    /// The last day off, if more than one: `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+}
+
+impl DayOff {
+    /// First and last day, both included.
+    pub fn range(&self) -> Result<(jiff::civil::Date, jiff::civil::Date)> {
+        let from = parse_date(&self.from)?;
+        let to = match &self.to {
+            Some(t) => parse_date(t)?,
+            None => from,
+        };
+        Ok((from, to))
+    }
+}
+
+/// A date: `YYYY-MM-DD`.
+pub fn parse_date(s: &str) -> Result<jiff::civil::Date> {
+    match s.parse::<jiff::civil::Date>() {
+        Ok(d) if s.len() == 10 => Ok(d),
+        _ => bail!("\"{s}\" isn't a date like 2026-12-24"),
+    }
 }
 
 /// Most times a weekly schedule can have.
@@ -215,15 +291,17 @@ pub struct Announcement {
     pub id: String,
     pub name: String,
     pub audio: Audio,
-    /// Chime before the audio, as in the mcast API: `"default"`, a built-in
-    /// name such as `"ding-dong"`, or `{"file": "NAME"}`. Unset: none
-    /// (but see [`Audio::ChimeOnly`]).
+    /// Chime before the audio, as in the mcast API: `"default"` (the mcast
+    /// server's), a built-in name such as `"ding-dong"`, or
+    /// `{"file": "NAME"}`; or [`NO_CHIME`] for none. Unset: the panel's
+    /// default ([`Defaults::chime`]), or none (but see [`Audio::ChimeOnly`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chime: Option<Value>,
     /// Chime after the audio, in the same form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_chime: Option<Value>,
-    /// Processing: `"voice"`, `"music"` or `"none"`.
+    /// Processing: `"voice"`, `"music"` or `"none"`. This and the next two,
+    /// unset, come from the panel's defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,9 +321,32 @@ pub struct Announcement {
     pub priority: Priority,
 }
 
+/// An announcement's chime with the default filled in: `None` for no chime.
+fn chime_or(own: &Option<Value>, default: &Option<Value>) -> Option<Value> {
+    let is_none = |v: &Value| v.as_str() == Some(NO_CHIME);
+    match own {
+        Some(v) if is_none(v) => None,
+        Some(v) => Some(v.clone()),
+        None => default.clone().filter(|v| !is_none(v)),
+    }
+}
+
 impl Announcement {
+    /// This announcement with the panel's defaults filled in, as it plays.
+    /// Its chimes come out as `None` (no chime) or a chime to send.
+    pub fn with_defaults(&self, d: &Defaults) -> Announcement {
+        Announcement {
+            chime: chime_or(&self.chime, &d.chime),
+            end_chime: chime_or(&self.end_chime, &d.end_chime),
+            mode: self.mode.clone().or_else(|| d.mode.clone()),
+            volume_db: self.volume_db.or(d.volume_db),
+            lead_in_ms: self.lead_in_ms.or(d.lead_in_ms),
+            ..self.clone()
+        }
+    }
+
     /// The send request for one target, in the mcast API's JSON. `group` is
-    /// the target's resolved address.
+    /// the target's resolved address. Call it on [`Announcement::with_defaults`].
     pub fn send_request(&self, target: &Target, group: &str) -> Value {
         let mut r = Map::new();
         r.insert("group".into(), group.into());
@@ -280,6 +381,36 @@ impl Announcement {
 }
 
 impl Config {
+    /// Whether schedules are off on this date.
+    pub fn is_day_off(&self, date: jiff::civil::Date) -> bool {
+        self.days_off
+            .iter()
+            .filter_map(|d| d.range().ok())
+            .any(|(from, to)| from <= date && date <= to)
+    }
+
+    /// The last day of the days off `date` is in, if it's in any (runs that
+    /// touch or overlap are followed through).
+    pub fn days_off_until(&self, date: jiff::civil::Date) -> Option<jiff::civil::Date> {
+        let ranges: Vec<_> = self
+            .days_off
+            .iter()
+            .filter_map(|d| d.range().ok())
+            .collect();
+        let covering = |day| {
+            ranges
+                .iter()
+                .filter(|(from, to)| *from <= day && day <= *to)
+                .map(|(_, to)| *to)
+                .max()
+        };
+        let mut end = covering(date)?;
+        while let Some(further) = end.tomorrow().ok().and_then(covering) {
+            end = further;
+        }
+        Some(end)
+    }
+
     pub fn zone(&self, id: &str) -> Option<&Zone> {
         self.zones.iter().find(|z| z.id == id)
     }
@@ -352,6 +483,26 @@ impl Config {
             }
             check_number(&format!("{what}: volume_db"), a.volume_db)?;
             check_number(&format!("{what}: lead_in_ms"), a.lead_in_ms)?;
+            check_chime(&format!("{what}: chime"), &a.chime)?;
+            check_chime(&format!("{what}: end_chime"), &a.end_chime)?;
+        }
+        let d = &self.defaults;
+        check_number("defaults: volume_db", d.volume_db)?;
+        check_number("defaults: lead_in_ms", d.lead_in_ms)?;
+        check_chime("defaults: chime", &d.chime)?;
+        check_chime("defaults: end_chime", &d.end_chime)?;
+        for off in &self.days_off {
+            let what = match off.name.as_str() {
+                "" => format!("day off {}", off.from),
+                n => format!("day off \"{n}\""),
+            };
+            if !off.name.is_empty() {
+                check_name("day off", &off.name)?;
+            }
+            let (from, to) = off.range().map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
+            if to < from {
+                bail!("{what} ends before it starts");
+            }
         }
         let mut ids = HashSet::new();
         for sch in &self.schedules {
@@ -416,6 +567,19 @@ fn check_name(what: &str, name: &str) -> Result<()> {
         bail!("{what} name \"{name}\" contains control characters");
     }
     Ok(())
+}
+
+/// A chime is a name or `{"file": NAME}`.
+fn check_chime(what: &str, v: &Option<Value>) -> Result<()> {
+    match v {
+        None => Ok(()),
+        Some(Value::String(s)) if !s.trim().is_empty() => Ok(()),
+        Some(Value::Object(o)) if o.len() == 1 => match o.get("file").and_then(Value::as_str) {
+            Some(f) if valid_media_name(f) => Ok(()),
+            _ => bail!("{what}: expected {{\"file\": NAME}} with a media file name"),
+        },
+        Some(_) => bail!("{what}: expected a chime name or {{\"file\": NAME}}"),
+    }
 }
 
 fn check_number(what: &str, v: Option<f64>) -> Result<()> {
