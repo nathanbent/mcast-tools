@@ -32,6 +32,7 @@ mcast-control = { path = "crates/mcast-control" }
 mcast-server = { path = "crates/mcast-server" }
 mcast-web = { path = "crates/mcast-web" }
 mcast-tui = { path = "crates/mcast-tui" }
+mcast-intercom = { path = "crates/mcast-intercom" }
 mcast-text = { path = "crates/mcast-text" }
 mcast-file = { path = "crates/mcast-file" }
 raptorq = "2"

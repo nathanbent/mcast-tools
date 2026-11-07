@@ -21,6 +21,7 @@ mcast-control.workspace = true
 mcast-server.workspace = true
 mcast-web.workspace = true
 mcast-tui.workspace = true
+mcast-intercom.workspace = true
 tokio.workspace = true
 mcast-text.workspace = true
 mcast-file.workspace = true

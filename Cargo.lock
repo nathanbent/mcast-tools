@@ -1160,6 +1160,7 @@ dependencies = [
  "mcast-control",
  "mcast-core",
  "mcast-file",
+ "mcast-intercom",
  "mcast-monitor",
  "mcast-server",
  "mcast-text",
@@ -1213,6 +1214,20 @@ dependencies = [
  "image",
  "mcast-core",
  "raptorq",
+]
+
+[[package]]
+name = "mcast-intercom"
+version = "0.3.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "mcast-core",
+ "mcast-server",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ureq",
 ]
 
 [[package]]

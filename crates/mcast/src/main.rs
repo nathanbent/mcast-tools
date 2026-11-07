@@ -57,6 +57,8 @@ enum Command {
     Serve(ServeArgs),
     /// Terminal front end for a running `mcast serve` (works over SSH)
     Tui(TuiArgs),
+    /// Intercom: play announcements to zones of speakers through a running `mcast serve`
+    Intercom(IntercomArgs),
 }
 
 #[derive(Subcommand)]
@@ -508,6 +510,61 @@ struct TuiArgs {
     token: Option<String>,
 }
 
+#[derive(Args)]
+#[command(
+    after_help = "Zones and announcements are kept in intercom.json in the mcast config \
+directory (or $MCAST_INTERCOM); see crates/mcast-intercom/README.md for its format.
+
+Examples:
+  mcast intercom list
+  mcast intercom check
+  mcast intercom play lunch             # by id or name; Ctrl-C stops it"
+)]
+struct IntercomArgs {
+    #[command(subcommand)]
+    command: IntercomCommand,
+    /// The mcast server to send through
+    #[arg(
+        short,
+        long,
+        global = true,
+        default_value = "http://127.0.0.1:8650",
+        env = "MCAST_URL"
+    )]
+    url: String,
+    /// Its API token
+    #[arg(long, global = true, env = "MCAST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+    /// The intercom config file
+    #[arg(long, global = true, value_name = "FILE", env = "MCAST_INTERCOM")]
+    config: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum IntercomCommand {
+    /// List zones and announcements
+    List,
+    /// Check the config, and that its media files and phonebook names exist on the server
+    Check,
+    /// Play an announcement (by id or name) and follow it until it ends
+    Play { announcement: String },
+}
+
+fn intercom(a: IntercomArgs, stop: &AtomicBool) -> Result<()> {
+    let path = match a.config {
+        Some(p) => p,
+        None => mcast_intercom::store::default_path()?,
+    };
+    let backend = mcast_intercom::HttpBackend::new(&a.url, a.token);
+    match a.command {
+        IntercomCommand::List => mcast_intercom::cli::list(&path),
+        IntercomCommand::Check => mcast_intercom::cli::check(&path, &backend),
+        IntercomCommand::Play { announcement } => {
+            mcast_intercom::cli::play(&path, Arc::new(backend), &announcement, stop)
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse_from(presets::expand(std::env::args_os().collect())?);
     let stop = Arc::new(AtomicBool::new(false));
@@ -527,6 +584,7 @@ fn main() -> Result<()> {
         Command::Update(a) => update::run(a),
         Command::Serve(a) => serve(a, stop),
         Command::Tui(a) => mcast_tui::run(&a.url, a.token),
+        Command::Intercom(a) => intercom(a, &stop),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");

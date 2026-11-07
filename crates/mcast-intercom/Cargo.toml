@@ -1,0 +1,20 @@
+[package]
+name = "mcast-intercom"
+description = "Intercom control panel for mcast serve: zones, announcements, play now (a client of the HTTP API)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# Only talks to `mcast serve` over HTTP: no dependency on the other mcast
+# crates, so it can move out of this workspace on its own.
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+mcast-core.workspace = true
+mcast-server.workspace = true

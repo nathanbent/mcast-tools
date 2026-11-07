@@ -702,6 +702,24 @@ keys. In any form, ←→ on the Group field steps through phonebook names.
 Like the web GUI, it's a client of the API: it needs `mcast serve` running,
 and every client sees the same jobs.
 
+### Intercom
+
+`mcast intercom` plays announcements to zones of speakers through `mcast serve`.
+A zone is a set of groups, each with the codec its speakers need. An announcement
+is an audio file or a chime, plus the zones it goes to, how many times to play it,
+and a priority that decides whether it may take over a group something else is
+using. They're kept in `~/.config/mcast/intercom.json`:
+
+```bash
+mcast intercom list
+mcast intercom check                                 # media files and phonebook names exist?
+mcast intercom play "Lunch bell"                     # Ctrl-C stops it
+```
+
+See [crates/mcast-intercom/README.md](crates/mcast-intercom/README.md) for the
+file's format. A web panel and schedules are planned
+([docs/intercom-plan.md](docs/intercom-plan.md)).
+
 ## Layout
 
 | Crate | Purpose |
@@ -714,6 +732,7 @@ and every client sees the same jobs.
 | `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
 | `crates/mcast-tui` | Terminal front end (`mcast tui`), an API client built on ratatui |
+| `crates/mcast-intercom` | Intercom panel (`mcast intercom`): zones, announcements, play now; an API client that uses no other mcast crate |
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
