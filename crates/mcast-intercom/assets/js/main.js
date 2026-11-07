@@ -9,6 +9,7 @@ import * as announcements from "./announcements.js";
 import * as zones from "./zones.js";
 import * as schedules from "./schedules.js";
 import * as settings from "./settings.js";
+import * as sounds from "./sounds.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -105,6 +106,7 @@ async function start() {
   zones.mount($("zones"));
   schedules.mount($("schedules"), $("days-off"));
   settings.mount($("tab-settings"));
+  sounds.mount($("sounds"));
   // "in 5 min" moves on, and once-only times drop off the list.
   setInterval(() => refreshUpcoming(), 60000);
   subscribe(["server"], () => { showBackend(); showPhonebook(); });

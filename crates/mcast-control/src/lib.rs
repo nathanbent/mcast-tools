@@ -69,6 +69,9 @@ pub enum Event {
     PhonebookChanged,
     /// Chimes were hidden or shown through the API; fetch the list again.
     ChimesChanged,
+    /// Media files or folders were uploaded, deleted, moved or made; fetch
+    /// `/media` again.
+    MediaChanged,
 }
 
 /// Where services send their events. Must not block.

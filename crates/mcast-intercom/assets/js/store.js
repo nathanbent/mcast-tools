@@ -10,6 +10,10 @@ export const state = {
   media: [],
   phonebook: [],
   chimes: [],  // the mcast server's built-ins: { name, category, description, hidden }
+  // The Sounds tab's view: { files: [{ name, bytes, modified_ms, hidden, used_by }],
+  //                          folders: [{ name, hidden }] }, or an error message.
+  library: { files: [], folders: [] },
+  libraryError: null,
   backend: null,
   // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
   upcoming: { time_zone: null, fires: [] },
@@ -74,8 +78,23 @@ export async function refreshServer() {
   changed("server");
 }
 
+export async function refreshLibrary() {
+  try {
+    state.library = await api("GET", "/library");
+    state.libraryError = null;
+  } catch (e) {
+    state.libraryError = e.message;
+  }
+  changed("library");
+}
+
+// Whether a media file is hidden from lists (it, or a folder it's in).
+export function isHidden(name) {
+  return (state.config.hidden_media ?? []).some((h) => name === h || name.startsWith(`${h}/`));
+}
+
 export function refreshAll() {
-  return Promise.all([refreshConfig(), refreshRuns().catch(() => {}), refreshServer(), refreshUpcoming()]);
+  return Promise.all([refreshConfig(), refreshRuns().catch(() => {}), refreshServer(), refreshUpcoming(), refreshLibrary()]);
 }
 
 export function apply(ev) {
@@ -95,13 +114,19 @@ export function apply(ev) {
     case "config_changed":
       refreshConfig();
       refreshUpcoming();
+      // Hidden files, and which announcements use which.
+      refreshLibrary();
+      break;
+    case "media_changed":
+      refreshServer();
+      refreshLibrary();
       break;
     case "backend": {
       const wasUp = state.backend?.connected;
       state.backend = { ...state.backend, ...ev.status };
       changed("server");
       // Back again: its media and phonebook may have changed meanwhile.
-      if (ev.status.connected && !wasUp) refreshServer();
+      if (ev.status.connected && !wasUp) { refreshServer(); refreshLibrary(); }
       break;
     }
     case "lagged":

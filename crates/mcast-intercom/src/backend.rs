@@ -67,6 +67,18 @@ pub enum Feed {
     Connected,
     Disconnected(String),
     JobEnded(Job),
+    /// Media files or folders changed on the server.
+    MediaChanged,
+}
+
+/// A file in the server's media directory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MediaFile {
+    /// Its path, folders and all: `bells/lunch.wav`.
+    pub name: String,
+    pub bytes: u64,
+    #[serde(default)]
+    pub modified_ms: Option<u64>,
 }
 
 /// Callback for [`Backend::follow`]; return false to stop following.
@@ -78,8 +90,24 @@ pub trait Backend: Send + Sync + 'static {
         String::new()
     }
     fn phonebook(&self) -> BackendResult<Vec<Entry>>;
-    /// Names of the files in the server's media directory.
-    fn media(&self) -> BackendResult<Vec<String>>;
+    /// The files in the server's media directory.
+    fn media_files(&self) -> BackendResult<Vec<MediaFile>>;
+    /// Their names (paths).
+    fn media(&self) -> BackendResult<Vec<String>> {
+        Ok(self.media_files()?.into_iter().map(|f| f.name).collect())
+    }
+    /// Its folders, empty ones included, by path.
+    fn media_folders(&self) -> BackendResult<Vec<String>>;
+    /// Upload a file (replacing one of that name), making its folders.
+    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<()>;
+    fn delete_media(&self, name: &str) -> BackendResult<()>;
+    fn create_folder(&self, name: &str) -> BackendResult<()>;
+    /// Delete an empty folder.
+    fn delete_folder(&self, name: &str) -> BackendResult<()>;
+    /// Rename or move a file or folder; never replaces. True for a folder.
+    fn move_media(&self, from: &str, to: &str) -> BackendResult<bool>;
+    /// A file's bytes and content type, to listen to.
+    fn download_media(&self, name: &str) -> BackendResult<(String, Vec<u8>)>;
     /// The server's built-in chimes, as its API lists them: `name`,
     /// `category`, `description` and `hidden`.
     fn chimes(&self) -> BackendResult<Vec<Value>>;
@@ -177,13 +205,61 @@ impl Backend for HttpBackend {
         self.get("/phonebook")
     }
 
-    fn media(&self) -> BackendResult<Vec<String>> {
-        #[derive(Deserialize)]
-        struct File {
-            name: String,
-        }
-        let files: Vec<File> = self.get("/media")?;
-        Ok(files.into_iter().map(|f| f.name).collect())
+    fn media_files(&self) -> BackendResult<Vec<MediaFile>> {
+        self.get("/media")
+    }
+
+    fn media_folders(&self) -> BackendResult<Vec<String>> {
+        self.get("/media-folders")
+    }
+
+    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<()> {
+        self.request(&self.agent, "PUT", &format!("/media/{}", encode(name)))
+            .send_bytes(data)?;
+        Ok(())
+    }
+
+    fn delete_media(&self, name: &str) -> BackendResult<()> {
+        self.request(&self.agent, "DELETE", &format!("/media/{}", encode(name)))
+            .call()?;
+        Ok(())
+    }
+
+    fn create_folder(&self, name: &str) -> BackendResult<()> {
+        self.request(&self.agent, "POST", "/media-folders")
+            .send_json(serde_json::json!({ "name": name }))?;
+        Ok(())
+    }
+
+    fn delete_folder(&self, name: &str) -> BackendResult<()> {
+        self.request(
+            &self.agent,
+            "DELETE",
+            &format!("/media-folders/{}", encode(name)),
+        )
+        .call()?;
+        Ok(())
+    }
+
+    fn move_media(&self, from: &str, to: &str) -> BackendResult<bool> {
+        let v: Value = self
+            .request(&self.agent, "POST", "/media-move")
+            .send_json(serde_json::json!({ "from": from, "to": to }))?
+            .into_json()?;
+        Ok(v["folder"].as_bool().unwrap_or(false))
+    }
+
+    fn download_media(&self, name: &str) -> BackendResult<(String, Vec<u8>)> {
+        use std::io::Read;
+        // To listen to in the browser: sounds, not anything enormous.
+        const MAX: u64 = 64 << 20;
+        let resp = self
+            .request(&self.agent, "GET", &format!("/media/{}", encode(name)))
+            .call()?;
+        let kind = resp.content_type().to_string();
+        let mut data = Vec::new();
+        resp.into_reader().take(MAX).read_to_end(&mut data)?;
+        Ok((kind, data))
     }
 
     fn chimes(&self) -> BackendResult<Vec<Value>> {
@@ -290,6 +366,7 @@ fn feed_of(data: &str) -> Option<Feed> {
         "job_ended" => serde_json::from_value(v["job"].clone())
             .ok()
             .map(Feed::JobEnded),
+        "media_changed" => Some(Feed::MediaChanged),
         // Events were dropped: treat it like a reconnect.
         "lagged" => Some(Feed::Connected),
         _ => None,

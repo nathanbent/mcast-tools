@@ -4,7 +4,7 @@
 
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
-import { state, subscribe } from "./store.js";
+import { state, subscribe, isHidden } from "./store.js";
 
 // Form helpers.
 
@@ -28,7 +28,8 @@ export function numberInput(value, props = {}) {
 // Media file names as [prefix + name, label] options, with `current` even if
 // the server no longer has it.
 export function mediaOptions(prefix, current) {
-  const names = [...state.media];
+  // Hidden ones are left out, unless already chosen.
+  const names = state.media.filter((n) => !isHidden(n) || n === current);
   if (current && !names.includes(current)) names.push(current);
   return names.map((n) => [prefix + n, state.media.includes(n) ? n : `${n} (missing)`]);
 }

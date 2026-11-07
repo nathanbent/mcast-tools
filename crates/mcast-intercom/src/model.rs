@@ -32,6 +32,10 @@ pub struct Config {
     /// Dates schedules don't play on: holidays, breaks.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub days_off: Vec<DayOff>,
+    /// Media files and folders (paths) left out of the panel's lists.
+    /// Announcements that use one still play it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_media: Vec<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -406,7 +410,70 @@ impl Announcement {
     }
 }
 
+/// `name`, or something inside it when it's a folder.
+fn within(name: &str, path: &str) -> bool {
+    name == path
+        || name
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 impl Config {
+    /// Whether a media file is hidden from lists (it, or a folder it's in).
+    pub fn is_hidden(&self, name: &str) -> bool {
+        self.hidden_media.iter().any(|h| within(name, h))
+    }
+
+    /// Who uses media file `name` (or, for a folder, anything in it):
+    /// "announcement Lunch bell", "the defaults".
+    pub fn media_users(&self, name: &str) -> Vec<String> {
+        let file_of = |c: &Option<Value>| {
+            c.as_ref()
+                .and_then(|c| c["file"].as_str())
+                .is_some_and(|f| within(f, name))
+        };
+        let mut users = Vec::new();
+        if file_of(&self.defaults.chime) || file_of(&self.defaults.end_chime) {
+            users.push("the defaults".to_string());
+        }
+        for a in &self.announcements {
+            let audio = matches!(&a.audio, Audio::Media(m) if within(m, name));
+            if audio || file_of(&a.chime) || file_of(&a.end_chime) {
+                users.push(format!("announcement {}", a.name));
+            }
+        }
+        users
+    }
+
+    /// Point everything that used `from` (a file, or a folder and what's in
+    /// it) at `to`, after it was renamed or moved.
+    pub fn media_moved(&mut self, from: &str, to: &str) {
+        let moved = |n: &str| -> Option<String> {
+            within(n, from).then(|| format!("{to}{}", &n[from.len()..]))
+        };
+        let chime = |c: &mut Option<Value>| {
+            if let Some(new) = c.as_ref().and_then(|c| c["file"].as_str()).and_then(moved) {
+                *c = Some(json!({ "file": new }));
+            }
+        };
+        chime(&mut self.defaults.chime);
+        chime(&mut self.defaults.end_chime);
+        for a in &mut self.announcements {
+            if let Audio::Media(m) = &mut a.audio {
+                if let Some(new) = moved(m) {
+                    *m = new;
+                }
+            }
+            chime(&mut a.chime);
+            chime(&mut a.end_chime);
+        }
+        for h in &mut self.hidden_media {
+            if let Some(new) = moved(h) {
+                *h = new;
+            }
+        }
+    }
+
     /// Whether schedules are off on this date.
     pub fn is_day_off(&self, date: jiff::civil::Date) -> bool {
         self.days_off
@@ -519,6 +586,11 @@ impl Config {
         check_chime("defaults: chime", &d.chime)?;
         check_chime("defaults: end_chime", &d.end_chime)?;
         check_encoding("defaults", &d.encoding)?;
+        for h in &self.hidden_media {
+            if !valid_media_name(h) {
+                bail!("hidden_media: \"{h}\" isn't a media file or folder name");
+            }
+        }
         for off in &self.days_off {
             let what = match off.name.as_str() {
                 "" => format!("day off {}", off.from),
@@ -617,12 +689,16 @@ fn check_number(what: &str, v: Option<f64>) -> Result<()> {
     Ok(())
 }
 
-/// The server's rule for media names: a plain file name.
+/// The server's rule for media names: file and folder names joined by
+/// `/`, none empty or starting with `.`.
 pub(crate) fn valid_media_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && !name.starts_with('.')
-        && !name
-            .chars()
-            .any(|c| c == '/' || c == '\\' || c.is_control())
+    let parts: Vec<&str> = name.split('/').collect();
+    name.len() <= 1024
+        && parts.len() <= 8
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= 255
+                && !p.starts_with('.')
+                && !p.chars().any(|c| c == '\\' || c.is_control())
+        })
 }

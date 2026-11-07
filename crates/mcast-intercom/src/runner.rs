@@ -146,6 +146,8 @@ pub struct BackendStatus {
 pub enum Change<'a> {
     Run(&'a Run),
     Backend(&'a BackendStatus),
+    /// Media files or folders changed on the mcast server.
+    Media,
 }
 
 /// Why an announcement couldn't be played at all.
@@ -215,6 +217,7 @@ impl Runner {
                 }
                 Feed::JobEnded(job) => inner.job_ended(job),
                 Feed::Disconnected(e) => inner.set_status(false, Some(e)),
+                Feed::MediaChanged => (inner.on_change)(Change::Media),
             }
             true
         }));

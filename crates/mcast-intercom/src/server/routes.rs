@@ -114,7 +114,7 @@ fn not_found<T: Item>(id: &str) -> ApiError {
 
 /// Read the config, change it, check it and write it back, one change at a
 /// time. Reading the file each time keeps edits made by hand.
-async fn change<R: Send + 'static>(
+pub(super) async fn change<R: Send + 'static>(
     s: &AppState,
     f: impl FnOnce(&mut Config) -> ApiResult<R> + Send + 'static,
 ) -> ApiResult<R> {
@@ -357,9 +357,9 @@ pub(super) async fn phonebook(State(s): State<AppState>) -> ApiResult<Json<Vec<E
 
 /// Errors from the mcast server: its own status for "no such chime" and
 /// "bad request", else 502.
-fn passed_on(e: crate::BackendError) -> ApiError {
+pub(super) fn passed_on(e: crate::BackendError) -> ApiError {
     match e.status {
-        404 | 422 => ApiError::new(StatusCode::from_u16(e.status).unwrap(), e.message),
+        404 | 409 | 413 | 422 => ApiError::new(StatusCode::from_u16(e.status).unwrap(), e.message),
         _ => bad_gateway(e),
     }
 }

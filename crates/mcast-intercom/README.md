@@ -36,11 +36,12 @@ A page with a tab for each part:
 | **History** | Recent plays, and how each group fared |
 | **Schedules** | When announcements play by themselves; what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays |
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
+| **Sounds** | The mcast server's sound files, in folders: upload (or drop files on it), listen, rename or move, hide from the lists, delete. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, which chimes the lists show, and the connection to the mcast server |
 
-Media files and phonebook names come from the mcast server; upload files
-through `mcast serve`.
+Sound files and phonebook names come from the mcast server, so its own web
+page and TUI see the same files and folders.
 
 Schedules only play while `mcast intercom serve` runs.
 
@@ -130,6 +131,10 @@ before. `encoding` is the codec for zone groups that don't name one
 with `"to"` (the last day, included) for more than one day and an optional
 `"name"`. Playing from the panel or the command line still works.
 
+**`hidden_media`**: media files and folders (`"bells/old"`) the panel leaves
+out of its lists; everything in a hidden folder is hidden. Announcements that
+use one still play it.
+
 **`schedules_paused`**: `true` stops every schedule playing, without
 turning each one off.
 
@@ -199,9 +204,14 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
-| `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups |
+| `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
+| `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by"}], "folders": [{"name", "hidden"}]}`; `used_by` names the announcements (and "the defaults") that use a file |
+| `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. `DELETE` is refused (`409`) while something uses it |
+| `POST /media-folders`, `DELETE /media-folders/{path}` | `{"name"}`: make a folder; delete an empty one |
+| `POST /media-move` | `{"from", "to"}`: rename or move a file or folder, then point what used it at the new name. Returns `{"from", "to", "folder", "updated"}` |
+| `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |
 | `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
-| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `lagged` |
+| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `media_changed`, `lagged` |
 
 A run:
 
@@ -229,7 +239,7 @@ time it was due. Run `state` is `playing`, `waiting` (between repeats), `stoppin
 | `scheduler.rs` | When schedules are due (time zones, clock changes), and the thread that plays them |
 | `cli.rs` | `mcast intercom list`, `check`, `play` |
 | `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`) and the web page (`web.rs`) |
-| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `settings.js`), and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
+| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `sounds.js`, `settings.js`), and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
 
 `cargo test -p mcast-intercom` runs the runner and the API against a fake
 backend and, in `tests/server.rs`, against a real in-process `mcast serve`.

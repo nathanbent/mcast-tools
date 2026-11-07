@@ -129,6 +129,9 @@ export function apply(event) {
     case "phonebook_changed":
       refresh("phonebook");
       break;
+    case "media_changed":
+      refresh("media");
+      break;
     case "chimes_changed":
       refresh("chimes");
       break;

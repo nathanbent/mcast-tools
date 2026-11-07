@@ -4,6 +4,7 @@
 //! It runs as its own process with its own token, and reaches the mcast
 //! server only through a [`Backend`].
 
+mod library;
 mod routes;
 mod web;
 
@@ -55,6 +56,8 @@ pub enum Event {
     ConfigChanged,
     /// The connection to the mcast server changed.
     Backend { status: BackendStatus },
+    /// Media files or folders changed on the mcast server; fetch them again.
+    MediaChanged,
 }
 
 pub(crate) struct Inner {
@@ -90,6 +93,7 @@ impl AppState {
                 let _ = tx.send(match c {
                     Change::Run(run) => Event::Run { run: run.clone() },
                     Change::Backend(s) => Event::Backend { status: s.clone() },
+                    Change::Media => Event::MediaChanged,
                 });
             })
         };
@@ -204,6 +208,20 @@ pub fn router(state: AppState) -> Router {
         .route("/runs", get(list_runs).delete(stop_all))
         .route("/runs/{id}", get(get_run).delete(stop_run))
         .route("/media", get(media))
+        .route(
+            "/media/{*name}",
+            get(library::download)
+                .put(library::upload)
+                .delete(library::delete),
+        )
+        .route("/library", get(library::library))
+        .route("/media-folders", post(library::create_folder))
+        .route(
+            "/media-folders/{*name}",
+            axum::routing::delete(library::delete_folder),
+        )
+        .route("/media-move", post(library::move_media))
+        .route("/media-hidden", axum::routing::put(library::hide))
         .route("/phonebook", get(phonebook))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))

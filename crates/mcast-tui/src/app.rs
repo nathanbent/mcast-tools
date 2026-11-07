@@ -424,6 +424,7 @@ impl App {
                     }
                 }
             }
+            "media_changed" => self.refresh("media"),
             "file_received" => {
                 let f = &e["file"];
                 let name = f["name"].as_str().unwrap_or("a file");

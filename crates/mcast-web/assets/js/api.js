@@ -72,7 +72,8 @@ export function chimeUrl(name) {
 const EVENT_TYPES = [
   "job_started", "job_updated", "job_ended",
   "stream_added", "stream_changed", "stream_removed",
-  "monitor", "text_line", "text_renamed", "file_received", "phonebook_changed", "chimes_changed", "lagged",
+  "monitor", "text_line", "text_renamed", "file_received", "media_changed",
+  "phonebook_changed", "chimes_changed", "lagged",
 ];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch lists then: events

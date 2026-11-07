@@ -16,7 +16,10 @@ mod text;
 use chimes::{chime_preview, list_chimes, put_chime, put_chimes};
 use events::events;
 use files::{start_file_receiver, start_file_sender};
-use media::{delete_media, download_media, list_media, upload_media};
+use media::{
+    create_folder, delete_folder, delete_media, download_media, list_folders, list_media,
+    move_media, upload_media,
+};
 use phonebook::{delete_phonebook, list_phonebook, put_phonebook};
 use routes::*;
 use text::{send_text, start_text, text_history};
@@ -209,9 +212,15 @@ pub fn router(state: AppState) -> Router {
         .route("/receivers", post(start_receiver))
         .route("/media", get(list_media))
         .route(
-            "/media/{name}",
+            "/media/{*name}",
             get(download_media).put(upload_media).delete(delete_media),
         )
+        .route("/media-folders", get(list_folders).post(create_folder))
+        .route(
+            "/media-folders/{*name}",
+            axum::routing::delete(delete_folder),
+        )
+        .route("/media-move", post(move_media))
         .route("/texts", post(start_text))
         .route("/jobs/{id}/text", get(text_history).post(send_text))
         .route("/file-senders", post(start_file_sender))

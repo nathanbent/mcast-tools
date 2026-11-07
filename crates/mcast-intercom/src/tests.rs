@@ -66,9 +66,6 @@ fn config() -> Config {
         ],
         schedules: Vec::new(),
         time_zone: None,
-        defaults: Default::default(),
-        schedules_paused: false,
-        days_off: Vec::new(),
         announcements: vec![
             Announcement {
                 volume_db: Some(2.0),
@@ -77,6 +74,7 @@ fn config() -> Config {
             },
             announcement("two", &["two"]),
         ],
+        ..Default::default()
     }
 }
 
