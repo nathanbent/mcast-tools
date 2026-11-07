@@ -25,10 +25,13 @@ jobs:
             os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+          # Apple silicon runner; the Intel build is cross-compiled. Rust's
+          # deployment targets (macOS 11 / 10.12) keep the binaries portable,
+          # so following macos-latest is safe and survives image retirements.
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-latest
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
