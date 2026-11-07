@@ -125,29 +125,49 @@ pub fn open_sender(opts: &MulticastOptions) -> io::Result<UdpSocket> {
 /// `SO_REUSEADDR` (and `SO_REUSEPORT` on Unix) are set so several
 /// receivers on the same host can listen to the same group.
 pub fn open_receiver(opts: &MulticastOptions) -> io::Result<UdpSocket> {
-    let socket = Socket::new(
-        Domain::for_address(opts.group),
-        Type::DGRAM,
-        Some(Protocol::UDP),
-    )?;
+    open_receiver_groups(&[opts.group], opts.interface, opts.loopback)
+}
+
+/// Like [`open_receiver`], but joins several groups that share one port and
+/// address family (e.g. the SAP announcement groups).
+pub fn open_receiver_groups(
+    groups: &[SocketAddr],
+    interface: Interface,
+    loopback: bool,
+) -> io::Result<UdpSocket> {
+    let first = *groups
+        .first()
+        .ok_or_else(|| invalid("no multicast groups given"))?;
+    if groups
+        .iter()
+        .any(|g| g.port() != first.port() || g.is_ipv4() != first.is_ipv4())
+    {
+        return Err(invalid("groups must share a port and address family"));
+    }
+    if let Some(g) = groups.iter().find(|g| !g.ip().is_multicast()) {
+        return Err(invalid(&format!("{} is not a multicast address", g.ip())));
+    }
+
+    let socket = Socket::new(Domain::for_address(first), Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
     socket.set_reuse_port(true)?;
     // Best effort: a larger buffer rides out scheduling hiccups.
     let _ = socket.set_recv_buffer_size(1 << 20);
 
-    let port = opts.group.port();
-    match opts.group.ip() {
+    // On Unix, binding to a single group's address filters out unrelated
+    // traffic to the same port. Windows (and multiple groups) need the wildcard.
+    let wildcard = cfg!(windows) || groups.len() > 1;
+    let port = first.port();
+    match first.ip() {
         IpAddr::V4(group) => {
-            // On Unix, binding to the group address filters out unrelated
-            // traffic to the same port. Windows requires the wildcard.
-            let bind_ip = if cfg!(windows) {
+            let bind_ip = if wildcard {
                 Ipv4Addr::UNSPECIFIED
             } else {
                 group
             };
             socket.bind(&SocketAddr::from((bind_ip, port)).into())?;
-            let iface = match opts.interface {
+            let iface = match interface {
                 Interface::Any => Ipv4Addr::UNSPECIFIED,
                 Interface::V4(a) => a,
                 Interface::Index(_) => {
@@ -156,18 +176,22 @@ pub fn open_receiver(opts: &MulticastOptions) -> io::Result<UdpSocket> {
                     ))
                 }
             };
-            socket.join_multicast_v4(&group, &iface)?;
-            socket.set_multicast_loop_v4(opts.loopback)?;
+            for g in groups {
+                if let IpAddr::V4(g) = g.ip() {
+                    socket.join_multicast_v4(&g, &iface)?;
+                }
+            }
+            socket.set_multicast_loop_v4(loopback)?;
         }
         IpAddr::V6(group) => {
             socket.set_only_v6(true)?;
-            let bind_ip = if cfg!(windows) {
+            let bind_ip = if wildcard {
                 Ipv6Addr::UNSPECIFIED
             } else {
                 group
             };
             socket.bind(&SocketAddr::from((bind_ip, port)).into())?;
-            let index = match opts.interface {
+            let index = match interface {
                 Interface::Any => 0,
                 Interface::Index(i) => i,
                 Interface::V4(_) => {
@@ -176,8 +200,12 @@ pub fn open_receiver(opts: &MulticastOptions) -> io::Result<UdpSocket> {
                     ))
                 }
             };
-            socket.join_multicast_v6(&group, index)?;
-            socket.set_multicast_loop_v6(opts.loopback)?;
+            for g in groups {
+                if let IpAddr::V6(g) = g.ip() {
+                    socket.join_multicast_v6(&g, index)?;
+                }
+            }
+            socket.set_multicast_loop_v6(loopback)?;
         }
     }
     Ok(socket.into())

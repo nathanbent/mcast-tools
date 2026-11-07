@@ -2,12 +2,15 @@
 
 use crate::device;
 use crate::format::AudioFormat;
-use crate::packetizer::{random_u32, Packetizer};
+use crate::packetizer::Packetizer;
 use anyhow::{bail, Context, Result};
 use mcast_core::net::{open_sender, MulticastOptions};
+use mcast_core::random_u32;
+use mcast_core::sap::{self, Announcer};
+use mcast_core::sdp::SessionDescription;
 use std::fs::File;
 use std::io::BufReader;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -34,6 +37,17 @@ pub struct SenderConfig {
     pub source: Source,
     /// Stop after this much audio has been sent.
     pub duration: Option<Duration>,
+    /// Announce the stream with SAP so receivers can find it.
+    pub announce: Option<Announce>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Announce {
+    /// Session name shown to receivers.
+    pub name: String,
+    /// SAP group; `None` picks one from the stream's scope.
+    pub sap_group: Option<SocketAddr>,
+    pub interval: Duration,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -65,6 +79,8 @@ pub struct Sender {
     packetizer: Packetizer,
     input: Input,
     duration: Option<Duration>,
+    sdp: SessionDescription,
+    announce: Option<(MulticastOptions, Duration)>,
 }
 
 impl Sender {
@@ -107,12 +123,35 @@ impl Sender {
             .unwrap_or_else(|| format.default_payload_type());
         let socket = open_sender(&cfg.net)
             .with_context(|| format!("opening multicast sender for {}", cfg.net.group))?;
+        let origin = socket.local_addr()?.ip();
+        let name = cfg
+            .announce
+            .as_ref()
+            .map_or("mcast audio", |a| a.name.as_str());
+        let sdp = crate::session::describe(
+            name,
+            origin,
+            cfg.net.group,
+            cfg.net.ttl,
+            format,
+            pt,
+            format.duration_of(frames),
+        );
+        let announce = cfg.announce.map(|a| {
+            let mut net = cfg.net.clone();
+            net.group = a
+                .sap_group
+                .unwrap_or_else(|| sap::announce_group_for(cfg.net.group.ip()));
+            (net, a.interval)
+        });
         Ok(Self {
             socket,
             format,
             packetizer: Packetizer::new(format, frames, pt, random_u32()),
             input,
             duration: cfg.duration,
+            sdp,
+            announce,
         })
     }
 
@@ -124,9 +163,27 @@ impl Sender {
         self.packetizer.frames_per_packet()
     }
 
+    /// SDP describing this stream (usable with ffplay/VLC as a .sdp file).
+    pub fn sdp(&self) -> &SessionDescription {
+        &self.sdp
+    }
+
+    /// SAP group the stream will be announced on, if announcing.
+    pub fn sap_group(&self) -> Option<SocketAddr> {
+        self.announce.as_ref().map(|(net, _)| net.group)
+    }
+
     /// Stream until the source ends, `duration` elapses, or `stop` is set.
     pub fn run(mut self, stop: &AtomicBool) -> Result<SenderStats> {
         let mut stats = SenderStats::default();
+        // Announces until dropped at the end of `run`, then sends a SAP deletion.
+        let _announcer = match &self.announce {
+            Some((net, interval)) => Some(
+                Announcer::start(net, &self.sdp, *interval)
+                    .with_context(|| format!("starting SAP announcements on {}", net.group))?,
+            ),
+            None => None,
+        };
         let limit = self
             .duration
             .map(|d| (d.as_secs_f64() * self.format.sample_rate as f64) as u64);

@@ -9,5 +9,7 @@ pub mod jitter;
 pub mod packetizer;
 pub mod receiver;
 pub mod sender;
+pub mod session;
 
 pub use format::{AudioFormat, Encoding};
+pub use session::StreamInfo;

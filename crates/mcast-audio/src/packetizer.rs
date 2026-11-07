@@ -1,6 +1,7 @@
 //! Turns a stream of interleaved samples into fixed-size RTP packets.
 
 use crate::format::AudioFormat;
+use mcast_core::random_u32;
 use mcast_core::rtp::RtpHeader;
 
 pub struct Packetizer {
@@ -60,20 +61,6 @@ impl Packetizer {
         }
         self.pending.drain(..offset);
     }
-}
-
-/// Non-cryptographic random value for SSRC / initial sequence & timestamp.
-pub fn random_u32() -> u32 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let mut h = RandomState::new().build_hasher();
-    h.write_u128(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    );
-    h.finish() as u32
 }
 
 #[cfg(test)]
