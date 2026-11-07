@@ -212,6 +212,7 @@ true peak is held at -2 dBTP. Opus tuning follows the mode.
 |---|---|
 | `-c g711u / g711a / g722 / opus` | `-e g711u / g711a / g722 / opus` |
 | `FILE` (anything ffmpeg reads) | `--file FILE` (WAV, MP3, FLAC, Ogg, AAC/M4A, ALAC) |
+| `pad` in place of the file (64 s, `-t SECS`, or `-l`) | `--tone pad` |
 | `-c opuswb` | `-e opus --opus-bandwidth wb --bitrate 32` |
 | `-m voice` / `-p` / `-m music` | `-m voice` / `-p` / `-m music` |
 | `-v DB`, `-L MS`, `-E MS`, `-s SECS`, `-t SECS` | same |
@@ -244,6 +245,7 @@ the options). It needs only bash and ffmpeg (with libopus for Opus):
 ```bash
 scripts/mcast-play.sh page.wav -p -C default -L 1000 -E 1000      # G.711u to 239.192.2.1:10000
 scripts/mcast-play.sh page.wav -p -C default -o preview.wav       # render instead of sending
+scripts/mcast-play.sh pad -l                                      # test pad (same as --tone pad), looped
 scripts/mcast-play.sh -h                                          # all options
 ```
 

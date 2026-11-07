@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mcast-play.sh - stream an audio file to a multicast paging group, tuned for the content and codec.
 #
-# Usage: ./mcast-play.sh [options] <audio-file>      (options can go before or after the file)
+# Usage: ./mcast-play.sh [options] <audio-file|pad>  (options can go before or after the file)
 #   -c CODEC   g711u (default), g711a, g722, opus, opuswb
 #   -m MODE    voice | music | none (default none)  - processing tuned for the content and codec
 #   -p         shortcut for -m voice
@@ -19,6 +19,10 @@
 #   -o FILE    render to a WAV of exactly what the phone would decode, instead of streaming
 #   -n         dry run: print the ffmpeg command(s), don't run them
 #
+# pad: in place of a file, a soft, slowly changing chord to test with (the same as
+# "mcast audio send --tone pad"): 64 s, or -t SECS, or -l to loop it seamlessly. Peaks at
+# -12 dBFS before -v. To play a file named "pad", give it as ./pad.
+#
 # Pre-tone: "-C default" plays DEFAULT_TONE below if you set it to a file, otherwise a built-in
 # three-note chime. "-C some/file.wav" plays that file instead. The tone is level-matched and
 # band-limited for the codec, but not voice-processed, so it stays clean.
@@ -30,6 +34,8 @@
 #   ./mcast-play.sh rasp1.wav -p -C tones/bell.wav -G 600     # your own tone, 0.6 s gap after it
 #   ./mcast-play.sh song.flac -c g722 -m music -v -6   # music-tuned G.722, 6 dB quieter
 #   ./mcast-play.sh rasp1.wav -p -C default -o preview.wav    # hear it on your desktop first
+#   ./mcast-play.sh pad -l                             # test pad on G.711u until you press q
+#   ./mcast-play.sh pad -c g722 -t 120 -o pad.wav      # two minutes of it through G.722
 #
 # Presets: save options under a name, then use them with @NAME (before or after the file).
 # Options given on the command line win; several presets apply left to right.
@@ -45,7 +51,7 @@
 # Presets are files in ~/.config/mcast/play-presets/ ($MCAST_PLAY_PRESETS overrides), one
 # option per line, so they can be edited by hand.
 
-VERSION="1.9"
+VERSION="1.10"
 DEFAULT_TONE=""   # set to an audio file path to make it the "-C default" tone; empty = built-in chime
 
 
@@ -207,8 +213,15 @@ if [[ ${#REST[@]} -ne ${#POSITIONAL[@]} ]]; then
 fi
 [[ ${#POSITIONAL[@]} -ne 1 ]] && { echo "Expected exactly one audio file, got: ${POSITIONAL[*]:-none}" >&2; usage; }
 FILE="${POSITIONAL[0]}"
-[[ -f "$FILE" ]] || die "File not found: $FILE"
+PAD=""; [[ "$FILE" == pad ]] && PAD=1
+[[ -n "$PAD" || -f "$FILE" ]] || die "File not found: $FILE"
 check_opts
+if [[ -n "$PAD" ]]; then
+  [[ -n "$START" ]] && die "-s doesn't apply to pad"
+  # A loop repeats the whole prepared audio, so a chime, dead air or -t would recur every cycle
+  [[ -n "$LOOP" && ( -n "$TONE" || -n "$DUR" || "$LEAD" != 0 ) ]] && die "pad -l can't be combined with -C, -t or -L"
+  [[ -n "$LOOP" ]] && TAIL=0
+fi
 
 # --- Pre-tone source ---
 TONE_FILE=""; TONE_DESC=""
@@ -230,6 +243,45 @@ fi
 note() { echo "if(gte(t,$2),(0.30*sin(2*PI*$1*(t-$2))+0.08*sin(2*PI*$1*2*(t-$2)))*exp(-3.5*(t-$2)),0)"; }
 CHIME_EXPR="$(note 523.25 0)+$(note 659.25 0.35)+$(note 783.99 0.70)"
 CHIME_SRC=(-f lavfi -i "aevalsrc='${CHIME_EXPR}':s=48000:d=2.0")
+
+# Test pad: Cmaj7, Am7, Fmaj7, G6, 8 s each, 3 s cross-fades (notes two chords share are held),
+# looping every 32 s, as in mcast's pad.rs. Each note is a pair of sines detuned 5/32 Hz either
+# side with its own slow swell; bass notes add a little 2nd and 3rd harmonic for small speakers.
+# Every frequency is a multiple of 1/32 Hz, so 32 s is exactly one cycle and -l loops without a seam.
+pad_expr() {
+  awk '
+  # 0 -> 1 as x goes 0 -> 1, flat at both ends
+  function E(x) { return "(0.5-0.5*cos(PI*clip(" x ",0,1)))" }
+  BEGIN {
+    split("48 55 64 67 71|45 52 64 67 72|41 60 64 69 72|43 62 64 67 71", ch, "|")
+    for (c = 1; c <= 4; c++) { n = split(ch[c], v, " "); for (j = 1; j <= n; j++) {
+      in_ch[v[j], c] = 1; used[v[j]] = 1; if (j == 1) bass[v[j]] = 1 } }
+    PI = atan2(0, -1); i = 0
+    for (m = 0; m < 128; m++) if (m in used) {
+      f = int(440 * 2 ^ ((m - 69) / 12) * 32 + 0.5) / 32
+      w = (m in bass) ? 0.8 : 1 - (m - 60) * 0.015
+      lv = (m in bass) ? 1.5 : 1; wt[m] = w * lv
+      # Gain: the sum of the windows of the chords holding this note
+      g = ""
+      for (c = 1; c <= 4; c++) if (in_ch[m, c]) {
+        d = sprintf("(mod(t+%g,32)-4)", 1.5 - 8 * (c - 1) + 4 + 32)
+        g = g (g == "" ? "" : "+") E("(" d "+1.5)/3") "*" E("(9.5-" d ")/3")
+      }
+      sw = int((0.05 + 0.07 * ((i * 7) % 11) / 10) * 32 + 0.5) / 32
+      tone = ""
+      for (h = 1; h <= ((m in bass) ? 3 : 1); h++) {
+        hl = (h == 1) ? 1 : (h == 2) ? 0.35 : 0.15
+        tone = tone (tone == "" ? "" : "+") sprintf("%g*(sin(%.10g*t+%g)+sin(%.10g*t+%g))", hl * 0.5,
+          2 * PI * h * (f - 5 / 32), i * 1.3, 2 * PI * h * (f + 5 / 32), i * 2.1 + 0.7)
+      }
+      terms = terms (terms == "" ? "" : "+") sprintf("(%s)*%g*(1+0.25*sin(%.10g*t+%g))*(%s)", g, w, 2 * PI * sw, i * 0.9, tone)
+      i++
+    }
+    # Worst case: a whole chord at the top of its swell, all in phase; peak at -12 dBFS
+    for (c = 1; c <= 4; c++) { s = 0; for (m in used) if (in_ch[m, c]) s += wt[m] * 1.25; if (s > pk) pk = s }
+    print sprintf("%.6g*(%s)", 10 ^ (-12 / 20) / pk, terms)
+  }'
+}
 
 # --- Codec settings ---
 # BAND: narrow (G.711) or wide; LP: low-pass for the codec's band; RAW: raw format for -o renders
@@ -259,8 +311,17 @@ MONO="aresample=ochl=mono:rematrix_maxval=1"
 
 # --- Announcement filter chain ---
 FX=("$MONO")
-[[ -n "$START" ]] && FX+=("afade=t=in:d=0.05")
-[[ -n "$DUR" ]]   && FX+=("afade=t=out:st=$(awk "BEGIN{print ($DUR>0.3)?$DUR-0.3:0}"):d=0.3")
+if [[ -n "$PAD" ]]; then
+  # One cycle to loop (faded in once, when sending starts), or a finished piece with 2 s fades
+  if [[ -n "$LOOP" ]]; then PAD_DUR=34   # trimmed to 1-33 s below
+  else
+    PAD_DUR="${DUR:-64}"
+    FX+=("afade=t=in:d=2" "afade=t=out:st=$(awk "BEGIN{print ($PAD_DUR>4)?$PAD_DUR-2:$PAD_DUR/2}"):d=2")
+  fi
+else
+  [[ -n "$START" ]] && FX+=("afade=t=in:d=0.05")
+  [[ -n "$DUR" ]]   && FX+=("afade=t=out:st=$(awk "BEGIN{print ($DUR>0.3)?$DUR-0.3:0}"):d=0.3")
+fi
 if [[ "$MODE" == voice ]]; then
   # Rumble/plosive cut, light denoise, steady level, tame sibilance, presence lift
   if [[ $BAND == narrow ]]; then HP=250; EQ="equalizer=f=2500:t=q:w=1:g=3"
@@ -284,6 +345,8 @@ if [[ "$MODE" != none ]]; then
 fi
 NORM="aresample=48000:resampler=soxr:precision=28,aformat=sample_fmts=fltp:channel_layouts=mono"
 FX+=("$NORM")
+# The cycle to loop comes from the middle, clear of the resampler's ringing at the edges
+[[ -n "$PAD" && -n "$LOOP" ]] && FX+=("atrim=start=1:end=33" "asetpts=PTS-STARTPTS")
 AF_MAIN=$(IFS=,; echo "${FX[*]}")
 
 # --- Final chain: (pre-tone + gap) + announcement, then volume and dead air ---
@@ -297,9 +360,14 @@ POST=()
 POST+=("$NORM")
 AF_POST=$(IFS=,; echo "${POST[*]}")
 
-IN=()
-[[ -n "$START" ]] && IN+=(-ss "$START")
-[[ -n "$DUR" ]]   && IN+=(-t "$DUR")
+if [[ -n "$PAD" ]]; then
+  SRC_IN=(-f lavfi -i "aevalsrc='$(pad_expr)':s=16000:d=${PAD_DUR}")  # nothing in it above 2 kHz
+else
+  IN=()
+  [[ -n "$START" ]] && IN+=(-ss "$START")
+  [[ -n "$DUR" ]]   && IN+=(-t "$DUR")
+  SRC_IN=("${IN[@]}" -i "$FILE")
+fi
 BASE=(ffmpeg -hide_banner -loglevel error)
 
 if [[ -n "$TONE" ]]; then
@@ -308,13 +376,13 @@ if [[ -n "$TONE" ]]; then
   TFX="${MONO},highpass=f=200${LP:+,lowpass=f=${LP}},loudnorm=I=-18:TP=-3,${NORM},apad=pad_dur=${GAP}ms"
   if [[ -n "$TONE_FILE" ]]; then TIN=(-i "$TONE_FILE"); else TIN=("${CHIME_SRC[@]}"); fi
   GRAPH="[0:a]${TFX}[tone];[1:a]${AF_MAIN}[main];[tone][main]concat=n=2:v=0:a=1,${AF_POST}[out]"
-  PREP_IN=("${TIN[@]}" "${IN[@]}" -i "$FILE")
+  PREP_IN=("${TIN[@]}" "${SRC_IN[@]}")
 else
   GRAPH="[0:a]${AF_MAIN},${AF_POST}[out]"
-  PREP_IN=("${IN[@]}" -i "$FILE")
+  PREP_IN=("${SRC_IN[@]}")
 fi
 
-DESC="v${VERSION} | $(basename "$FILE") | ${CODEC} | ${MODE}${VOL:+ | ${VOL} dB}${TONE_DESC:+ | ${TONE_DESC}}"
+DESC="v${VERSION} | $([[ -n "$PAD" ]] && echo "pad" || basename "$FILE") | ${CODEC} | ${MODE}${VOL:+ | ${VOL} dB}${TONE_DESC:+ | ${TONE_DESC}}"
 [[ "$LEAD" != 0 || "$TAIL" != 300 ]] && DESC+=" | dead air ${LEAD}/${TAIL} ms"
 
 # Stage 1 for both paths: build the finished audio (tone, processing, dead air) into a temp WAV,
@@ -351,6 +419,8 @@ else
   LOOPIN=(); [[ -n "$LOOP" ]] && LOOPIN=(-stream_loop -1)
   # Pace the output, not the input: arealtime releases each 20 ms frame (one packet) on time.
   # -re only throttles reading the file, so packets left in bursts (~7 every ~140 ms).
+  # A looped pad fades in here, once, rather than at the start of every cycle
+  [[ -n "$PAD" && -n "$LOOP" ]] && AF2="afade=t=in:d=2,$AF2"
   CMD=("${BASE[@]}" -stats "${LOOPIN[@]}" -i "$TMPWAV" -af "$AF2,arealtime" "${ENC[@]}" -f rtp "$URL")
   echo ">>> $DESC | ${GROUP}:${PORT}${LOOP:+ | looping, q to stop}"
   if [[ -n "$DRY" ]]; then
