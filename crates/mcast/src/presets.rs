@@ -176,10 +176,19 @@ fn find_arg<'a>(cmd: &'a Command, id: &str) -> Option<&'a Arg> {
     cmd.get_arguments().find(|a| a.get_id() == id)
 }
 
-/// Whether options `a` and `b` can't both be kept: the same option, declared
-/// conflicts (--voice / --mode), or members of one exclusive group (--tone / --file).
+/// Options that set the same thing, so a later one replaces an earlier one
+/// even though clap accepts both (`-p` is `--mode voice`).
+const SAME_SETTING: &[[&str; 2]] = &[["voice", "mode"]];
+
+/// Whether options `a` and `b` can't both be kept: the same option or setting
+/// (--voice / --mode), declared conflicts, or members of one exclusive group
+/// (--tone / --file).
 fn conflicts(cmd: &Command, a: &str, b: &str) -> bool {
-    if a == b {
+    if a == b
+        || SAME_SETTING
+            .iter()
+            .any(|p| p.contains(&a) && p.contains(&b))
+    {
         return true;
     }
     let (Some(x), Some(y)) = (find_arg(cmd, a), find_arg(cmd, b)) else {
