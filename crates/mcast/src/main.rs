@@ -250,11 +250,11 @@ struct SendArgs {
     /// Capture from an input device (substring of its name, or "default")
     #[arg(long, group = "source", num_args = 0..=1, default_missing_value = "default")]
     capture: Option<String>,
-    /// Processing tuned for the content and codec: voice, music or none
-    #[arg(short, long, default_value = "none")]
-    mode: Mode,
+    /// Processing tuned for the content and codec: voice, music or none [default: none]
+    #[arg(short, long)]
+    mode: Option<Mode>,
     /// Shortcut for --mode voice
-    #[arg(short = 'p', long = "voice", conflicts_with = "mode")]
+    #[arg(short = 'p', long = "voice")]
     voice: bool,
     /// Volume change in dB after processing, e.g. -6 or 3 (limited to avoid clipping)
     #[arg(short, long, allow_negative_numbers = true)]
@@ -477,7 +477,14 @@ fn hostname() -> String {
 }
 
 fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
-    let mode = if a.voice { Mode::Voice } else { a.mode };
+    // -p is shorthand for -m voice; saying both is fine, contradicting it isn't.
+    let mode = match (a.voice, a.mode) {
+        (true, Some(m)) if m != Mode::Voice => {
+            bail!("-p means --mode voice, but --mode {m} was also given")
+        }
+        (true, _) => Mode::Voice,
+        (false, m) => m.unwrap_or_default(),
+    };
     let endless = (a.wav.is_none() || a.looped) && a.duration.is_none();
     if a.render.is_some() && endless {
         bail!("--render needs an end: a file without --loop, or --duration");
