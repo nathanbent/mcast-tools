@@ -5,17 +5,25 @@ import { h, replace } from "./dom.js";
 import { state } from "./store.js";
 import { mountEditor, field, select, numberInput, num } from "./editor.js";
 
-const ENCODINGS = [
-  ["", "Server default"], ["pcmu", "G.711 µ-law"], ["pcma", "G.711 A-law"],
+export const ENCODINGS = [
+  ["pcmu", "G.711 µ-law"], ["pcma", "G.711 A-law"],
   ["g722", "G.722"], ["l16", "L16"], ["l24", "L24"], ["opus", "Opus"],
 ];
 
-// The CLI and API also take g711u / g711a; show those as their pcm names.
-const encodingValue = (e) => ({ g711u: "pcmu", g711a: "pcma" }[e] ?? e ?? "");
-const encodingLabel = (e) => ENCODINGS.find(([v]) => v === encodingValue(e))?.[1] ?? e;
+// The CLI and API also take g711u / g711a (and ulaw / alaw); show those as their pcm names.
+export const encodingValue = (e) =>
+  ({ g711u: "pcmu", ulaw: "pcmu", g711a: "pcma", alaw: "pcma" }[e?.toLowerCase()] ?? e?.toLowerCase() ?? "");
+export const encodingLabel = (e) => ENCODINGS.find(([v]) => v === encodingValue(e))?.[1] ?? e;
+
+// What a group with no codec of its own uses: the panel's default, else the server's.
+export const defaultEncoding = () => {
+  const d = state.config.defaults?.encoding;
+  return d ? encodingLabel(d) : "L16, the server's";
+};
 
 function describe(t) {
-  const opts = [t.encoding && encodingLabel(t.encoding), t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
+  const codec = t.encoding ? encodingLabel(t.encoding) : `${defaultEncoding().split(",")[0]} (default)`;
+  const opts = [codec, t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
   return opts.length ? `${t.group} (${opts.join(", ")})` : t.group;
 }
 
@@ -28,7 +36,7 @@ function form(z, save, cancel) {
     const row = {
       original: t,
       group: h("input", { value: t.group ?? "", required: true, list: "phonebook-groups", placeholder: "Phonebook name or 239.x.x.x:port" }),
-      encoding: select(ENCODINGS, encodingValue(t.encoding)),
+      encoding: select([["", `Default (${defaultEncoding()})`], ...ENCODINGS], encodingValue(t.encoding)),
       volume: numberInput(t.volume_db, { placeholder: "0" }),
       tos: numberInput(t.tos, { min: 0, max: 255, step: 1, placeholder: "184", title: "IP TOS byte: 184 is DSCP EF" }),
       ttl: numberInput(t.ttl, { min: 1, max: 255, step: 1, placeholder: "Default" }),
@@ -70,7 +78,7 @@ function form(z, save, cancel) {
     h("fieldset", { class: "part" }, h("legend", {}, "General"), field("Name", name)),
     h("fieldset", { class: "part" }, h("legend", {}, "Groups"),
       h("p", { class: "small muted" },
-        "Each group with the options its speakers need. Volume is added to the announcement's; leave an option empty for the server's default."),
+        "Each group with the options its speakers need. Volume is added to the announcement's. A codec left on Default uses the one in Settings; other options left empty use the server's."),
       rowsEl,
       h("div", { class: "buttons", style: { marginTop: "10px" } },
         h("button", { type: "button", onclick: () => addRow() }, "Add group"))),

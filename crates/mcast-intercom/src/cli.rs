@@ -27,7 +27,11 @@ pub fn list(path: &Path) -> Result<()> {
     }
     println!("Zones:");
     for z in &cfg.zones {
-        let targets: Vec<String> = z.targets.iter().map(describe_target).collect();
+        let targets: Vec<String> = z
+            .targets
+            .iter()
+            .map(|t| describe_target(&cfg.defaults.target(t)))
+            .collect();
         println!("  {:<16} {}: {}", z.id, z.name, targets.join(", "));
     }
     println!("Announcements:");

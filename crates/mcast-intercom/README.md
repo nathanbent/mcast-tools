@@ -37,7 +37,7 @@ A page with a tab for each part:
 | **Schedules** | When announcements play by themselves; what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays |
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
-| **Settings** | Announcement defaults, the time zone, which chimes the lists show, and the connection to the mcast server |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, which chimes the lists show, and the connection to the mcast server |
 
 Media files and phonebook names come from the mcast server; upload files
 through `mcast serve`.
@@ -86,7 +86,7 @@ file named by `--config` or `$MCAST_INTERCOM`. Edit it in the panel or by hand;
      "when": {"weekly": {"days": ["mon", "tue", "wed", "thu", "fri"], "times": ["12:00", "12:45"]}}},
     {"id": "drill", "announcement": "fire", "when": {"once": "2026-12-04T10:30"}, "enabled": false}
   ],
-  "defaults": {"chime": "ding-dong", "mode": "voice", "lead_in_ms": 300},
+  "defaults": {"chime": "ding-dong", "mode": "voice", "lead_in_ms": 300, "encoding": "g711u"},
   "days_off": [
     {"name": "Winter break", "from": "2026-12-21", "to": "2027-01-01"},
     {"name": "Inset day", "from": "2026-11-20"}
@@ -98,7 +98,9 @@ file named by `--config` or `$MCAST_INTERCOM`. Edit it in the panel or by hand;
 **Zones.** `id` (letters, digits, `-`, `_`), `name`, and `targets`. Each target is a
 multicast `group` (a phonebook name or an address) plus the send options
 its speakers need: `encoding`, `volume_db` (added to the announcement's),
-`tos`, `ttl`, `interface`. Leave an option out to use the server's default.
+`tos`, `ttl`, `interface`. Leave `encoding` out to use the default codec
+(`defaults.encoding`, else the mcast server's, L16), and any other option
+out to use the server's default.
 
 **Announcements.** `id`, `name` and `zones` (zone ids), then:
 
@@ -121,7 +123,8 @@ with days `mon` to `sun` and 24-hour times (`"08:30"`, or with seconds), or
 `volume_db` and `lead_in_ms` when they leave them out, so one chime can be
 set for every announcement and changed in one place. An announcement's own
 value always wins. Without `defaults`, a field left out means none, as
-before.
+before. `encoding` is the codec for zone groups that don't name one
+(`"g711u"`, `"g722"`, ...); without it they get the mcast server's, L16.
 
 **`days_off`**: dates no schedule plays on, each `{"from": "YYYY-MM-DD"}`,
 with `"to"` (the last day, included) for more than one day and an optional
