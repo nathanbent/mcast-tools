@@ -1,8 +1,11 @@
 name: Release
 
-# Pushing a tag like v0.2.0 builds mcast for each platform and publishes a
-# GitHub release with the binaries. On pull requests that touch this file
-# (and on manual runs) it only builds, so the builds can be checked first.
+# Builds mcast for each platform and publishes a GitHub release with the
+# binaries, either when a tag like v0.2.0 is pushed, or when the workflow is
+# run by hand from main with a tag name (it then creates the tag itself, on
+# the commit it built). Every build must pass before anything is published.
+# On pull requests that touch this file, and on manual runs with no tag, it
+# only builds, so the builds can be checked first.
 
 on:
   push:
@@ -10,12 +13,58 @@ on:
   pull_request:
     paths: [".github/workflows/release.yml"]
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Tag to release from main, e.g. v0.2.0 (must match the version in Cargo.toml). Leave empty to only build."
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
+  # Works out which tag (if any) this run releases, and refuses bad requests
+  # before the slow builds start.
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        name: Check the release request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.release }}
+        run: |
+          tag=$(echo "$REQUESTED" | xargs)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          [ -z "$tag" ] && { echo "Build only; nothing will be published."; exit 0; }
+          version=$(cargo pkgid -p mcast | sed 's/.*[#@]//')
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag $tag doesn't match version $version in Cargo.toml"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ]; then
+              echo "::error::Releases can only be made from main (this run is on $GITHUB_REF_NAME)"
+              exit 1
+            fi
+            # An existing tag must already point at this commit.
+            existing=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha 2>/dev/null || true)
+            if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $tag already exists on another commit ($existing)"
+              exit 1
+            fi
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists"
+            exit 1
+          fi
+          echo "Will release $tag from $GITHUB_SHA."
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +97,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       # Tells the binary it's a release build, so `mcast update` downloads
       # releases instead of building from source.
-      MCAST_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      MCAST_RELEASE: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - name: Install ALSA headers
@@ -57,15 +106,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Check the tag matches the crate version
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          version=$(cargo pkgid -p mcast | sed 's/.*[#@]//')
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml" >&2
-            exit 1
-          fi
       - name: Build
         run: cargo build --release --locked -p mcast --target ${{ matrix.target }}
       - name: Package
@@ -88,8 +128,8 @@ jobs:
           path: dist/*
 
   publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [prepare, build]
+    if: needs.prepare.outputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -98,9 +138,14 @@ jobs:
           merge-multiple: true
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS
+      # Creates the tag on the built commit if it doesn't exist yet (manual
+      # runs); a pushed tag already does. A tag made with this token doesn't
+      # start the workflow again.
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: >
-          gh release create "$GITHUB_REF_NAME" dist/*
-          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release create "$TAG" dist/*
+          --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA"
+          --title "$TAG" --generate-notes
