@@ -1,148 +1,13 @@
 //! The model, the store, and the runner against a fake mcast server.
 
-use crate::backend::{Backend, BackendError, BackendResult, Entry, Feed, FeedFn, Job};
+use crate::backend::Backend;
+use crate::fake::Fake;
 use crate::model::{Announcement, Audio, Config, Priority, Target, Zone};
 use crate::runner::{Run, RunId, RunState, Runner, TargetState, Trigger};
 use crate::store;
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use serde_json::json;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-// ---- a fake mcast server ----
-
-#[derive(Default)]
-struct FakeState {
-    next: u64,
-    jobs: HashMap<u64, (String, Job)>,
-    requests: Vec<Value>,
-    /// Report jobs as ended before replying to the start.
-    end_at_once: bool,
-    /// Don't send events.
-    quiet: bool,
-}
-
-#[derive(Default)]
-struct Fake {
-    st: Mutex<FakeState>,
-    feed: Mutex<Option<Arc<FeedFn>>>,
-}
-
-impl Fake {
-    fn emit(&self, f: Feed) {
-        if self.st.lock().unwrap().quiet {
-            return;
-        }
-        let feed = self.feed.lock().unwrap().clone();
-        if let Some(feed) = feed {
-            feed(f);
-        }
-    }
-
-    fn end(&self, id: u64, state: &str) {
-        let job = {
-            let mut st = self.st.lock().unwrap();
-            let (_, job) = st.jobs.get_mut(&id).expect("job");
-            if job.is_over() {
-                return;
-            }
-            job.state = state.into();
-            job.clone()
-        };
-        self.emit(Feed::JobEnded(job));
-    }
-
-    fn running_on(&self, group: &str) -> Option<u64> {
-        let st = self.st.lock().unwrap();
-        st.jobs
-            .iter()
-            .find(|(_, (g, j))| g == group && !j.is_over())
-            .map(|(id, _)| *id)
-    }
-
-    fn finish_all(&self) {
-        let ids: Vec<u64> = {
-            let st = self.st.lock().unwrap();
-            st.jobs
-                .iter()
-                .filter(|(_, (_, j))| !j.is_over())
-                .map(|(id, _)| *id)
-                .collect()
-        };
-        for id in ids {
-            self.end(id, "finished");
-        }
-    }
-
-    fn requests(&self) -> Vec<Value> {
-        self.st.lock().unwrap().requests.clone()
-    }
-}
-
-impl Backend for Fake {
-    fn phonebook(&self) -> BackendResult<Vec<Entry>> {
-        Ok(vec![Entry {
-            name: "Zone-1".into(),
-            group: "239.1.1.1:5000".into(),
-        }])
-    }
-
-    fn media(&self) -> BackendResult<Vec<String>> {
-        Ok(vec!["lunch.wav".into()])
-    }
-
-    fn start_sender(&self, request: &Value) -> BackendResult<Job> {
-        let group = request["group"].as_str().unwrap().to_string();
-        if let Some(other) = self.running_on(&group) {
-            return Err(BackendError {
-                status: 409,
-                message: format!("{group} is already being sent to by job {other}"),
-                job: Some(other),
-            });
-        }
-        let (job, end_at_once) = {
-            let mut st = self.st.lock().unwrap();
-            st.next += 1;
-            let job = Job {
-                id: st.next,
-                state: "running".into(),
-                group: Some(group.clone()),
-                error: None,
-            };
-            st.jobs.insert(job.id, (group, job.clone()));
-            st.requests.push(request.clone());
-            (job, st.end_at_once)
-        };
-        if end_at_once {
-            self.end(job.id, "finished");
-        }
-        Ok(job)
-    }
-
-    fn stop_job(&self, id: u64) -> BackendResult<()> {
-        self.end(id, "stopped");
-        Ok(())
-    }
-
-    fn job(&self, id: u64) -> BackendResult<Job> {
-        self.st
-            .lock()
-            .unwrap()
-            .jobs
-            .get(&id)
-            .map(|(_, j)| j.clone())
-            .ok_or(BackendError {
-                status: 404,
-                message: format!("no job {id}"),
-                job: None,
-            })
-    }
-
-    fn follow(&self, on: FeedFn) {
-        on(Feed::Connected);
-        *self.feed.lock().unwrap() = Some(Arc::new(on));
-    }
-}
 
 // ---- helpers ----
 
@@ -211,7 +76,7 @@ fn config() -> Config {
 }
 
 fn runner(fake: &Arc<Fake>) -> Runner {
-    Runner::new(fake.clone(), |_: &Run| {})
+    Runner::new(fake.clone(), |_| {})
 }
 
 fn wait_for(r: &Runner, id: RunId, what: &str, done: impl Fn(&Run) -> bool) -> Run {

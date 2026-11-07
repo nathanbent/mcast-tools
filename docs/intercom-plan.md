@@ -1,6 +1,6 @@
 # Intercom control panel: plan
 
-Status: phase 1 built (`crates/mcast-intercom`, `mcast intercom list|check|play`); phases 2-4 to come.
+Status: phases 1 and 2 built (`crates/mcast-intercom`: `mcast intercom list|check|play|serve`); phases 3-4 to come.
 
 A small control panel on top of `mcast serve`: you define **zones** (sets of
 speakers), **announcements** (audio + chimes + where it goes), and
@@ -156,7 +156,7 @@ but its own copy so it can leave with the crate:
 1. **Core of it** (done): crate, `Backend` + `HttpBackend`, model + store, runner
    (fan-out, conflicts, stop, repeats). `mcast intercom play <name>` CLI for
    testing. Tests against an in-process `mcast-server`.
-2. **Panel:** its HTTP API + web UI (panel grid, editors, history).
+2. **Panel** (done): its HTTP API + web UI (panel grid, editors, history).
 3. **Scheduler:** weekly + one-shot, time zone, grace, upcoming.
 4. **Polish:** Pi systemd unit and install.sh option.
 

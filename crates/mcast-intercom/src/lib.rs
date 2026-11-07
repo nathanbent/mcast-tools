@@ -12,11 +12,14 @@ pub mod backend;
 pub mod cli;
 pub mod model;
 pub mod runner;
+pub mod server;
 pub mod store;
 
 pub use backend::{Backend, BackendError, HttpBackend};
 pub use model::{Announcement, Audio, Config, Priority, Target, Zone};
-pub use runner::{Run, RunId, RunState, Runner, TargetRun, TargetState, Trigger};
+pub use runner::{
+    BackendStatus, Change, PlayError, Run, RunId, RunState, Runner, TargetRun, TargetState, Trigger,
+};
 
 /// Milliseconds since the Unix epoch.
 pub(crate) fn now_ms() -> u64 {
@@ -25,5 +28,7 @@ pub(crate) fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+#[cfg(test)]
+mod fake;
 #[cfg(test)]
 mod tests;

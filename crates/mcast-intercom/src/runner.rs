@@ -7,7 +7,6 @@
 use crate::backend::{Backend, Feed, Job};
 use crate::model::{Announcement, Config, Priority};
 use crate::now_ms;
-use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -127,11 +126,49 @@ struct State {
     early: VecDeque<Job>,
 }
 
-type OnChange = Box<dyn Fn(&Run) + Send + Sync>;
+/// Whether the runner can hear from the mcast server.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BackendStatus {
+    /// Following the server's events.
+    pub connected: bool,
+    /// Why not.
+    pub error: Option<String>,
+    /// When this status began.
+    pub since_ms: u64,
+}
+
+/// What [`Runner::new`]'s callback hears about.
+#[derive(Debug, Clone, Copy)]
+pub enum Change<'a> {
+    Run(&'a Run),
+    Backend(&'a BackendStatus),
+}
+
+/// Why an announcement couldn't be played at all.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlayError {
+    NoAnnouncement(String),
+    /// The mcast server couldn't be asked something it had to be.
+    Server(String),
+}
+
+impl std::fmt::Display for PlayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlayError::NoAnnouncement(w) => write!(f, "no announcement \"{w}\""),
+            PlayError::Server(e) => f.write_str(e),
+        }
+    }
+}
+
+impl std::error::Error for PlayError {}
+
+type OnChange = Box<dyn Fn(Change) + Send + Sync>;
 
 struct Inner {
     backend: Arc<dyn Backend>,
     state: Mutex<State>,
+    status: Mutex<BackendStatus>,
     on_change: OnChange,
 }
 
@@ -141,10 +178,11 @@ pub struct Runner(Arc<Inner>);
 
 impl Runner {
     /// Start following the backend's events. `on_change` hears about every
-    /// change to a run (from any thread, never while the runner is locked).
+    /// change to a run, and to the connection (from any thread, never while
+    /// the runner is locked).
     pub fn new(
         backend: Arc<dyn Backend>,
-        on_change: impl Fn(&Run) + Send + Sync + 'static,
+        on_change: impl Fn(Change) + Send + Sync + 'static,
     ) -> Self {
         let inner = Arc::new(Inner {
             backend,
@@ -154,6 +192,11 @@ impl Runner {
                 jobs: HashMap::new(),
                 early: VecDeque::new(),
             }),
+            status: Mutex::new(BackendStatus {
+                connected: false,
+                error: None,
+                since_ms: now_ms(),
+            }),
             on_change: Box::new(on_change),
         });
         let weak: Weak<Inner> = Arc::downgrade(&inner);
@@ -162,9 +205,12 @@ impl Runner {
                 return false;
             };
             match feed {
-                Feed::Connected => inner.reconcile(),
+                Feed::Connected => {
+                    inner.set_status(true, None);
+                    inner.reconcile();
+                }
                 Feed::JobEnded(job) => inner.job_ended(job),
-                Feed::Disconnected(_) => {}
+                Feed::Disconnected(e) => inner.set_status(false, Some(e)),
             }
             true
         }));
@@ -173,10 +219,10 @@ impl Runner {
 
     /// Play an announcement (by id or name). Returns once every group has
     /// been started (or found busy); follow the rest through `on_change`.
-    pub fn play(&self, cfg: &Config, which: &str, trigger: Trigger) -> Result<Run> {
+    pub fn play(&self, cfg: &Config, which: &str, trigger: Trigger) -> Result<Run, PlayError> {
         let a = cfg
             .announcement(which)
-            .ok_or_else(|| anyhow!("no announcement \"{which}\""))?;
+            .ok_or_else(|| PlayError::NoAnnouncement(which.to_string()))?;
         let targets = self.0.targets(cfg, a)?;
         let id = {
             let mut st = self.0.lock();
@@ -204,7 +250,16 @@ impl Runner {
             id
         };
         self.0.start_round(id);
-        self.get(id).ok_or_else(|| anyhow!("run {id} vanished"))
+        self.get(id)
+            .ok_or_else(|| PlayError::Server(format!("run {id} vanished")))
+    }
+
+    pub fn backend_status(&self) -> BackendStatus {
+        self.0
+            .status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Stop a run: its senders, and any repeats still to come.
@@ -253,12 +308,30 @@ impl Inner {
     fn emit(&self, id: RunId) {
         let run = self.lock().runs.get(&id).cloned();
         if let Some(run) = run {
-            (self.on_change)(&run);
+            (self.on_change)(Change::Run(&run));
         }
     }
 
+    /// Record the connection; tell listeners only when it changes (the
+    /// backend retries every few seconds while the server is away).
+    fn set_status(&self, connected: bool, error: Option<String>) {
+        let now = {
+            let mut s = self.status.lock().unwrap_or_else(|e| e.into_inner());
+            if s.connected == connected && s.error == error {
+                return;
+            }
+            *s = BackendStatus {
+                connected,
+                error,
+                since_ms: now_ms(),
+            };
+            s.clone()
+        };
+        (self.on_change)(Change::Backend(&now));
+    }
+
     /// The groups an announcement goes to, resolved and without repeats.
-    fn targets(&self, cfg: &Config, a: &Announcement) -> Result<Vec<TargetRun>> {
+    fn targets(&self, cfg: &Config, a: &Announcement) -> Result<Vec<TargetRun>, PlayError> {
         let wanted: Vec<_> = a
             .zones
             .iter()
@@ -271,7 +344,7 @@ impl Inner {
         {
             self.backend
                 .phonebook()
-                .map_err(|e| anyhow!("reading the phonebook: {e}"))?
+                .map_err(|e| PlayError::Server(format!("reading the phonebook: {e}")))?
         } else {
             Vec::new()
         };

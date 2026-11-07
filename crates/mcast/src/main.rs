@@ -548,9 +548,29 @@ enum IntercomCommand {
     Check,
     /// Play an announcement (by id or name) and follow it until it ends
     Play { announcement: String },
+    /// Run the intercom panel: a web page and HTTP/JSON API of its own
+    Serve(IntercomServeArgs),
 }
 
-fn intercom(a: IntercomArgs, stop: &AtomicBool) -> Result<()> {
+#[derive(Args)]
+struct IntercomServeArgs {
+    /// Address to listen on
+    #[arg(short, long, default_value = "127.0.0.1:8651")]
+    listen: SocketAddr,
+    /// Token the panel's clients must send (required unless listening on loopback);
+    /// --token is the mcast server's
+    #[arg(long, env = "MCAST_INTERCOM_TOKEN", hide_env_values = true)]
+    panel_token: Option<String>,
+    /// API only: don't serve the web page
+    #[arg(long)]
+    no_web: bool,
+    /// Serve the web page from this directory instead of the built-in copy
+    /// (for working on crates/mcast-intercom/assets)
+    #[arg(long, value_name = "DIR", conflicts_with = "no_web")]
+    web_dir: Option<PathBuf>,
+}
+
+fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
     let path = match a.config {
         Some(p) => p,
         None => mcast_intercom::store::default_path()?,
@@ -560,7 +580,22 @@ fn intercom(a: IntercomArgs, stop: &AtomicBool) -> Result<()> {
         IntercomCommand::List => mcast_intercom::cli::list(&path),
         IntercomCommand::Check => mcast_intercom::cli::check(&path, &backend),
         IntercomCommand::Play { announcement } => {
-            mcast_intercom::cli::play(&path, Arc::new(backend), &announcement, stop)
+            mcast_intercom::cli::play(&path, Arc::new(backend), &announcement, &stop)
+        }
+        IntercomCommand::Serve(s) => {
+            let cfg = mcast_intercom::server::ServeConfig {
+                listen: s.listen,
+                token: s.panel_token,
+                config: path,
+                web_dir: s.web_dir,
+                web: !s.no_web,
+            };
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(mcast_intercom::server::serve(
+                cfg,
+                Arc::new(backend),
+                shutdown_signal(stop),
+            ))
         }
     }
 }
@@ -584,7 +619,7 @@ fn main() -> Result<()> {
         Command::Update(a) => update::run(a),
         Command::Serve(a) => serve(a, stop),
         Command::Tui(a) => mcast_tui::run(&a.url, a.token),
-        Command::Intercom(a) => intercom(a, &stop),
+        Command::Intercom(a) => intercom(a, stop),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");
@@ -1070,28 +1105,29 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
         mcast_web::router(a.web_dir)
     };
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(mcast_server::serve(cfg, web, async move {
-        // SIGTERM (systemd, docker stop) or Ctrl-C, which the ctrlc handler turns into `stop`.
-        let sigterm = async {
-            #[cfg(unix)]
-            if let Ok(mut t) =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            {
-                t.recv().await;
-                return;
-            }
-            std::future::pending::<()>().await
-        };
-        let ctrl_c = async {
-            while !stop.load(Ordering::Relaxed) {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        };
-        tokio::select! {
-            _ = sigterm => {}
-            _ = ctrl_c => {}
+    rt.block_on(mcast_server::serve(cfg, web, shutdown_signal(stop)))
+}
+
+/// SIGTERM (systemd, docker stop) or Ctrl-C, which the ctrlc handler turns into `stop`.
+async fn shutdown_signal(stop: Arc<AtomicBool>) {
+    let sigterm = async {
+        #[cfg(unix)]
+        if let Ok(mut t) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            t.recv().await;
+            return;
         }
-    }))
+        std::future::pending::<()>().await
+    };
+    let ctrl_c = async {
+        while !stop.load(Ordering::Relaxed) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    tokio::select! {
+        _ = sigterm => {}
+        _ = ctrl_c => {}
+    }
 }
 
 fn fmt_elapsed(d: Duration) -> String {

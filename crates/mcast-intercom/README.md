@@ -6,8 +6,8 @@ many times, at what priority), then play them.
 
 It is a client of the mcast HTTP API and nothing else: it doesn't use any
 other crate in this workspace, so it can be moved out on its own. See
-[`docs/intercom-plan.md`](../../docs/intercom-plan.md) for the plan: a web
-panel and schedules come next.
+[`docs/intercom-plan.md`](../../docs/intercom-plan.md) for the plan:
+schedules come next.
 
 ## Use
 
@@ -20,10 +20,32 @@ mcast intercom check           # the config, and its media files and phonebook n
 mcast intercom play lunch      # by id or name; Ctrl-C stops it
 ```
 
+### The panel
+
+```bash
+mcast intercom serve                                          # open http://127.0.0.1:8651/
+MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651
+```
+
+A page with a big button for each announcement (Stop and an *All stop* in
+the header), what's playing in each group right now, the history of recent
+plays, and editors for announcements and zones. Media files and phonebook
+names come from the mcast server; upload files through `mcast serve`.
+
+The panel is its own server with its own token (`--panel-token` or
+`$MCAST_INTERCOM_TOKEN`, required unless it listens on loopback). `--token`
+stays the mcast server's. It saves edits to `intercom.json`, reading the file
+again first, so changes made by hand while it runs aren't lost. It keeps the
+last 50 plays in memory. When it stops, anything playing finishes on the mcast
+server, but repeats still to come are dropped.
+
+`--web-dir crates/mcast-intercom/assets` serves the page from disk, so a
+reload picks up edits; `--no-web` serves the API alone.
+
 ## Config
 
 `intercom.json` in the mcast config directory (`~/.config/mcast`), or the
-file named by `--config` or `$MCAST_INTERCOM`. Edit it by hand for now;
+file named by `--config` or `$MCAST_INTERCOM`. Edit it in the panel or by hand;
 `mcast intercom check` tells you about mistakes.
 
 ```json
@@ -81,6 +103,42 @@ Each repeat tries every group again, so a group that was busy can join in
 later. A run is *done* if it played to at least one group, and *failed*
 if it played to none.
 
+## API
+
+Everything is under `/api/intercom/v1`, as JSON, with `Authorization: Bearer
+TOKEN` (or `?access_token=TOKEN`) when the panel has a token. Errors are
+`{"error": "..."}`: `404` for something that isn't there, `409` for a
+duplicate id or a zone still in use, `422` for a config that wouldn't be valid,
+`502` when the mcast server can't be reached.
+
+| Route | |
+|---|---|
+| `GET /health` | `{"ok": true, "version"}` |
+| `GET /backend` | The mcast server: `{"url", "connected", "error", "since_ms"}` |
+| `GET /config` | `{"zones": [...], "announcements": [...]}` |
+| `GET`, `POST /zones` | List, or add one (without `id`, one is made from `name`) |
+| `GET`, `PUT`, `DELETE /zones/{id}` | `PUT` replaces it; the id can't change |
+| `GET`, `POST /announcements`, `GET`, `PUT`, `DELETE /announcements/{id}` | The same |
+| `POST /announcements/{id}/play` | Play it now; returns the run (`201`) |
+| `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
+| `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
+| `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups |
+| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `lagged` |
+
+A run:
+
+```json
+{"id": 3, "announcement": "lunch", "name": "Lunch bell", "priority": "normal",
+ "trigger": {"type": "manual"}, "state": "playing", "round": 1, "rounds": 2,
+ "started_ms": 1794022911066, "ended_ms": null, "error": null,
+ "targets": [{"group": "zone-1", "address": "239.192.2.1:10000", "state": "playing",
+              "job": 12, "error": null, "played": 0}]}
+```
+
+Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
+`stopped` or `failed`. A target's is `starting`, `playing`, `done`, `busy`,
+`preempted`, `stopped` or `failed`.
+
 ## Code
 
 | File | |
@@ -90,6 +148,12 @@ if it played to none.
 | `backend.rs` | The `Backend` trait (what the panel needs from a server) and `HttpBackend` |
 | `runner.rs` | Plays announcements: fan-out, priorities, repeats, stop |
 | `cli.rs` | `mcast intercom list`, `check`, `play` |
+| `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`) and the web page (`web.rs`) |
+| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `announcements.js`, `zones.js`); `api.js` is the only one that calls the server |
 
-`cargo test -p mcast-intercom` runs the runner against a fake backend and,
-in `tests/server.rs`, against a real in-process `mcast serve`.
+`cargo test -p mcast-intercom` runs the runner and the API against a fake
+backend and, in `tests/server.rs`, against a real in-process `mcast serve`.
+
+As in mcast-web, page text goes in with `h()`, never `innerHTML`, and styles
+go in `app.css` or through `h(..., { style })`, because the Content-Security-Policy
+forbids inline ones.

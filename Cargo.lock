@@ -1222,11 +1222,13 @@ version = "0.3.1"
 dependencies = [
  "anyhow",
  "axum",
+ "futures-util",
  "mcast-core",
  "mcast-server",
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "ureq",
 ]
 

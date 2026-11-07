@@ -1,7 +1,7 @@
 //! The mcast server, as far as the panel needs it. [`HttpBackend`] talks to
 //! `mcast serve` over its HTTP API; tests use a fake.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use std::io::{BufRead, BufReader};
@@ -52,10 +52,12 @@ impl Job {
 }
 
 /// A phonebook entry.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub group: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// What the event stream reports.
@@ -71,6 +73,10 @@ pub enum Feed {
 pub type FeedFn = Box<dyn Fn(Feed) -> bool + Send + Sync + 'static>;
 
 pub trait Backend: Send + Sync + 'static {
+    /// Where it is, for people: e.g. the server's URL.
+    fn describe(&self) -> String {
+        String::new()
+    }
     fn phonebook(&self) -> BackendResult<Vec<Entry>>;
     /// Names of the files in the server's media directory.
     fn media(&self) -> BackendResult<Vec<String>>;
@@ -156,6 +162,10 @@ impl HttpBackend {
 }
 
 impl Backend for HttpBackend {
+    fn describe(&self) -> String {
+        self.base.clone()
+    }
+
     fn phonebook(&self) -> BackendResult<Vec<Entry>> {
         self.get("/phonebook")
     }

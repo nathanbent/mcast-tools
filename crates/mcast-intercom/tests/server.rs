@@ -127,7 +127,7 @@ fn wait_for(r: &Runner, id: u64, what: &str, done: impl Fn(&Run) -> bool) -> Run
 fn plays_a_chime_to_two_groups() {
     let srv = server();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
-    let r = Runner::new(backend, |_: &Run| {});
+    let r = Runner::new(backend, |_| {});
     let run = r.play(&config(), "ding", Trigger::Manual).unwrap();
     assert_eq!(run.targets.len(), 2, "{run:#?}");
     assert_eq!(
@@ -146,7 +146,7 @@ fn takes_over_a_busy_group_only_for_emergencies() {
     let tone = backend
         .start_sender(&json!({"group": "239.255.77.73:5004", "source": {"type": "tone"}}))
         .unwrap();
-    let r = Runner::new(backend.clone(), |_: &Run| {});
+    let r = Runner::new(backend.clone(), |_| {});
 
     let run = r.play(&config(), "polite", Trigger::Manual).unwrap();
     assert_eq!(run.state, RunState::Failed);
@@ -164,7 +164,7 @@ fn takes_over_a_busy_group_only_for_emergencies() {
 fn stops_a_run() {
     let srv = server();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
-    let r = Runner::new(backend.clone(), |_: &Run| {});
+    let r = Runner::new(backend.clone(), |_| {});
     let mut cfg = config();
     cfg.announcements[0].repeat = 5;
     cfg.announcements[0].repeat_gap_s = 0.5;
@@ -196,4 +196,58 @@ fn check_reports_missing_media_and_names() {
     // A wrong token is an error, not a skipped check.
     let wrong = HttpBackend::new(&srv.url, Some("nope".into()));
     assert!(mcast_intercom::cli::check(&path, &wrong).is_err());
+}
+
+#[test]
+fn the_panel_api_plays_through_a_real_server() {
+    use mcast_intercom::server::{router, AppState};
+    let srv = server();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
+    let state = AppState::new(backend, srv.dir.join("intercom.json"), None, rx);
+    let listener = rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let panel = format!("http://{}/api/intercom/v1", listener.local_addr().unwrap());
+    rt.spawn(async move { axum::serve(listener, router(state)).await });
+
+    let post = |path: &str, body: serde_json::Value| -> serde_json::Value {
+        ureq::post(&format!("{panel}{path}"))
+            .send_json(body)
+            .unwrap()
+            .into_json()
+            .unwrap()
+    };
+    post(
+        "/zones",
+        json!({"name": "Hall", "targets": [{"group": "zone-1", "encoding": "g722"}]}),
+    );
+    post(
+        "/announcements",
+        json!({"name": "Chime", "audio": "chime_only", "chime": "ding-dong", "zones": ["hall"]}),
+    );
+    let run = post("/announcements/chime/play", json!({}));
+    assert_eq!(run["state"], "playing", "{run}");
+    let id = run["id"].as_u64().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let run: serde_json::Value = ureq::get(&format!("{panel}/runs/{id}"))
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        if run["state"] == "done" {
+            assert_eq!(run["targets"][0]["address"], "239.255.77.71:5004");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{run}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let b: serde_json::Value = ureq::get(&format!("{panel}/backend"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    assert_eq!(b["connected"], true, "{b}");
 }
