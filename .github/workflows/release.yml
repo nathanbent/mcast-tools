@@ -51,7 +51,10 @@ jobs:
               exit 1
             fi
             # An existing tag must already point at this commit.
-            existing=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha 2>/dev/null || true)
+            # (ls-remote prints nothing for a missing tag, and fails the job if
+            # it can't reach the repo; an annotated tag's commit is the ^{} line.)
+            refs=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}")
+            existing=$(echo "$refs" | tail -n1 | cut -f1)
             if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
               echo "::error::Tag $tag already exists on another commit ($existing)"
               exit 1
