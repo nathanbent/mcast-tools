@@ -2,7 +2,7 @@
 
 use super::{hostname, ms, opt_str, secs, NetRequest};
 use anyhow::{bail, Result};
-use mcast_audio::chime::{Chime, ChimeSource};
+use mcast_audio::chime::{BuiltIn, Chime, ChimeSource};
 use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
 use mcast_audio::process::{Mode, ProcessOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
@@ -79,6 +79,9 @@ pub enum SourceRequest {
         #[serde(default)]
         device: Option<String>,
     },
+    /// No audio, just the chime: the default chime unless `chime` or
+    /// `end_chime` says otherwise.
+    Chime,
 }
 
 fn default_tone() -> f32 {
@@ -98,14 +101,81 @@ impl Default for SourceRequest {
     }
 }
 
-/// Pre-tone before the audio.
+/// A chime before or after the audio. In JSON: `"default"`, a built-in name
+/// such as `"falling"`, or `{"file": "tone.wav"}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase", deny_unknown_fields)]
+#[serde(try_from = "ChimeJson", into = "ChimeJson")]
 pub enum ChimeRequest {
-    /// The built-in chime, or `$MCAST_CHIME` when set.
+    /// `$MCAST_CHIME` (or `$MCAST_END_CHIME`) when set, otherwise the rising
+    /// chime before the audio and the falling one after it.
     Default,
+    BuiltIn(BuiltIn),
     /// An audio file.
     File(PathBuf),
+}
+
+impl ChimeRequest {
+    /// From the command line: "default", a built-in name, or else a file.
+    /// (Built-in names win; use `./bell` for a file called `bell`.)
+    pub fn parse_arg(s: &str) -> Self {
+        match s {
+            "default" => ChimeRequest::Default,
+            _ => s
+                .parse()
+                .map_or_else(|_| ChimeRequest::File(s.into()), ChimeRequest::BuiltIn),
+        }
+    }
+
+    fn resolve(&self, env: &str, default: BuiltIn, gap_ms: f64) -> Chime {
+        let source = match self {
+            ChimeRequest::Default => std::env::var_os(env)
+                .filter(|p| !p.is_empty())
+                .map_or(ChimeSource::BuiltIn(default), |p| {
+                    ChimeSource::File(p.into())
+                }),
+            ChimeRequest::BuiltIn(b) => ChimeSource::BuiltIn(*b),
+            ChimeRequest::File(p) => ChimeSource::File(p.clone()),
+        };
+        Chime {
+            source,
+            gap: ms(gap_ms),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum ChimeJson {
+    Name(String),
+    File(ChimeFile),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChimeFile {
+    file: PathBuf,
+}
+
+impl TryFrom<ChimeJson> for ChimeRequest {
+    type Error = String;
+
+    fn try_from(j: ChimeJson) -> Result<Self, String> {
+        Ok(match j {
+            ChimeJson::Name(n) if n == "default" => ChimeRequest::Default,
+            ChimeJson::Name(n) => ChimeRequest::BuiltIn(n.parse()?),
+            ChimeJson::File(f) => ChimeRequest::File(f.file),
+        })
+    }
+}
+
+impl From<ChimeRequest> for ChimeJson {
+    fn from(c: ChimeRequest) -> Self {
+        match c {
+            ChimeRequest::Default => ChimeJson::Name("default".into()),
+            ChimeRequest::BuiltIn(b) => ChimeJson::Name(b.name().into()),
+            ChimeRequest::File(file) => ChimeJson::File(ChimeFile { file }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +216,10 @@ pub struct SendRequest {
     pub tail_ms: f64,
     pub chime: Option<ChimeRequest>,
     pub chime_gap_ms: f64,
+    /// Chime after the audio, before the tail.
+    pub end_chime: Option<ChimeRequest>,
+    /// Silence between the audio and the end chime.
+    pub end_chime_gap_ms: f64,
     /// Start this many seconds into a file.
     pub start_s: Option<f64>,
     /// Send this many seconds, then stop.
@@ -188,6 +262,8 @@ impl Default for SendRequest {
             tail_ms: 300.0,
             chime: None,
             chime_gap_ms: 400.0,
+            end_chime: None,
+            end_chime_gap_ms: 400.0,
             start_s: None,
             duration_s: None,
             render: None,
@@ -222,6 +298,7 @@ impl SendRequest {
     pub fn endless(&self) -> bool {
         let looped_or_live = match &self.source {
             SourceRequest::File { looped, .. } => *looped,
+            SourceRequest::Chime => false,
             _ => true,
         };
         looped_or_live && self.duration_s.is_none()
@@ -255,6 +332,7 @@ impl SendRequest {
                 frequency: *frequency,
                 amplitude: 10f32.powf(*level_dbfs / 20.0),
             },
+            SourceRequest::Chime => sender::Source::Silent,
             SourceRequest::Pad { level_dbfs } => sender::Source::Pad {
                 amplitude: 10f32.powf(*level_dbfs / 20.0),
             },
@@ -305,6 +383,7 @@ impl SendRequest {
             duration: self.duration_s.map(|s| secs(s, "duration")).transpose()?,
             lead_in: ms(self.lead_in_ms),
             chime: self.chime(),
+            end_chime: self.end_chime(),
             tail: ms(self.tail_ms),
             render: self.render.clone(),
             announce,
@@ -313,16 +392,28 @@ impl SendRequest {
     }
 
     pub fn chime(&self) -> Option<Chime> {
-        let path = match self.chime.as_ref()? {
-            ChimeRequest::Default => std::env::var_os("MCAST_CHIME")
-                .filter(|p| !p.is_empty())
-                .map(PathBuf::from),
-            ChimeRequest::File(p) => Some(p.clone()),
+        let chime_only = self.source == SourceRequest::Chime && self.end_chime.is_none();
+        let c = match &self.chime {
+            Some(c) => c,
+            None if chime_only => &ChimeRequest::Default,
+            None => return None,
         };
-        Some(Chime {
-            source: path.map_or(ChimeSource::BuiltIn, ChimeSource::File),
-            gap: ms(self.chime_gap_ms),
-        })
+        Some(c.resolve("MCAST_CHIME", BuiltIn::Rising, self.gap(self.chime_gap_ms)))
+    }
+
+    pub fn end_chime(&self) -> Option<Chime> {
+        let c = self.end_chime.as_ref()?;
+        let gap = self.gap(self.end_chime_gap_ms);
+        Some(c.resolve("MCAST_END_CHIME", BuiltIn::Falling, gap))
+    }
+
+    /// With no audio between them, chimes need no gap.
+    fn gap(&self, ms: f64) -> f64 {
+        if self.source == SourceRequest::Chime {
+            0.0
+        } else {
+            ms
+        }
     }
 }
 
@@ -588,6 +679,7 @@ mod tests {
         assert_eq!(cfg.net.interface, "10.0.0.5".parse().unwrap());
         assert_eq!(cfg.lead_in, Duration::from_secs(1));
         assert!(cfg.chime.is_some());
+        assert!(cfg.end_chime.is_none());
         assert!(cfg.announce.is_none());
         assert!(!r.endless());
         // Round-trips.
@@ -635,5 +727,66 @@ mod tests {
         let cfg = r.to_config(&d, Interface::Any).unwrap();
         assert_eq!(cfg.latency, Duration::from_millis(40));
         assert!(matches!(cfg.sink, receiver::Sink::Play { device: None }));
+    }
+
+    #[test]
+    fn parses_chimes() {
+        let r: SendRequest = serde_json::from_str(
+            r#"{"chime": "ding-dong", "end_chime": {"file": "bye.wav"}, "end_chime_gap_ms": 250}"#,
+        )
+        .unwrap();
+        assert_eq!(r.chime, Some(ChimeRequest::BuiltIn(BuiltIn::DingDong)));
+        assert_eq!(r.end_chime, Some(ChimeRequest::File("bye.wav".into())));
+        let end = r.end_chime().unwrap();
+        assert_eq!(end.source, ChimeSource::File("bye.wav".into()));
+        assert_eq!(end.gap, Duration::from_millis(250));
+        let back: SendRequest = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+
+        let r: SendRequest = serde_json::from_str(r#"{"end_chime": "default"}"#).unwrap();
+        if std::env::var_os("MCAST_END_CHIME").is_none() {
+            assert_eq!(
+                r.end_chime().unwrap().source,
+                ChimeSource::BuiltIn(BuiltIn::Falling)
+            );
+        }
+        for bad in [
+            r#"{"chime": "klaxon"}"#,
+            r#"{"chime": {"file": "a.wav", "x": 1}}"#,
+        ] {
+            assert!(serde_json::from_str::<SendRequest>(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            ChimeRequest::parse_arg("bell"),
+            ChimeRequest::BuiltIn(BuiltIn::Bell)
+        );
+        assert_eq!(
+            ChimeRequest::parse_arg("bell.wav"),
+            ChimeRequest::File("bell.wav".into())
+        );
+        assert_eq!(ChimeRequest::parse_arg("default"), ChimeRequest::Default);
+    }
+
+    #[test]
+    fn chime_only_defaults_to_the_rising_chime() {
+        let r: SendRequest = serde_json::from_str(r#"{"source": {"type": "chime"}}"#).unwrap();
+        assert!(!r.endless());
+        let cfg = r.to_config(Interface::Any).unwrap();
+        assert!(matches!(cfg.source, sender::Source::Silent));
+        let chime = cfg.chime.unwrap();
+        assert_eq!(chime.gap, Duration::ZERO);
+        if std::env::var_os("MCAST_CHIME").is_none() {
+            assert_eq!(chime.source, ChimeSource::BuiltIn(BuiltIn::Rising));
+        }
+        assert!(cfg.end_chime.is_none());
+
+        // An end chime alone is a chime too.
+        let r: SendRequest =
+            serde_json::from_str(r#"{"source": {"type": "chime"}, "end_chime": "bell"}"#).unwrap();
+        assert!(r.chime().is_none());
+        assert_eq!(
+            r.end_chime().unwrap().source,
+            ChimeSource::BuiltIn(BuiltIn::Bell)
+        );
     }
 }

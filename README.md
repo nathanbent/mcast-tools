@@ -196,24 +196,44 @@ mcast audio send --wav song.wav -e g711u -m music -o preview.wav   # hear what t
 
 #### Chime and dead air
 
-A page can open with a chime and keep the stream open a little on each side,
-so phones don't clip the first or last word:
+A page can open with a chime, close with another, and keep the stream open a
+little on each side, so phones don't clip the first or last word:
 
 ```bash
-mcast audio send --file page.wav -e g711u -p -C -L 1000 -E 1000 -g 239.192.2.1:10000   # built-in chime
+mcast audio send --file page.wav -e g711u -p -C -L 1000 -E 1000 -g 239.192.2.1:10000   # default chime
+mcast audio send --file page.wav -e g711u -p -C ding-dong --end-chime -g 239.192.2.1:10000   # ding-dong in, falling out
 mcast audio send --file page.wav -e g711u -p -C tones/bell.wav -G 600 -o preview.wav   # your own tone
+mcast audio send --chime-only -C alert -e g711u -g 239.192.2.1:10000                     # just the chime
 ```
 
 | Option | Meaning |
 |---|---|
-| `-C, --chime [FILE]` | Pre-tone: an audio file, or no value for the built-in three-note chime (C5-E5-G5, all within 500-1600 Hz so it sounds the same on G.711). `MCAST_CHIME=FILE` makes a file the default. |
+| `-C, --chime [NAME\|FILE]` | Chime before the audio: a built-in (below), an audio file, or no value for the default (`rising`). `MCAST_CHIME=FILE` makes a file the default. |
 | `-G, --chime-gap MS` | Silence between the chime and the audio (default 400) |
+| `--end-chime [NAME\|FILE]` | Chime after the audio, before the tail, to mark the end of the page; no value for the default (`falling`, or `MCAST_END_CHIME=FILE`). A live `--capture` page gets it when you stop it; a file or tone only when it ends on its own. |
+| `--end-chime-gap MS` | Silence between the audio and the end chime (default 400) |
+| `--chime-only` | Send no audio, just the chime(s): `-C` (the default if neither is given) and/or `--end-chime` |
 | `-L, --lead-in MS` | Silence before everything (default 0; try 800-1000) |
 | `-E, --tail MS` | Silence after the audio (default 300) |
 
-The chime is band-limited for the codec (200 Hz high-pass, the codec's
+Built-in chimes, all with fundamentals within 500-1600 Hz so they sound the
+same on G.711 as on wideband codecs (built-in names win over files; use
+`./bell` for a file called `bell`):
+
+| Name | Sound |
+|---|---|
+| `rising` (default) | Three rising bell notes, C5-E5-G5: "attention" |
+| `falling` (default end chime) | The same notes falling, G5-E5-C5: "end of page" |
+| `ding-dong` | E5 then C5, like a doorbell |
+| `arpeggio` | Four rising notes, C5-E5-G5-C6 |
+| `bell` | A single struck bell (A5) with a long ring |
+| `alert` | Four quick alternating notes (B5/G5) for urgent pages |
+
+Chimes are band-limited for the codec (200 Hz high-pass, the codec's
 low-pass), normalised to -18 LUFS / -3 dBTP, and not voice-processed. `-v`
-applies to it too.
+applies to them too. The web GUI and `mcast tui` pick both chimes from a list,
+and the web Page form has a **Chime** button that sends just the chime(s) to
+the group.
 
 With voice or music, a low-pass at the codec's band edge (3.4 kHz G.711,
 7 kHz G.722 and wideband Opus) runs before loudness normalisation, and the
@@ -227,7 +247,7 @@ true peak is held at -2 dBTP. Opus tuning follows the mode.
 | `-c opuswb` | `-e opus --opus-bandwidth wb --bitrate 32` |
 | `-m voice` / `-p` / `-m music` | `-m voice` / `-p` / `-m music` |
 | `-v DB`, `-L MS`, `-E MS`, `-s SECS`, `-t SECS` | same |
-| `-C default` / `-C FILE`, `-G MS` | `-C` / `-C FILE`, `-G MS` (`DEFAULT_TONE` → `MCAST_CHIME`) |
+| `-C default` / `-C FILE`, `-G MS` | `-C` / `-C FILE`, `-G MS` (`DEFAULT_TONE` → `MCAST_CHIME`); also `-C NAME`, `--end-chime`, `--chime-only` |
 | `-l` | `--loop` |
 | `-g GROUP -P PORT` | `-g GROUP:PORT` |
 | `-T PT` | `--pt PT` |

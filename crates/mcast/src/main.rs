@@ -277,6 +277,10 @@ struct SendArgs {
     /// Capture from an input device (substring of its name, or "default")
     #[arg(long, group = "source", num_args = 0..=1, default_missing_value = "default")]
     capture: Option<String>,
+    /// Send just a chime, no audio: the -C chime (default rising) and/or the
+    /// --end-chime
+    #[arg(long, group = "source")]
+    chime_only: bool,
     /// Processing tuned for the content and codec: voice, music or none [default: none]
     #[arg(short, long)]
     mode: Option<Mode>,
@@ -292,13 +296,21 @@ struct SendArgs {
     /// Silence after the audio in ms, so the end isn't cut off
     #[arg(short = 'E', long, default_value_t = 300.0)]
     tail: f64,
-    /// Pre-tone before the audio: an audio file, or no value for the built-in
-    /// chime ($MCAST_CHIME, if set, replaces the built-in one)
-    #[arg(short = 'C', long, value_name = "FILE", num_args = 0..=1, default_missing_value = "default")]
+    /// Chime before the audio: a built-in (rising, falling, ding-dong,
+    /// arpeggio, bell, alert), an audio file, or no value for the default
+    /// (rising, or $MCAST_CHIME if set)
+    #[arg(short = 'C', long, value_name = "NAME|FILE", num_args = 0..=1, default_missing_value = "default")]
     chime: Option<String>,
     /// Gap between the chime and the audio, in ms
     #[arg(short = 'G', long, default_value_t = 400.0, requires = "chime")]
     chime_gap: f64,
+    /// Chime after the audio, to mark the end of the page: a built-in, an
+    /// audio file, or no value for the default (falling, or $MCAST_END_CHIME)
+    #[arg(long, value_name = "NAME|FILE", num_args = 0..=1, default_missing_value = "default")]
+    end_chime: Option<String>,
+    /// Gap between the audio and the end chime, in ms
+    #[arg(long, default_value_t = 400.0, requires = "end_chime")]
+    end_chime_gap: f64,
     /// Start this many seconds into the file (adds a short fade-in)
     #[arg(short, long, requires = "wav")]
     start: Option<f64>,
@@ -602,6 +614,8 @@ fn send_request(a: &SendArgs) -> Result<SendRequest> {
             path: path.clone(),
             looped: a.looped,
         }
+    } else if a.chime_only {
+        SourceRequest::Chime
     } else if let Some(dev) = &a.capture {
         SourceRequest::Capture {
             device: Some(dev.clone()).filter(|d| d != "default"),
@@ -637,11 +651,10 @@ fn send_request(a: &SendArgs) -> Result<SendRequest> {
         volume_db: a.volume,
         lead_in_ms: a.lead_in,
         tail_ms: a.tail,
-        chime: a.chime.as_deref().map(|c| match c {
-            "default" => ChimeRequest::Default,
-            file => ChimeRequest::File(file.into()),
-        }),
+        chime: a.chime.as_deref().map(ChimeRequest::parse_arg),
         chime_gap_ms: a.chime_gap,
+        end_chime: a.end_chime.as_deref().map(ChimeRequest::parse_arg),
+        end_chime_gap_ms: a.end_chime_gap,
         start_s: a.start,
         duration_s: a.duration,
         render: a.render.clone(),

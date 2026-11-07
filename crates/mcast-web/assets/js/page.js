@@ -6,7 +6,7 @@ import { state, subscribe, putJob } from "./store.js";
 
 const DEFAULTS = {
   group: "239.192.2.1:10000", name: "", source: "file", file: "", tone: 440,
-  device: "", encoding: "pcmu", mode: "voice", chime: true, lead_in_ms: 800,
+  device: "", encoding: "pcmu", mode: "voice", chime: "default", end_chime: "none", lead_in_ms: 800,
   tail_ms: 300, volume_db: 0, ef: true, loop: false, duration_s: "", ttl: 16,
 };
 
@@ -15,10 +15,17 @@ const CODECS = [
   ["g722", "G.722 wideband"], ["opus", "Opus"], ["l16", "L16 (AES67)"], ["l24", "L24 (AES67)"],
 ];
 
+const CHIMES = [
+  ["none", "Off"], ["default", "Default"], ["rising", "Rising (C-E-G)"], ["falling", "Falling (G-E-C)"],
+  ["ding-dong", "Ding-dong"], ["arpeggio", "Arpeggio"], ["bell", "Bell"], ["alert", "Alert"],
+];
+
 const AUDIO = /\.(wav|mp3|flac|ogg|oga|m4a|aac|mp4|alac)$/i;
 
 let form;
 let values = { ...DEFAULTS, ...saved.get("page", {}) };
+// Saved before chimes had names: the chime was a checkbox.
+if (typeof values.chime === "boolean") values.chime = values.chime ? "default" : "none";
 
 function field(label, input, hint) {
   return h("label", { class: "field" }, h("span", {}, label), input, hint && h("small", {}, hint));
@@ -42,7 +49,7 @@ function select(key, options) {
 function read() {
   const v = { ...values };
   for (const el of form.elements) {
-    if (!el.name) continue;
+    if (!el.name || el.tagName === "BUTTON") continue;
     if (el.type === "checkbox") v[el.name] = el.checked;
     else if (el.type === "radio") { if (el.checked) v[el.name] = el.value; }
     else if (el.type === "number") v[el.name] = el.value === "" ? "" : Number(el.value);
@@ -59,7 +66,9 @@ function request(v) {
     : { type: "tone", frequency: v.tone };
   return {
     group: v.group, encoding: v.encoding, mode: v.mode, source,
-    name: v.name || null, chime: v.chime ? "default" : null,
+    name: v.name || null,
+    chime: v.chime && v.chime !== "none" ? v.chime : null,
+    end_chime: v.end_chime && v.end_chime !== "none" ? v.end_chime : null,
     lead_in_ms: v.lead_in_ms || 0, tail_ms: v.tail_ms || 0,
     volume_db: v.volume_db ? v.volume_db : null, tos: v.ef ? 184 : null,
     duration_s: v.duration_s === "" ? null : v.duration_s, ttl: v.ttl || 16,
@@ -70,16 +79,21 @@ async function submit(e) {
   e.preventDefault();
   values = read();
   saved.set("page", values);
-  if (values.source === "file" && !values.file) {
+  // The Chime button sends just the chime(s) to the group, without the source.
+  const chimeOnly = e.submitter?.name === "chime-only";
+  if (!chimeOnly && values.source === "file" && !values.file) {
     toast("Upload or pick an audio file first.", "error");
     return;
   }
-  const button = form.querySelector("button[type=submit]");
-  button.disabled = true;
-  button.textContent = "Starting…";
+  const body = request(values);
+  if (chimeOnly) Object.assign(body, { source: { type: "chime" }, duration_s: null });
+  const buttons = [...form.querySelectorAll("button[type=submit]")];
+  const label = buttons.map((b) => b.textContent);
+  buttons.forEach((b) => { b.disabled = true; });
+  (e.submitter || buttons[0]).textContent = "Starting…";
   try {
-    putJob(await api("POST", "/senders", request(values)));
-    toast(`Paging ${values.group}`, "ok");
+    putJob(await api("POST", "/senders", body));
+    toast(chimeOnly ? `Chiming ${values.group}` : `Paging ${values.group}`, "ok");
   } catch (err) {
     if (err instanceof ApiError && err.status === 409) {
       toast(err.message, "error", [`Stop job ${err.job}`, () => stopJob(err.job)]);
@@ -87,8 +101,7 @@ async function submit(e) {
       toast(err.message, "error");
     }
   } finally {
-    button.disabled = false;
-    button.textContent = "Start page";
+    buttons.forEach((b, i) => { b.disabled = false; b.textContent = label[i]; });
   }
 }
 
@@ -143,7 +156,9 @@ function render() {
       field("Codec", select("encoding", CODECS)),
       field("Processing", select("mode", [["voice", "Voice"], ["music", "Music"], ["none", "None"]]))),
     h("div", { class: "row" },
-      field("", h("span", { class: "check" }, bind("chime", { type: "checkbox" }), " Chime first")),
+      field("Chime first", select("chime", CHIMES)),
+      field("Chime at end", select("end_chime", CHIMES))),
+    h("div", { class: "row" },
       field("", h("span", { class: "check" }, bind("ef", { type: "checkbox" }), " Voice QoS (DSCP EF)"))),
     h("details", {}, h("summary", {}, "More options"),
       h("div", { class: "row" },
@@ -153,7 +168,9 @@ function render() {
         field("Volume (dB)", bind("volume_db", { type: "number", step: 1, min: -40, max: 20 })),
         field("Stop after (s)", bind("duration_s", { type: "number", min: 0, step: 1, placeholder: "end of source" }))),
       h("div", { class: "row" }, field("TTL", bind("ttl", { type: "number", min: 1, max: 255 })))),
-    h("button", { type: "submit", class: "primary" }, "Start page"));
+    h("div", { class: "buttons" },
+      h("button", { type: "submit", class: "primary" }, "Start page"),
+      h("button", { type: "submit", name: "chime-only", title: "Send just the chime to the group (the default chime if both are off)" }, "🔔 Chime")));
 }
 
 // Pick a media file from elsewhere (the Media panel's "Page this").
