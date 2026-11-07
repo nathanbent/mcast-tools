@@ -146,6 +146,7 @@ button.primary {
   font-size: 15px;
 }
 button.danger { color: var(--bad); }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
 button.subtle { border-color: transparent; background: transparent; }
 button.link { border: none; background: none; color: inherit; text-decoration: underline; padding: 0 4px; }
 

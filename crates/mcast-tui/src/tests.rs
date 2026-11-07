@@ -101,7 +101,7 @@ fn pages_and_sees_the_overlap() {
     assert_eq!(app.mode, Mode::Form(FormKind::Page));
     app.forms.page.set("source", "tone");
     app.forms.page.set("group", "239.255.77.61:5004");
-    app.forms.page.set("chime", "false");
+    app.forms.page.set("chime", "none");
     key(&mut app, KeyCode::Enter);
     pump(&mut app, &rx, "the page to start", |a| !a.busy);
     assert_eq!(app.mode, Mode::Normal, "{:?}", app.status);

@@ -95,8 +95,10 @@ pub(crate) async fn start_sender(
     if let SourceRequest::File { path, .. } = &mut req.source {
         *path = s.media_path(path)?;
     }
-    if let Some(ChimeRequest::File(path)) = &mut req.chime {
-        *path = s.media_path(path)?;
+    for chime in [&mut req.chime, &mut req.end_chime] {
+        if let Some(ChimeRequest::File(path)) = chime {
+            *path = s.media_path(path)?;
+        }
     }
     let info = tokio::task::spawn_blocking(move || s.0.jobs.start_sender_as(req, shown)).await??;
     Ok((StatusCode::CREATED, Json(info)))

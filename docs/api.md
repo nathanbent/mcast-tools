@@ -98,11 +98,13 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_mode` | follows `mode` | `voice` or `music` |
 | `opus_bandwidth` | | `nb`, `wb`, `swb`, `fb` |
 | `opus_fec` | `true` | |
-| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, or `{"type": "capture", "device": "USB"}` |
+| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, or `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | |
-| `chime` | | `"default"` (built-in, or `$MCAST_CHIME`) or `{"file": "NAME"}` |
+| `chime` | | Chime before the audio: `"default"` (`rising`, or `$MCAST_CHIME`), a built-in (`"rising"`, `"falling"`, `"ding-dong"`, `"arpeggio"`, `"bell"`, `"alert"`), or `{"file": "NAME"}` |
 | `chime_gap_ms` | `400` | |
+| `end_chime` | | Chime after the audio, before the tail: as `chime`, but `"default"` is `falling` (or `$MCAST_END_CHIME`) |
+| `end_chime_gap_ms` | `400` | |
 | `lead_in_ms` | `0` | |
 | `tail_ms` | `300` | |
 | `start_s`, `duration_s` | | |
@@ -122,6 +124,15 @@ A page from an uploaded file, with a chime and voice processing for phones:
 curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
   -d '{"group": "239.192.2.1:10000", "encoding": "g711u", "mode": "voice", "chime": "default",
        "lead_in_ms": 800, "tos": 184, "source": {"type": "file", "path": "page.mp3"}}' \
+  http://127.0.0.1:8650/api/v1/senders
+```
+
+Just a chime, e.g. from a button or a schedule:
+
+```bash
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"group": "239.192.2.1:10000", "encoding": "g711u", "tos": 184,
+       "source": {"type": "chime"}, "chime": "ding-dong"}' \
   http://127.0.0.1:8650/api/v1/senders
 ```
 
@@ -231,7 +242,7 @@ event.
 {
   "id": 1, "kind": "send", "state": "running",
   "group": "239.192.2.1:10000", "name": "Lobby page",
-  "summary": "PCMU/8000/1 sending to 239.192.2.1:10000 (pt 0, 20 ms packets, voice processing, built-in chime)",
+  "summary": "PCMU/8000/1 sending to 239.192.2.1:10000 (pt 0, 20 ms packets, voice processing, rising chime)",
   "notes": ["loudness: measured -11.0 LUFS after processing; -5.0 dB to reach -16 LUFS"],
   "created_ms": 1794022911066, "ended_ms": null, "error": null,
   "stats": {"packets": 204, "send_errors": 0, "seconds": 4.08, "capture_dropped": 0},

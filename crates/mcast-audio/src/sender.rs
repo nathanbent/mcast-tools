@@ -45,6 +45,8 @@ pub enum Source {
     File { path: PathBuf, looped: bool },
     /// Live capture from an input device (default device if `None`).
     Capture { device: Option<String> },
+    /// No audio: just the chimes (and lead-in and tail).
+    Silent,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +71,10 @@ pub struct SenderConfig {
     pub lead_in: Duration,
     /// Pre-tone played after the lead-in and before the source.
     pub chime: Option<Chime>,
+    /// Tone played after the source (gap first), before the tail. A live
+    /// capture gets it when it's stopped; a file or tone only when it ends
+    /// on its own.
+    pub end_chime: Option<Chime>,
     /// Silence after file and tone sources, so the last word isn't cut off.
     pub tail: Duration,
     /// Write what a receiver would decode to this WAV file instead of sending.
@@ -124,6 +130,7 @@ enum Input {
         amplitude: f32,
     },
     Pad(Pad),
+    Silent,
     File {
         file: AudioFile,
         looped: bool,
@@ -159,6 +166,7 @@ impl Reader {
                 amplitude: *amplitude,
             },
             Source::Pad { amplitude } => Input::Pad(Pad::new(rate, *amplitude)),
+            Source::Silent => Input::Silent,
             Source::File { path, looped } => {
                 let mut file = AudioFile::open(path)?;
                 if let Some(s) = start {
@@ -215,6 +223,7 @@ impl Reader {
                 pad.fill(out, self.channels);
                 out.len()
             }
+            Input::Silent => 0,
             Input::File { file, looped } => {
                 let mut written = 0;
                 let mut rewound = false;
@@ -281,6 +290,8 @@ pub struct Sender {
     lead_in: Duration,
     /// Rendered chime and gap, at the processing rate and stream channels.
     chime: Vec<f32>,
+    /// Rendered gap and end chime, likewise.
+    end_chime: Vec<f32>,
     tail: Duration,
     loudness: Option<LoudnessInfo>,
     sdp: SessionDescription,
@@ -295,7 +306,9 @@ impl Sender {
     pub fn new(cfg: SenderConfig) -> Result<Self> {
         let mut spec = cfg.stream;
         let source_format = match &cfg.source {
-            Source::Tone { .. } | Source::Pad { .. } => (spec.sample_rate, spec.channels),
+            Source::Tone { .. } | Source::Pad { .. } | Source::Silent => {
+                (spec.sample_rate, spec.channels)
+            }
             Source::File { path, .. } => {
                 let f = AudioFile::open(path)?;
                 let (file_rate, file_channels) = (f.sample_rate(), f.channels());
@@ -317,7 +330,9 @@ impl Sender {
         }
         // Tones are generated at the stream rate.
         let source_format = match cfg.source {
-            Source::Tone { .. } | Source::Pad { .. } => (spec.sample_rate, spec.channels),
+            Source::Tone { .. } | Source::Pad { .. } | Source::Silent => {
+                (spec.sample_rate, spec.channels)
+            }
             _ => source_format,
         };
         if cfg.start.is_some() && !matches!(cfg.source, Source::File { .. }) {
@@ -368,6 +383,10 @@ impl Sender {
         let processor = Processor::new(cfg.process, band, loudness, rate, channels as usize);
         let chime = match &cfg.chime {
             Some(c) => c.render(band, cfg.process.volume_db, rate, channels)?,
+            None => Vec::new(),
+        };
+        let end_chime = match &cfg.end_chime {
+            Some(c) => c.render_end(band, cfg.process.volume_db, rate, channels)?,
             None => Vec::new(),
         };
 
@@ -450,6 +469,7 @@ impl Sender {
             duration: cfg.duration,
             lead_in: cfg.lead_in,
             chime,
+            end_chime,
             tail: cfg.tail,
             loudness: loudness_info,
             sdp,
@@ -479,6 +499,12 @@ impl Sender {
     /// Length of the chime and its gap, if there is one.
     pub fn chime_duration(&self) -> Duration {
         let frames = self.chime.len() / self.spec.channels as usize;
+        Duration::from_secs_f64(frames as f64 / self.source_format.0 as f64)
+    }
+
+    /// Length of the end chime and its gap, if there is one.
+    pub fn end_chime_duration(&self) -> Duration {
+        let frames = self.end_chime.len() / self.spec.channels as usize;
         Duration::from_secs_f64(frames as f64 / self.source_format.0 as f64)
     }
 
@@ -606,6 +632,18 @@ impl Sender {
                 stages.run(&mut self, &chunk[..got], false, &mut out)?;
             }
             out.stats.capture_dropped = dropped.load(Ordering::Relaxed);
+            drop(_stream);
+            if !self.end_chime.is_empty() && out.fatal.is_none() {
+                // Stopping is how a live page ends: close it with the chime,
+                // even past the duration limit, paced from now on.
+                out.limit = None;
+                out.paced = network;
+                out.restart_pacing();
+                stages.run(&mut self, &[], true, &mut out)?;
+                self.send_end_chime(&mut out)?;
+                self.packetizer.finish(|p| out.send(p)).map_err(encoding)?;
+                out.check()?;
+            }
         } else {
             // Read roughly one packet of source audio at a time.
             let chunk_frames = ((rate as f64 * self.ptime.as_secs_f64()).ceil() as usize).max(64);
@@ -616,6 +654,7 @@ impl Sender {
                 let last = n < buf.len();
                 stages.run(&mut self, &buf[..n], last, &mut out)?;
                 if last {
+                    self.send_end_chime(&mut out)?;
                     self.packetizer
                         .push(&silence(self.tail), |p| out.send(p))
                         .map_err(encoding)?;
@@ -634,6 +673,21 @@ impl Sender {
             writer.finalize()?;
         }
         Ok(stats)
+    }
+
+    /// Send the end chime (gap, then tone) through the converter, which the
+    /// source may already have flushed; flushing again adds only a few ms.
+    fn send_end_chime(&mut self, out: &mut Output) -> Result<()> {
+        if self.end_chime.is_empty() || out.done() {
+            return Ok(());
+        }
+        let mut converted = Vec::new();
+        self.converter.process(&self.end_chime, &mut converted);
+        self.converter.flush(&mut converted);
+        self.packetizer
+            .push(&converted, |p| out.send(p))
+            .map_err(|e| anyhow!("encoding: {e}"))?;
+        out.check()
     }
 }
 
@@ -733,6 +787,13 @@ struct Output {
 impl Output {
     fn done(&self) -> bool {
         self.fatal.is_some() || self.limit.is_some_and(|l| self.sent() >= l)
+    }
+
+    /// Pace the following packets from now, rather than from the start
+    /// (live capture is paced by the device, whose clock drifts from ours).
+    fn restart_pacing(&mut self) {
+        let elapsed = self.ptime.mul_f64(self.sent() as f64);
+        self.start = Instant::now().checked_sub(elapsed).unwrap_or(self.start);
     }
 
     fn sent(&self) -> u64 {
