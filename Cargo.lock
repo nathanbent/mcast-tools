@@ -1148,7 +1148,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcast"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-audio"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1184,7 +1184,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-control"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "mcast-audio",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "libc",
  "socket2 0.5.10",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-file"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-monitor"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "mcast-audio",
  "mcast-core",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-server"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1242,7 +1242,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-text"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "mcast-core",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-tui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1265,7 +1265,7 @@ dependencies = [
 
 [[package]]
 name = "mcast-web"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "tokio",
