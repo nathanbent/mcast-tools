@@ -3,6 +3,62 @@
 A collection of multicast tools, written in Rust. The first set is audio:
 uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
 
+## Install
+
+Each [release](https://github.com/nathanbent/mcast-tools/releases) has a
+`.deb` and a plain binary (`.tar.gz`) for:
+
+| Package arch | Rust target | For |
+|---|---|---|
+| `amd64` | `x86_64-unknown-linux-gnu` | PCs and servers |
+| `arm64` | `aarch64-unknown-linux-gnu` | Raspberry Pi 3/4/5 on 64-bit Raspberry Pi OS |
+| `armhf` | `armv7-unknown-linux-gnueabihf` | Pi 2/3/4/Zero 2 on 32-bit Raspberry Pi OS (needs NEON, so not Pi 1 / Zero) |
+
+They need Ubuntu 22.04+, Debian 12+ or Raspberry Pi OS bookworm or newer
+(glibc 2.34+), plus ALSA (`libasound2`, always present on those systems).
+Check the download against `SHA256SUMS`, then:
+
+```bash
+sudo apt install ./mcast_0.1.0-1_arm64.deb
+```
+
+### Run as a service
+
+The package installs a systemd template unit. Each file in `/etc/mcast` is
+one instance; its `MCAST_ARGS` line is the `mcast` command line to run:
+
+```bash
+sudo cp /usr/share/doc/mcast/examples/mcast.conf.example /etc/mcast/lobby.conf
+sudo nano /etc/mcast/lobby.conf      # e.g. MCAST_ARGS=audio recv --stream lobby --device plughw:CARD=Headphones
+sudo systemctl enable --now mcast@lobby
+journalctl -u mcast@lobby -f
+```
+
+Services restart if they exit, start at boot once the network is up, and
+run as an unprivileged throwaway user that can reach the network and sound
+cards and nothing else. Files they read or write (`--file`, `--wav`) belong in
+`/var/lib/mcast`. `MCAST_ARGS` is split on spaces with no quoting, so choose
+devices and streams by a part of their name without spaces.
+
+### Making a release
+
+Bump `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```bash
+git tag v0.2.0
+```
+
+```bash
+git push origin v0.2.0
+```
+
+The Release workflow builds all three targets in an Ubuntu 22.04 container
+and publishes them. To build one yourself (Docker, any Linux host):
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src ubuntu:22.04 packaging/build-release.sh aarch64-unknown-linux-gnu
+```
+
 ## Build
 
 ```bash

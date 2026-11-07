@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+    # Instances are configured by the admin in /etc/mcast (see
+    # /usr/share/doc/mcast/examples/mcast.conf.example).
+    mkdir -p /etc/mcast
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null || true
+        # After an upgrade, restart instances that were running.
+        if [ -n "$2" ]; then
+            systemctl try-restart 'mcast@*.service' >/dev/null || true
+        fi
+    fi
+fi
+#DEBHELPER#

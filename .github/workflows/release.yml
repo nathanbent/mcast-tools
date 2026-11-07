@@ -1,0 +1,63 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching the version in Cargo.toml) to build
+# binaries and .deb packages and publish them as a GitHub release. Run it by
+# hand (Actions → Release → Run workflow) to build without publishing; the
+# files are then attached to the run as artifacts.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    # Built on Ubuntu 22.04 so the binaries need glibc 2.35 at most: they run
+    # on Ubuntu 22.04+, Debian 12+ and Raspberry Pi OS bookworm and newer.
+    container: ubuntu:22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"
+            exit 1
+          fi
+      - name: Build
+        run: packaging/build-release.sh ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcast-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Combine checksums
+        run: cat dist/SHA256SUMS-* > dist/SHA256SUMS && rm dist/SHA256SUMS-*
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

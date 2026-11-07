@@ -1,0 +1,23 @@
+# Run mcast as a service. Copy this file to /etc/mcast/NAME.conf, edit
+# MCAST_ARGS, then start it with:
+#
+#   sudo systemctl enable --now mcast@NAME
+#
+# and follow its output with `journalctl -u mcast@NAME -f`.
+#
+# MCAST_ARGS is everything after `mcast` on the command line. systemd splits
+# it on spaces and doesn't understand quotes, so pick device and stream
+# names by a part without spaces (both match on any part of the name).
+# A system service has no desktop sound server, so name the ALSA device
+# (prefer plughw:, which converts formats the card lacks, over hw:);
+# `mcast audio devices` lists them.
+
+# Play the announced stream named like "lobby" on the Pi's headphone jack,
+# with a stats line every minute:
+MCAST_ARGS=audio recv --stream lobby --device plughw:CARD=Headphones --stats 60
+
+# Other examples (keep one MCAST_ARGS line per file):
+# Send a USB microphone as G.722 paging audio, voice processing on, DSCP EF:
+#MCAST_ARGS=audio send --capture USB -e g722 -p -g 239.192.2.1:10000 --tos 184 --name Paging
+# Loop background music:
+#MCAST_ARGS=audio send --file /var/lib/mcast/music.mp3 --loop -m music --name Music

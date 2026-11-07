@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+# /etc/mcast holds the admin's own files and is left in place.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null || true
+fi
+#DEBHELPER#

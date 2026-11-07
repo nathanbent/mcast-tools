@@ -16,3 +16,24 @@ ctrlc.workspace = true
 mcast-core.workspace = true
 mcast-audio.workspace = true
 mcast-monitor.workspace = true
+
+[package.metadata.deb]
+name = "mcast"
+maintainer = "nathanbent <nathanbent@users.noreply.github.com>"
+copyright = "nathanbent"
+section = "sound"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+Send, receive, discover and monitor audio over RTP multicast: L16/L24 (AES67 \
+payloads), G.711, G.722 and Opus, with SAP/SDP announcement and discovery, \
+voice and music processing, packet reordering and clock-drift correction. \
+Includes a systemd template unit: put MCAST_ARGS in /etc/mcast/NAME.conf and \
+run `systemctl enable --now mcast@NAME`."""
+assets = [
+    ["target/release/mcast", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/mcast/README.md", "644"],
+    ["../../packaging/mcast.conf.example", "usr/share/doc/mcast/examples/mcast.conf.example", "644"],
+]
+maintainer-scripts = "../../packaging/debian"
+systemd-units = { unit-scripts = "../../packaging/systemd", unit-name = "mcast", enable = false, start = false }
