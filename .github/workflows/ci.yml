@@ -20,3 +20,11 @@ jobs:
       # --locked: fail if Cargo.lock is out of date, as the release builds do.
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck pi/install.sh pi/files/mcast-pi-status pi/files/motd

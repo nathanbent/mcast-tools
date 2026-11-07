@@ -1,3 +1,4 @@
 /target
 *.wav
 /pi/pi.conf
+*.whl
