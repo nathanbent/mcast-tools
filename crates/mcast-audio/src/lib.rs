@@ -6,6 +6,7 @@
 pub mod codec;
 pub mod convert;
 pub mod device;
+pub mod drift;
 pub mod dsp;
 pub mod file;
 pub mod format;
@@ -13,6 +14,7 @@ pub mod jitter;
 pub mod packetizer;
 pub mod process;
 pub mod receiver;
+pub mod reorder;
 pub mod sender;
 pub mod session;
 

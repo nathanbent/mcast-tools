@@ -1,13 +1,16 @@
 //! Multicast RTP audio receiver: plays to a device or records to WAV.
 
 use crate::codec::{Decoder, StreamSpec};
+use crate::convert::VariableResampler;
 use crate::device;
+use crate::drift::DriftControl;
 use crate::dsp::db_to_lin;
 use crate::format::{AudioFormat, Encoding};
 use crate::jitter::{jitter_buffer, JitterWriter};
+use crate::reorder::{Released, Reorder, ReorderStats};
 use anyhow::{anyhow, Context, Result};
 use mcast_core::net::{open_receiver, MulticastOptions};
-use mcast_core::rtp::{self, SeqEvent, SequenceTracker};
+use mcast_core::rtp;
 use std::fs::File;
 use std::io::{BufWriter, ErrorKind};
 use std::net::SocketAddr;
@@ -36,7 +39,8 @@ pub struct ReceiverConfig {
     pub fallback: Option<StreamSpec>,
     /// Ignore packets with any other payload type.
     pub payload_type: Option<u8>,
-    /// Playout delay used by the jitter buffer.
+    /// Playout delay used by the jitter buffer. Out-of-order packets are
+    /// waited for up to half of this before being treated as lost.
     pub latency: Duration,
     /// Volume change in dB applied to the decoded audio (playback and WAV).
     /// Boosts are soft-limited so they can't clip.
@@ -53,11 +57,17 @@ pub struct ReceiverStats {
     pub packets: u64,
     pub lost: u64,
     pub concealed: u64,
+    /// Arrived too late to play.
     pub late: u64,
+    /// Arrived out of order, but in time: put back in order and played.
+    pub reordered: u64,
     pub invalid: u64,
     pub underruns: u64,
     pub overflows: u64,
     pub buffered: Duration,
+    /// Sender's clock relative to the sound card's, in ppm (positive: sender
+    /// fast), as measured and corrected for. `None` when not playing.
+    pub drift_ppm: Option<f64>,
 }
 
 pub enum Event<'a> {
@@ -82,6 +92,11 @@ enum Output {
     Play {
         format: AudioFormat,
         buffer: JitterWriter,
+        /// Stretches or squeezes the audio by a few ppm so the buffer stays
+        /// at its target however the sender's clock differs from ours.
+        resampler: VariableResampler,
+        drift: DriftControl,
+        resampled: Vec<f32>,
         _stream: cpal::Stream,
     },
     Wav {
@@ -101,6 +116,9 @@ impl Output {
                 Output::Play {
                     format,
                     buffer,
+                    resampler: VariableResampler::new(format.channels as usize),
+                    drift: DriftControl::new(format.sample_rate, target),
+                    resampled: Vec::new(),
                     _stream: stream,
                 }
             }
@@ -126,7 +144,25 @@ impl Output {
 
     fn write(&mut self, samples: &[f32]) -> Result<()> {
         match self {
-            Output::Play { buffer, .. } => buffer.push(samples),
+            Output::Play {
+                buffer,
+                resampler,
+                drift,
+                resampled,
+                format,
+                ..
+            } => {
+                if samples.is_empty() {
+                    return Ok(());
+                }
+                resampled.clear();
+                resampler.process(samples, resampled);
+                buffer.push(resampled);
+                let s = buffer.stats();
+                let pushed = resampled.len() / format.channels as usize;
+                let ratio = drift.update(s.buffered_frames, pushed, s.playing, Instant::now());
+                resampler.set_ratio(ratio);
+            }
             Output::Wav { writer, format } => {
                 for &s in samples {
                     let s = s.clamp(-1.0, 1.0);
@@ -143,8 +179,13 @@ impl Output {
     }
 
     fn reset(&mut self) {
-        if let Output::Play { buffer, .. } = self {
+        // The drift estimate is kept: it describes the clocks, not the stream.
+        if let Output::Play {
+            buffer, resampler, ..
+        } = self
+        {
             buffer.reset();
+            resampler.reset();
         }
     }
 }
@@ -152,13 +193,88 @@ impl Output {
 /// The stream currently being received.
 struct Current {
     ssrc: u32,
-    decoder: Box<dyn Decoder>,
-    tracker: SequenceTracker,
-    /// Samples in the last decoded packet, for sizing silence on loss.
-    last_samples: usize,
+    reorder: Reorder,
+    playout: Playout,
     /// False if this source can't be written to the open output.
     accept: bool,
+}
+
+/// Decodes packets as the reorder stage releases them, in sequence.
+struct Playout {
+    decoder: Box<dyn Decoder>,
+    /// Samples in the last decoded packet, for sizing silence on loss.
+    last_samples: usize,
     reported_error: bool,
+}
+
+impl Playout {
+    /// Decode one released item, appending to `decoded`. A reset clears
+    /// what's pending and sets `reset` so the caller drops buffered audio.
+    fn handle(
+        &mut self,
+        item: Released<'_>,
+        decoded: &mut Vec<f32>,
+        reset: &mut bool,
+        stats: &mut ReceiverStats,
+        on_event: &mut dyn FnMut(Event<'_>),
+    ) {
+        match item {
+            Released::Reset => {
+                decoded.clear();
+                *reset = true;
+            }
+            Released::Lost { count, next } if count <= MAX_CONCEAL_PACKETS => {
+                if self.decoder.conceal(count as usize, next, decoded) {
+                    stats.concealed += count as u64;
+                } else {
+                    decoded.resize(decoded.len() + count as usize * self.last_samples, 0.0);
+                }
+            }
+            // Too long to paper over: the jitter buffer will have run dry.
+            Released::Lost { .. } => {}
+            Released::Packet(payload) => {
+                let before = decoded.len();
+                if let Err(message) = self.decoder.decode(payload, decoded) {
+                    stats.invalid += 1;
+                    if !self.reported_error {
+                        self.reported_error = true;
+                        on_event(Event::DecodeError { message });
+                    }
+                }
+                if decoded.len() > before {
+                    self.last_samples = decoded.len() - before;
+                }
+            }
+        }
+    }
+}
+
+/// Run `packet` (or, with `None`, everything still held) through the
+/// reorder stage, decode what it releases, and write that to `out`.
+fn deliver(
+    cur: &mut Current,
+    out: &mut Output,
+    packet: Option<(u16, &[u8])>,
+    gain: Gain,
+    decoded: &mut Vec<f32>,
+    stats: &mut ReceiverStats,
+    on_event: &mut dyn FnMut(Event<'_>),
+) -> Result<()> {
+    decoded.clear();
+    let mut reset = false;
+    let Current {
+        reorder, playout, ..
+    } = cur;
+    let handle = |item: Released<'_>| playout.handle(item, decoded, &mut reset, stats, on_event);
+    match packet {
+        Some((seq, payload)) => reorder.push(seq, payload, Instant::now(), handle),
+        None => reorder.flush(handle),
+    }
+    if reset {
+        out.reset();
+    }
+    gain.apply(decoded);
+    out.write(decoded)
 }
 
 /// Receive until `stop` is set or `duration` elapses.
@@ -174,7 +290,7 @@ pub fn run(
     let start = Instant::now();
     let mut last_stats = start;
     let mut stats = ReceiverStats::default();
-    let mut lost_before = 0; // losses from previous sources
+    let mut before = ReorderStats::default(); // from previous sources
     let mut output: Option<Output> = None;
     let mut current: Option<Current> = None;
     let mut warned_pt = None;
@@ -185,7 +301,7 @@ pub fn run(
     while !stop.load(Ordering::Relaxed) && cfg.duration.map_or(true, |d| start.elapsed() < d) {
         if last_stats.elapsed() >= cfg.stats_interval {
             last_stats = Instant::now();
-            refresh(&mut stats, lost_before, current.as_ref(), output.as_ref());
+            refresh(&mut stats, &before, current.as_ref(), output.as_ref());
             on_event(Event::Stats(&stats));
         }
 
@@ -197,7 +313,22 @@ pub fn run(
                     ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
                 ) =>
             {
-                continue
+                // Quiet for a while: play out anything held back waiting
+                // for a missing packet rather than sit on it.
+                if let (Some(cur), Some(out)) = (current.as_mut(), output.as_mut()) {
+                    if cur.accept {
+                        deliver(
+                            cur,
+                            out,
+                            None,
+                            gain,
+                            &mut decoded,
+                            &mut stats,
+                            &mut on_event,
+                        )?;
+                    }
+                }
+                continue;
             }
             Err(e) => return Err(e).context("receiving"),
         };
@@ -243,15 +374,17 @@ pub fn run(
                 _ => output = Some(Output::open(&cfg.sink, format, cfg.latency)?),
             }
             if let Some(old) = current.take() {
-                lost_before += old.tracker.lost;
+                add(&mut before, &old.reorder.stats);
             }
             current = Some(Current {
                 ssrc: pkt.header.ssrc,
-                decoder,
-                tracker: SequenceTracker::new(),
-                last_samples: 0,
+                reorder: Reorder::new(cfg.latency / 2),
+                playout: Playout {
+                    decoder,
+                    last_samples: 0,
+                    reported_error: false,
+                },
                 accept,
-                reported_error: false,
             });
             on_event(Event::NewSource {
                 ssrc: pkt.header.ssrc,
@@ -268,35 +401,32 @@ pub fn run(
         }
         stats.packets += 1;
 
-        decoded.clear();
-        match cur.tracker.update(pkt.header.sequence) {
-            SeqEvent::Late => continue, // already played past it
-            SeqEvent::Reset => out.reset(),
-            SeqEvent::Gap(n) if n <= MAX_CONCEAL_PACKETS => {
-                if cur.decoder.conceal(n as usize, pkt.payload, &mut decoded) {
-                    stats.concealed += n as u64;
-                } else {
-                    decoded.resize(n as usize * cur.last_samples, 0.0);
-                }
-            }
-            SeqEvent::Gap(_) | SeqEvent::InOrder => {}
-        }
-        let before = decoded.len();
-        if let Err(message) = cur.decoder.decode(pkt.payload, &mut decoded) {
-            stats.invalid += 1;
-            if !cur.reported_error {
-                cur.reported_error = true;
-                on_event(Event::DecodeError { message });
-            }
-        }
-        if decoded.len() > before {
-            cur.last_samples = decoded.len() - before;
-        }
-        gain.apply(&mut decoded);
-        out.write(&decoded)?;
+        deliver(
+            cur,
+            out,
+            Some((pkt.header.sequence, pkt.payload)),
+            gain,
+            &mut decoded,
+            &mut stats,
+            &mut on_event,
+        )?;
     }
 
-    refresh(&mut stats, lost_before, current.as_ref(), output.as_ref());
+    // Write out anything still held for reordering.
+    if let (Some(cur), Some(out)) = (current.as_mut(), output.as_mut()) {
+        if cur.accept {
+            deliver(
+                cur,
+                out,
+                None,
+                gain,
+                &mut decoded,
+                &mut stats,
+                &mut on_event,
+            )?;
+        }
+    }
+    refresh(&mut stats, &before, current.as_ref(), output.as_ref());
     if let Some(Output::Wav { writer, .. }) = output {
         writer.finalize()?;
     }
@@ -343,21 +473,39 @@ impl Gain {
     }
 }
 
+fn add(total: &mut ReorderStats, s: &ReorderStats) {
+    total.lost += s.lost;
+    total.late += s.late;
+    total.reordered += s.reordered;
+    total.duplicates += s.duplicates;
+    total.resets += s.resets;
+}
+
 fn refresh(
     stats: &mut ReceiverStats,
-    lost_before: u64,
+    before: &ReorderStats,
     current: Option<&Current>,
     output: Option<&Output>,
 ) {
     if let Some(c) = current {
-        stats.lost = lost_before + c.tracker.lost;
-        stats.late = c.tracker.late;
+        let mut r = *before;
+        add(&mut r, &c.reorder.stats);
+        stats.lost = r.lost;
+        stats.late = r.late;
+        stats.reordered = r.reordered;
     }
-    if let Some(Output::Play { buffer, format, .. }) = output {
+    if let Some(Output::Play {
+        buffer,
+        format,
+        drift,
+        ..
+    }) = output
+    {
         let jb = buffer.stats();
         stats.underruns = jb.underruns;
         stats.overflows = jb.overflows;
         stats.buffered = format.duration_of(jb.buffered_frames);
+        stats.drift_ppm = Some(drift.drift_ppm());
     }
 }
 

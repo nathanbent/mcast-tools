@@ -137,6 +137,30 @@ near the target, where ffmpeg's single-pass `loudnorm` often falls short. Expect
 `mcast` to be about 2 dB louder than the script for voice; use `-v` to taste.
 Live input (`--capture`) uses a slow automatic gain control instead.
 
+### Playback on real networks
+
+The receiver copes with what multicast networks actually do:
+
+- **Out-of-order packets** are put back in sequence before decoding. A missing
+  packet is waited for up to half the playout latency (`--latency`, 40 ms by
+  default, so 20 ms) before it counts as lost and is concealed. Stateful
+  codecs (G.722, Opus) are always decoded in order.
+- **Clock drift**: the sender's clock and your sound card's never run at quite
+  the same rate. The receiver measures the difference and resamples by up to
+  ±1000 ppm (inaudible) to keep the buffer at its target, so long-running
+  streams don't glitch every few minutes. It locks on within two or three
+  minutes of a new sender.
+
+The stats line shows both:
+
+```
+packets 2600 lost 0 (concealed 0) reordered 12 late 0 invalid 0 | buffer 39.0ms underruns 0 overflows 0 drift +23ppm
+```
+
+`reordered` arrived out of order but in time to play; `late` arrived too late
+(raise `--latency` if this climbs); `drift` is how fast the sender's clock runs
+relative to the sound card.
+
 ### Discovery details
 
 - Senders announce every 5 s (`--sap-interval`) on 239.255.255.255:9875, the
@@ -199,7 +223,7 @@ TTL and DSCP are reported on Linux.
 | Crate | Purpose |
 |---|---|
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
-| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
+| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resamplers, packetizer, reorder and jitter buffers, drift control, sender & receiver, device I/O (cpal) |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
 | `crates/mcast` | The `mcast` CLI |
 
@@ -208,5 +232,5 @@ subcommand in the CLI.
 
 ## Roadmap ideas
 
-- Audio: PTP-aligned timestamps (AES67), resampling on playback
+- Audio: PTP-aligned timestamps (AES67)
 - Other: file transfer, chat, ping/latency, relay/bridge between interfaces

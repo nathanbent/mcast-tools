@@ -615,17 +615,19 @@ fn audio_discover(a: DiscoverArgs, stop: &AtomicBool) -> Result<()> {
 }
 
 fn format_stats(s: &receiver::ReceiverStats) -> String {
-    format!(
-        "packets {} lost {} (concealed {}) late {} invalid {} | buffer {:.1}ms underruns {} overflows {}",
-        s.packets,
-        s.lost,
-        s.concealed,
-        s.late,
-        s.invalid,
-        s.buffered.as_secs_f64() * 1000.0,
-        s.underruns,
-        s.overflows
-    )
+    let mut line = format!(
+        "packets {} lost {} (concealed {}) reordered {} late {} invalid {}",
+        s.packets, s.lost, s.concealed, s.reordered, s.late, s.invalid,
+    );
+    if let Some(ppm) = s.drift_ppm {
+        line += &format!(
+            " | buffer {:.1}ms underruns {} overflows {} drift {ppm:+.0}ppm",
+            s.buffered.as_secs_f64() * 1000.0,
+            s.underruns,
+            s.overflows
+        );
+    }
+    line
 }
 
 fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
