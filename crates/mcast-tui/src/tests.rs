@@ -267,8 +267,12 @@ fn chats_and_sends_files_by_keyboard() {
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.mode, Mode::Compose(String::new()));
     key(&mut app, KeyCode::Esc);
-    pump(&mut app, &rx, "the line to be heard", |a| {
-        a.texts.get(&ear).is_some_and(|l| !l.is_empty())
+    // The listener hearing it and the talker's own copy are separate
+    // events from two jobs, in either order: wait for both.
+    pump(&mut app, &rx, "the line to be heard and echoed", |a| {
+        [ear, desk]
+            .iter()
+            .all(|id| a.texts.get(id).is_some_and(|l| !l.is_empty()))
     });
     assert_eq!(app.texts[&ear][0].text, "hello from the tui");
     let s = screen(&app, 100, 12);
