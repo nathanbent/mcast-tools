@@ -32,6 +32,7 @@ impl App {
             }),
             "monitor" => self.spawn(|c| Msg::Monitor(c.get("/monitor"))),
             "phonebook" => self.spawn(|c| Msg::Phonebook(c.get("/phonebook"))),
+            "chimes" => self.spawn(|c| Msg::Chimes(c.get("/chimes"))),
             _ => {}
         }
     }
@@ -44,6 +45,7 @@ impl App {
             "devices",
             "monitor",
             "phonebook",
+            "chimes",
         ] {
             self.refresh(w);
         }

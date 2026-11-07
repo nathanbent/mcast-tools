@@ -338,6 +338,16 @@ impl Forms {
     }
 }
 
+impl Forms {
+    /// Offer the server's built-in chimes, leaving out hidden ones.
+    pub fn set_chimes(&mut self, chimes: &[crate::model::Chime]) {
+        for key in ["chime", "end_chime"] {
+            let opts = page::chime_choices(chimes, self.page.get(key));
+            self.page.set_choices(key, opts);
+        }
+    }
+}
+
 pub fn is_audio(name: &str) -> bool {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     matches!(

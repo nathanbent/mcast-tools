@@ -181,7 +181,7 @@ pub fn check(path: &Path, backend: &HttpBackend) -> Result<()> {
         bail!("{} problem(s) on {}", problems.len(), backend.base());
     }
     println!(
-        "Media files and phonebook names all found on {}.",
+        "Media files, chimes and phonebook names all found on {}.",
         backend.base()
     );
     Ok(())
@@ -193,6 +193,12 @@ fn server_problems(
 ) -> Result<Vec<String>, crate::BackendError> {
     let media = backend.media()?;
     let book = backend.phonebook()?;
+    // An older server has no chime list: then only it can say.
+    let chimes: Option<Vec<String>> = backend.chimes().ok().map(|list| {
+        list.iter()
+            .filter_map(|c| c["name"].as_str().map(str::to_string))
+            .collect()
+    });
     let mut problems = Vec::new();
     for z in &cfg.zones {
         for t in &z.targets {
@@ -212,6 +218,14 @@ fn server_problems(
         for c in [&a.chime, &a.end_chime].into_iter().flatten() {
             if let Some(f) = c["file"].as_str() {
                 files.push(f);
+            }
+            if let (Some(name), Some(chimes)) = (c.as_str(), &chimes) {
+                if name != "default" && !chimes.iter().any(|k| k == name) {
+                    problems.push(format!(
+                        "announcement \"{}\": no built-in chime \"{name}\"",
+                        a.id
+                    ));
+                }
             }
         }
         for f in files {

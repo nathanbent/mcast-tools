@@ -4,9 +4,7 @@
 import { h } from "./dom.js";
 import { state, zoneName } from "./store.js";
 import { mountEditor, field, select, numberInput, num } from "./editor.js";
-
-// The mcast server's built-in chimes.
-const CHIMES = ["rising", "falling", "ding-dong", "arpeggio", "bell", "alert"];
+import { builtInGroups, listenButton, openChooser } from "./chimes.js";
 
 const PRIORITIES = [["normal", "Normal"], ["high", "High"], ["emergency", "Emergency"]];
 
@@ -27,14 +25,31 @@ function chimeOf(v) {
   return v.startsWith("file:") ? { file: v.slice(5) } : v;
 }
 
-function chimeSelect(current, defaultLabel) {
+function chimeOptions(current, defaultLabel) {
   const file = current && typeof current === "object" ? current.file : null;
-  return select([
+  return [
     ["", "None"],
     ["default", defaultLabel],
-    { group: "Built in", options: CHIMES.map((c) => [c, c]) },
+    ...builtInGroups(typeof current === "string" ? current : null),
     { group: "Media files", options: mediaOptions("file:", file) },
-  ], chimeValue(current));
+  ];
+}
+
+function chimeSelect(current, defaultLabel) {
+  return select(chimeOptions(current, defaultLabel), chimeValue(current));
+}
+
+// A chime select with a button to listen to it, redrawn (keeping its
+// choice) when the chimes to list change.
+function chimeField(label, sel, defaultLabel, defaultName) {
+  const wrap = h("span", { class: "with-button" }, sel, listenButton(sel, { default: defaultName }));
+  sel.redraw = () => {
+    const value = sel.value;
+    const now = select(chimeOptions(chimeOf(value), defaultLabel), value);
+    sel.replaceChildren(...now.childNodes);
+    sel.value = value;
+  };
+  return field(label, wrap);
 }
 
 function audioLabel(a) {
@@ -82,7 +97,13 @@ function form(a, save, cancel) {
 
   return h("form", { onsubmit: submit },
     h("div", { class: "row" }, field("Name", name), field("Audio", audio, "Upload files through mcast serve")),
-    h("div", { class: "row" }, field("Chime before", chime), field("Chime after", endChime)),
+    h("div", { class: "row" },
+      chimeField("Chime before", chime, "Default (rising)", "rising"),
+      chimeField("Chime after", endChime, "Default (falling)", "falling")),
+    h("p", { class: "small chime-link" },
+      h("button", { type: "button", class: "link",
+        onclick: () => openChooser(() => { chime.redraw(); endChime.redraw(); }) },
+        "Choose which chimes to list…")),
     h("fieldset", {}, h("legend", {}, "Zones"),
       zones.length
         ? h("div", { class: "checks" }, zones.map((z) => h("label", { class: "check" }, z.box, z.name)))

@@ -3,7 +3,7 @@
 
 use crate::api::{ApiError, Client, Feed};
 use crate::form::{FormKind, Forms};
-use crate::model::{BookEntry, Device, Job, MediaFile, Snapshot, Stream, TextLine};
+use crate::model::{BookEntry, Chime, Device, Job, MediaFile, Snapshot, Stream, TextLine};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc::Sender;
@@ -82,6 +82,7 @@ pub enum Msg {
     Devices(Result<Vec<Device>, ApiError>),
     Monitor(Result<Snapshot, ApiError>),
     Phonebook(Result<Vec<BookEntry>, ApiError>),
+    Chimes(Result<Vec<Chime>, ApiError>),
     /// A phonebook entry was saved (or wasn't), from the form.
     Saved(Result<String, ApiError>),
     /// A text channel's lines so far.
@@ -301,6 +302,10 @@ impl App {
                 }
                 Err(e) => fail(self, e),
             },
+            Msg::Chimes(r) => match r {
+                Ok(c) => self.forms.set_chimes(&c),
+                Err(e) => fail(self, e),
+            },
             Msg::Saved(r) => {
                 self.busy = false;
                 match r {
@@ -410,6 +415,7 @@ impl App {
                 self.refresh("media");
             }
             "phonebook_changed" => self.refresh("phonebook"),
+            "chimes_changed" => self.refresh("chimes"),
             "lagged" => self.refresh_all(),
             _ => {}
         }

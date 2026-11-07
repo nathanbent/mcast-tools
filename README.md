@@ -218,22 +218,87 @@ mcast audio send --chime-only -C alert -e g711u -g 239.192.2.1:10000            
 
 Built-in chimes, all with fundamentals within 500-1600 Hz so they sound the
 same on G.711 as on wideband codecs (built-in names win over files; use
-`./bell` for a file called `bell`):
+`./bell` for a file called `bell`). `mcast audio chimes` lists them, and
+`mcast audio chimes save NAME FILE.wav` saves one to listen to:
 
 | Name | Sound |
 |---|---|
-| `rising` (default) | Three rising bell notes, C5-E5-G5: "attention" |
-| `falling` (default end chime) | The same notes falling, G5-E5-C5: "end of page" |
-| `ding-dong` | E5 then C5, like a doorbell |
+| **Chimes** | |
+| `rising` (default) | Three rising notes, C5-E5-G5: the classic attention chime |
+| `falling` (default end chime) | The same notes falling, G5-E5-C5: the classic end-of-page chime |
+| `ding-dong` | Two notes, E5 then C5, like a doorbell |
 | `arpeggio` | Four rising notes, C5-E5-G5-C6 |
+| `arpeggio-down` | Four falling notes, C6-G5-E5-C5 |
+| `bing-bong` | Two slow notes, A5 then F5, as at a station or airport |
+| `ding-dang-dong` | Three slow falling notes, C6-A5-F5 |
+| `westminster` | The Westminster quarter phrase, B5-A5-G5-D5, as from a clock tower |
+| `triad` | A C-major chord, struck all at once |
+| `gentle` | Three soft, pure notes, D5-F#5-A5, slowly |
+| `welcome` | Four bright rising notes, E5-G5-C6-E6 |
+| `farewell` | Four bright falling notes, E6-C6-G5-E5 |
+| `pentatonic` | A quick rising run, C5 to C6 |
+| `question` | Two notes rising a fifth, C5-G5 |
+| `fanfare` | A short brassy fanfare, G5-G5-G5-C6 |
+| **Bells** | |
 | `bell` | A single struck bell (A5) with a long ring |
+| `church-bell` | A deep church bell, D5, with its hum and a long ring |
+| `tubular-bell` | An orchestral tubular bell, E5 |
+| `school-bell` | An electric school bell ringing for two seconds |
+| `telephone` | An old telephone bell: two rings |
+| `ships-bell` | A ship's bell struck in two pairs |
+| `handbell` | A handbell, shaken a few times |
+| `bicycle-bell` | A bicycle bell, rung twice |
+| `triangle` | An orchestral triangle with a shimmering ring |
+| `glockenspiel` | Three glockenspiel notes, C6-E6-G6 |
+| `marimba` | Four mellow marimba notes, C5-E5-G5-C6 |
+| `music-box` | A tinkling music-box phrase |
+| `singing-bowl` | A singing bowl: a soft, slowly beating ring |
+| `wind-chimes` | Wind chimes, a scatter of high notes |
+| `cowbell` | A cowbell, struck twice |
+| **Beeps and tones** | |
+| `beep` | A single 1 kHz beep |
+| `double-beep` | Two short 1 kHz beeps |
+| `triple-beep` | Three short 1 kHz beeps |
+| `pips` | Time-signal pips: five short and one long |
+| `blip` | A quick rising blip |
+| `notify` | Two short high notes, like a message notification |
+| `error` | Two low buzzy notes falling: 'no' |
+| `sonar` | A sonar ping with an echo |
+| `countdown` | Three short beeps then a long high one, like a race start |
+| `steady` | A steady 1 kHz tone for two seconds |
+| **Alerts and sirens** | |
 | `alert` | Four quick alternating notes (B5/G5) for urgent pages |
+| `siren-wail` | A siren slowly wailing up and down |
+| `siren-yelp` | A siren yelping quickly up and down |
+| `hi-lo` | Alternating high and low tones |
+| `klaxon` | A rasping horn, 'a-oo-ga', twice |
+| `buzzer` | A harsh buzzer |
+| `alarm` | Fast beeping, like an alarm clock |
+| `whoop` | A rising whoop, twice: an evacuation tone |
+| `warble` | A fast-warbling alarm tone |
 
 Chimes are band-limited for the codec (200 Hz high-pass, the codec's
 low-pass), normalised to -18 LUFS / -3 dBTP, and not voice-processed. `-v`
 applies to them too. The web GUI and `mcast tui` pick both chimes from a list,
-and the web Page form has a **Chime** button that sends just the chime(s) to
-the group.
+grouped by kind, and the web Page form has a **Chime** button that sends just
+the chime(s) to the group, and a ▶ button by each list to hear the chime in
+the browser.
+
+That's a long list, so hide the ones you don't want: in the web GUI with
+**Choose which chimes to list…** under the chime lists (or in the intercom
+panel's announcement form), or from the command line:
+
+```bash
+mcast audio chimes                        # what the lists offer
+mcast audio chimes hide klaxon cowbell    # leave these out
+mcast audio chimes list --all             # everything, marked (hidden)
+mcast audio chimes show --all             # offer them all again
+```
+
+Hiding only trims the lists in the web GUI, `mcast tui` and the intercom
+panel: `-C NAME`, the API and announcements that already use a hidden chime
+still play it. It's kept in `chimes.json` in the mcast config directory (or
+`$MCAST_CHIMES`), so every client of a server shares it.
 
 With voice or music, a low-pass at the codec's band edge (3.4 kHz G.711,
 7 kHz G.722 and wideband Opus) runs before loudness normalisation, and the

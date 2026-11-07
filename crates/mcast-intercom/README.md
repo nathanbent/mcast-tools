@@ -91,7 +91,7 @@ its speakers need: `encoding`, `volume_db` (added to the announcement's),
 | Field | Default | |
 |---|---|---|
 | `audio` | | `{"media": "NAME"}`, a file uploaded to the server, or `"chime_only"` |
-| `chime`, `end_chime` | none | As in the API: `"default"`, a built-in (`"ding-dong"`, `"bell"`, `"alert"`, ...), or `{"file": "NAME"}`. With `"chime_only"` and neither set, the default chime |
+| `chime`, `end_chime` | none | As in the API: `"default"`, a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`. With `"chime_only"` and neither set, the default chime |
 | `mode` | | `voice`, `music` or `none` |
 | `volume_db`, `lead_in_ms` | | |
 | `repeat` | `1` | Times to play it (up to 20); each repeat has its chimes |
@@ -166,6 +166,7 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups |
+| `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
 | `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `lagged` |
 
 A run:

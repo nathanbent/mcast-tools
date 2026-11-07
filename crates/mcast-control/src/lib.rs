@@ -3,6 +3,7 @@
 //! that report what they're doing as [`Event`]s.
 
 pub mod announcements;
+pub mod chimes;
 pub mod describe;
 pub mod jobs;
 pub mod phonebook;
@@ -58,6 +59,8 @@ pub enum Event {
     },
     /// The phonebook was changed through the API; fetch it again.
     PhonebookChanged,
+    /// Chimes were hidden or shown through the API; fetch the list again.
+    ChimesChanged,
 }
 
 /// Where services send their events. Must not block.

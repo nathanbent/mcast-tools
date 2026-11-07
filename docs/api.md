@@ -57,6 +57,10 @@ Errors are JSON: `{"error": "message"}`.
 | GET | `/phonebook` | Saved groups, by name: `[{"name", "group", "description"}]` |
 | PUT | `/phonebook/{name}` | `{"group": "ADDR:PORT", "description": "...", "name": "new name"}`: add or replace an entry (`name` renames it; `description` and `name` are optional). `201` when new, else `200`, with the entry |
 | DELETE | `/phonebook/{name}` | Remove an entry; returns it |
+| GET | `/chimes` | The built-in chimes, grouped by kind: `[{"name", "category", "description", "hidden"}]`; `category` is `chime`, `bell`, `tone` or `alert` |
+| PUT | `/chimes` | `{"hidden": ["klaxon", ...]}`: hide exactly these from lists (and show the rest); returns the list |
+| PUT | `/chimes/{name}` | `{"hidden": true}` or `false`: hide or show one; returns it |
+| GET | `/chimes/{name}/preview` | The chime as a WAV file (24 kHz mono), to listen to before choosing it |
 | GET | `/events` | Server-sent events (below) |
 
 In every request below, `group` can be a phonebook name in place of an
@@ -65,6 +69,11 @@ shows the address. The phonebook is the same file `mcast book` edits
 (`~/.config/mcast/phonebook.conf`, or `$MCAST_PHONEBOOK`), read on each
 request, so changes from the command line apply at once. Names are letters,
 digits, spaces, `-`, `_` and `.`, up to 64 characters; descriptions are one line.
+
+Hiding a chime only takes it out of the lists clients offer: a request that
+names a hidden chime still plays it. Which are hidden is kept in
+`chimes.json` beside the phonebook (or `$MCAST_CHIMES`), shared with
+`mcast audio chimes hide` / `show`.
 
 `POST /senders` returns once the sender is ready: files are decoded and
 loudness-measured first, so a bad file fails the request instead of the job.
@@ -90,7 +99,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, or `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | |
-| `chime` | | Chime before the audio: `"default"` (`rising`, or `$MCAST_CHIME`), a built-in (`"rising"`, `"falling"`, `"ding-dong"`, `"arpeggio"`, `"bell"`, `"alert"`), or `{"file": "NAME"}` |
+| `chime` | | Chime before the audio: `"default"` (`rising`, or `$MCAST_CHIME`), a built-in (any name `GET /chimes` lists, such as `"ding-dong"`, `"westminster"`, `"church-bell"`, `"beep"` or `"siren-wail"`), or `{"file": "NAME"}` |
 | `chime_gap_ms` | `400` | |
 | `end_chime` | | Chime after the audio, before the tail: as `chime`, but `"default"` is `falling` (or `$MCAST_END_CHIME`) |
 | `end_chime_gap_ms` | `400` | |
@@ -294,6 +303,7 @@ its data is JSON with that `type` too:
 | `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one |
 | `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
 | `phonebook_changed` | `{}`: the phonebook was changed through the API; fetch it again |
+| `chimes_changed` | `{}`: chimes were hidden or shown through the API; fetch `/chimes` again |
 | `lagged` | `{"missed": N}`: the client fell behind; refetch the lists |
 
 Fetch the lists first, then apply events. For example:

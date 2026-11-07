@@ -35,6 +35,7 @@ fn server(token: Option<&str>) -> Server {
         monitor: None,
         max_upload: 1 << 20,
         phonebook: dir.join("phonebook.conf"),
+        chimes: dir.join("chimes.json"),
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);

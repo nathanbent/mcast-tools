@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod book;
+mod chimes;
 mod file;
 mod presets;
 mod text;
@@ -152,6 +153,11 @@ enum AudioCommand {
     Discover(DiscoverArgs),
     /// List audio input and output devices
     Devices,
+    /// The built-in chimes: list them, hide ones you don't want from the lists, save one as WAV
+    Chimes {
+        #[command(subcommand)]
+        command: Option<chimes::ChimesCommand>,
+    },
 }
 
 #[derive(Args)]
@@ -304,9 +310,9 @@ struct SendArgs {
     /// Silence after the audio in ms, so the end isn't cut off
     #[arg(short = 'E', long, default_value_t = 300.0)]
     tail: f64,
-    /// Chime before the audio: a built-in (rising, falling, ding-dong,
-    /// arpeggio, bell, alert), an audio file, or no value for the default
-    /// (rising, or $MCAST_CHIME if set)
+    /// Chime before the audio: a built-in (see `mcast audio chimes`: rising,
+    /// ding-dong, westminster, church-bell, beep, siren-wail, ...), an audio
+    /// file, or no value for the default (rising, or $MCAST_CHIME if set)
     #[arg(short = 'C', long, value_name = "NAME|FILE", num_args = 0..=1, default_missing_value = "default")]
     chime: Option<String>,
     /// Gap between the chime and the audio, in ms
@@ -621,6 +627,7 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Send(a)) => audio_send(a, &stop),
         Command::Audio(AudioCommand::Recv(a)) => audio_recv(a, &stop),
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
+        Command::Audio(AudioCommand::Chimes { command }) => chimes::run(command),
         Command::Text(c) => text::run(c, &stop),
         Command::File(c) => file::run(c, &stop),
         Command::Monitor(a) => monitor(a, &stop),
@@ -1107,6 +1114,7 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
         },
         monitor: (!a.no_monitor).then_some(a.watch),
         phonebook: mcast_control::phonebook::default_path()?,
+        chimes: mcast_control::chimes::default_path()?,
         max_upload: a.max_upload_mb.saturating_mul(1 << 20),
     };
     let web = if a.no_web {

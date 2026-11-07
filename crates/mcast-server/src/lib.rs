@@ -5,6 +5,7 @@
 //!
 //! All routes are under `/api/v1`. See `docs/api.md` for the reference.
 
+mod chimes;
 mod events;
 mod files;
 mod media;
@@ -12,6 +13,7 @@ mod phonebook;
 mod routes;
 mod text;
 
+use chimes::{chime_preview, list_chimes, put_chime, put_chimes};
 use events::events;
 use files::{start_file_receiver, start_file_sender};
 use media::{delete_media, download_media, list_media, upload_media};
@@ -56,6 +58,8 @@ pub struct ServerConfig {
     pub max_upload: u64,
     /// The phonebook file (named groups), shared with the CLI.
     pub phonebook: PathBuf,
+    /// Which built-in chimes are hidden from lists, shared with the CLI.
+    pub chimes: PathBuf,
 }
 
 struct Inner {
@@ -69,6 +73,9 @@ struct Inner {
     phonebook: PathBuf,
     /// Held while changing the phonebook file.
     phonebook_lock: tokio::sync::Mutex<()>,
+    chimes: PathBuf,
+    /// Held while changing the chimes file.
+    chimes_lock: tokio::sync::Mutex<()>,
     closing: watch::Receiver<bool>,
 }
 
@@ -118,6 +125,8 @@ impl AppState {
             max_upload: cfg.max_upload,
             phonebook: cfg.phonebook.clone(),
             phonebook_lock: tokio::sync::Mutex::new(()),
+            chimes: cfg.chimes.clone(),
+            chimes_lock: tokio::sync::Mutex::new(()),
             closing,
         })))
     }
@@ -212,6 +221,9 @@ pub fn router(state: AppState) -> Router {
             "/phonebook/{name}",
             axum::routing::put(put_phonebook).delete(delete_phonebook),
         )
+        .route("/chimes", get(list_chimes).put(put_chimes))
+        .route("/chimes/{name}", axum::routing::put(put_chime))
+        .route("/chimes/{name}/preview", get(chime_preview))
         .route("/events", get(events))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))

@@ -294,6 +294,38 @@ async fn passes_on_media_phonebook_and_connection() {
 }
 
 #[tokio::test]
+async fn lists_hides_and_previews_chimes() {
+    let p = panel(None);
+    let (status, list) = p.call(Method::GET, "/chimes", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["name"], "rising");
+    let (status, list) = p
+        .call(Method::PUT, "/chimes", Some(json!({"hidden": ["klaxon"]})))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[2]["hidden"], true);
+    assert_eq!(p.fake.st.lock().unwrap().hidden_chimes, ["klaxon"]);
+    let (status, _) = p
+        .call(Method::PUT, "/chimes", Some(json!({"hidden": ["foghorn"]})))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let req = Request::builder()
+        .uri(format!("{API_PREFIX}/chimes/bell/preview"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = p.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()[header::CONTENT_TYPE], "audio/wav");
+    let (status, _) = p.call(Method::GET, "/chimes/foghorn/preview", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    p.fake.st.lock().unwrap().down = true;
+    let (status, _) = p.call(Method::GET, "/chimes", None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
 async fn streams_run_and_config_events() {
     let p = panel(None);
     p.set_up().await;

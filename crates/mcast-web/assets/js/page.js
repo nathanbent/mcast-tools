@@ -3,6 +3,7 @@
 import { api, ApiError } from "./api.js";
 import { h, replace, saved, toast } from "./dom.js";
 import { state, subscribe, putJob, bookLabel } from "./store.js";
+import { chimeOptions, listenButton, openChooser } from "./chimes.js";
 
 const DEFAULTS = {
   group: "239.192.2.1:10000", name: "", source: "file", file: "", tone: 440,
@@ -15,10 +16,10 @@ const CODECS = [
   ["g722", "G.722 wideband"], ["opus", "Opus"], ["l16", "L16 (AES67)"], ["l24", "L24 (AES67)"],
 ];
 
-const CHIMES = [
-  ["none", "Off"], ["default", "Default"], ["rising", "Rising (C-E-G)"], ["falling", "Falling (G-E-C)"],
-  ["ding-dong", "Ding-dong"], ["arpeggio", "Arpeggio"], ["bell", "Bell"], ["alert", "Alert"],
-];
+// Before the built-in chimes: off, or the server's default. (The default is
+// rising first and falling at the end, unless MCAST_CHIME says otherwise.)
+const CHIME_FIRST = [["none", "Off"], ["default", "Default (rising)"]];
+const CHIME_END = [["none", "Off"], ["default", "Default (falling)"]];
 
 const AUDIO = /\.(wav|mp3|flac|ogg|oga|m4a|aac|mp4|alac)$/i;
 
@@ -44,6 +45,13 @@ function select(key, options) {
     options.map(([v, label]) => h("option", { value: v, selected: v === values[key] }, label)));
   if (!options.some(([v]) => v === values[key]) && options.length) el.value = options[0][0];
   return el;
+}
+
+// A chime <select>, grouped by category, with a button to listen to it.
+function chimeField(label, key, first) {
+  const el = h("select", { name: key }, chimeOptions(first, values[key]));
+  const listen = listenButton(el, { default: key === "chime" ? "rising" : "falling" });
+  return field(label, h("span", { class: "with-button" }, el, listen));
 }
 
 function read() {
@@ -159,9 +167,11 @@ function render(keep = false) {
     h("div", { class: "row" },
       field("Codec", select("encoding", CODECS)),
       field("Processing", select("mode", [["voice", "Voice"], ["music", "Music"], ["none", "None"]]))),
-    h("div", { class: "row" },
-      field("Chime first", select("chime", CHIMES)),
-      field("Chime at end", select("end_chime", CHIMES))),
+    h("div", { class: "row chimes" },
+      chimeField("Chime first", "chime", CHIME_FIRST),
+      chimeField("Chime at end", "end_chime", CHIME_END)),
+    h("p", { class: "small" },
+      h("button", { type: "button", class: "link", onclick: openChooser }, "Choose which chimes to list…")),
     h("div", { class: "row" },
       field("", h("span", { class: "check" }, bind("ef", { type: "checkbox" }), " Voice QoS (DSCP EF)"))),
     h("details", {}, h("summary", {}, "More options"),
@@ -198,7 +208,7 @@ export function mount(el) {
   // Re-render only for what the form shows (jobs change every second), and
   // leave the inputs alone when only the suggestions changed.
   subscribe((what) => {
-    if (what === "media" || what === "devices") render();
+    if (what === "media" || what === "devices" || what === "chimes") render();
     if (what === "streams" || what === "phonebook") replace(form.querySelector("#known-groups"), groupOptions());
   });
 }

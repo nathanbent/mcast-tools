@@ -9,6 +9,7 @@ export const state = {
   runs: new Map(),
   media: [],
   phonebook: [],
+  chimes: [],  // the mcast server's built-ins: { name, category, description, hidden }
   backend: null,
   // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
   upcoming: { time_zone: null, fires: [] },
@@ -54,15 +55,21 @@ export async function refreshRuns() {
   changed("runs");
 }
 
-// Media files, the phonebook and the connection to the mcast server.
+export async function refreshChimes() {
+  try { state.chimes = await api("GET", "/chimes"); } catch {}
+}
+
+// Media files, the phonebook, chimes and the connection to the mcast server.
 export async function refreshServer() {
-  const [media, phonebook, backend] = await Promise.all([
+  const [media, phonebook, chimes, backend] = await Promise.all([
     api("GET", "/media").catch(() => null),
     api("GET", "/phonebook").catch(() => null),
+    api("GET", "/chimes").catch(() => null),
     api("GET", "/backend").catch(() => null),
   ]);
   if (media) state.media = media;
   if (phonebook) state.phonebook = phonebook;
+  if (chimes) state.chimes = chimes;
   if (backend) state.backend = backend;
   changed("server");
 }
