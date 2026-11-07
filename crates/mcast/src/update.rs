@@ -154,11 +154,12 @@ pub fn run(a: UpdateArgs) -> Result<()> {
     };
 
     if a.check {
+        let cmd = update_command(&a);
         match (wanted, &relation) {
-            (true, Relation::Counts { .. }) => println!("Run `mcast update` to install them."),
-            (true, _) => println!("Run `mcast update` to install {branch} anyway."),
+            (true, Relation::Counts { .. }) => println!("Run `{cmd}` to install them."),
+            (true, _) => println!("Run `{cmd}` to install {branch} anyway."),
             (false, Relation::Same) => {}
-            (false, _) => println!("`mcast update --force` would install {branch} anyway."),
+            (false, _) => println!("`{cmd} --force` would install {branch} anyway."),
         }
         return Ok(());
     }
@@ -221,6 +222,28 @@ fn remote_head(repo: &str, branch: &str) -> Option<String> {
         .split_whitespace()
         .next()
         .map(str::to_string)
+}
+
+/// The `mcast update` command that installs what --check just compared
+/// against: the same source options, minus --check.
+fn update_command(a: &UpdateArgs) -> String {
+    let mut cmd = String::from("mcast update");
+    if a.release {
+        cmd.push_str(" --release");
+    }
+    if a.source {
+        cmd.push_str(" --source");
+    }
+    if let Some(b) = &a.branch {
+        cmd.push_str(&format!(" --branch {b}"));
+    }
+    if let Some(p) = &a.path {
+        cmd.push_str(&format!(" --path {}", p.display()));
+    }
+    if a.repo != DEFAULT_REPO {
+        cmd.push_str(&format!(" --repo {}", a.repo));
+    }
+    cmd
 }
 
 fn plural(n: u32) -> &'static str {
