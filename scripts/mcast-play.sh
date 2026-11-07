@@ -31,7 +31,7 @@
 #   ./mcast-play.sh song.flac -c g722 -m music -v -6   # music-tuned G.722, 6 dB quieter
 #   ./mcast-play.sh rasp1.wav -p -C default -o preview.wav    # hear it on your desktop first
 
-VERSION="1.7"
+VERSION="1.8"
 DEFAULT_TONE=""   # set to an audio file path to make it the "-C default" tone; empty = built-in chime
 
 CODEC="g711u"; MODE="none"; GROUP="239.192.2.1"; PORT="10000"; DUR=""; START=""
@@ -113,8 +113,13 @@ if [[ "$CODEC" == opus* ]]; then
   ENC+=(-application "$APP" -frame_duration 20 -vbr on -fec:a 1 -packet_loss:a 5)
 fi
 
+# Downmix to mono first, by averaging. ffmpeg's default stereo-to-mono mix sums the channels
+# at -3 dB each, which makes typical (near-identical) L/R 3 dB louder; done after loudnorm, that
+# pushed true peak over 0 dBFS. Doing it first means everything is measured as it will be sent.
+MONO="aresample=ochl=mono:rematrix_maxval=1"
+
 # --- Announcement filter chain ---
-FX=()
+FX=("$MONO")
 [[ -n "$START" ]] && FX+=("afade=t=in:d=0.05")
 [[ -n "$DUR" ]]   && FX+=("afade=t=out:st=$(awk "BEGIN{print ($DUR>0.3)?$DUR-0.3:0}"):d=0.3")
 if [[ "$MODE" == voice ]]; then
@@ -123,16 +128,21 @@ if [[ "$MODE" == voice ]]; then
   else                           HP=120; EQ="equalizer=f=3000:t=q:w=1:g=2"; fi
   FX+=("highpass=f=${HP}" "afftdn=nr=10:nf=-40"
        "acompressor=threshold=-20dB:ratio=4:attack=5:release=120:makeup=3"
-       "deesser=i=0.4" "$EQ" "loudnorm=I=-16:TP=-2:LRA=6")
+       "deesser=i=0.4" "$EQ")
+  LOUDNORM="loudnorm=I=-16:TP=-2:LRA=6"
 elif [[ "$MODE" == music ]]; then
   # Keep more low end and dynamics; on G.711, lean on the midrange that survives
   if [[ $BAND == narrow ]]; then HP=150; EQ="equalizer=f=300:t=q:w=1:g=-2,equalizer=f=1800:t=q:w=1.5:g=2"
   else                           HP=60;  EQ=""; fi
   FX+=("highpass=f=${HP}" "acompressor=threshold=-24dB:ratio=2:attack=20:release=250:makeup=2")
   [[ -n "$EQ" ]] && FX+=("$EQ")
-  FX+=("loudnorm=I=-18:TP=-2:LRA=9")
+  LOUDNORM="loudnorm=I=-18:TP=-2:LRA=9"
 fi
-[[ "$MODE" != none && -n "$LP" ]] && FX+=("lowpass=f=${LP}")
+# Band-limit before loudnorm, not after: filtering after its peak limiter can push peaks back over
+if [[ "$MODE" != none ]]; then
+  [[ -n "$LP" ]] && FX+=("lowpass=f=${LP}")
+  FX+=("$LOUDNORM")
+fi
 NORM="aresample=48000:resampler=soxr:precision=28,aformat=sample_fmts=fltp:channel_layouts=mono"
 FX+=("$NORM")
 AF_MAIN=$(IFS=,; echo "${FX[*]}")
@@ -156,7 +166,7 @@ BASE=(ffmpeg -hide_banner -loglevel error)
 if [[ -n "$TONE" ]]; then
   # Tone: mono, band-limited for the codec, level-matched near the announcement, then the gap.
   # Not voice-processed: denoise and de-essing would smear a bell.
-  TFX="aformat=channel_layouts=mono,highpass=f=200${LP:+,lowpass=f=${LP}},loudnorm=I=-18:TP=-3,${NORM},apad=pad_dur=${GAP}ms"
+  TFX="${MONO},highpass=f=200${LP:+,lowpass=f=${LP}},loudnorm=I=-18:TP=-3,${NORM},apad=pad_dur=${GAP}ms"
   if [[ -n "$TONE_FILE" ]]; then TIN=(-i "$TONE_FILE"); else TIN=("${CHIME_SRC[@]}"); fi
   GRAPH="[0:a]${TFX}[tone];[1:a]${AF_MAIN}[main];[tone][main]concat=n=2:v=0:a=1,${AF_POST}[out]"
   PREP_IN=("${TIN[@]}" "${IN[@]}" -i "$FILE")
