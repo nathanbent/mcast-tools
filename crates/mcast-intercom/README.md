@@ -25,8 +25,12 @@ mcast intercom play lunch      # by id or name; Ctrl-C stops it
 
 ```bash
 mcast intercom serve                                          # open http://127.0.0.1:8651/
-MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651 --tls-self-signed
+MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651   # https://HOST:8651/
 ```
+
+Listening on the network, the panel serves **HTTPS** (with a self-signed
+certificate unless you give it one; see Push to talk below). On loopback it's
+plain HTTP.
 
 A page with a tab for each part:
 
@@ -71,19 +75,28 @@ after it, so listeners hear you a chime's length late. When you let go, the
 rest plays out, then the end chime.
 
 Browsers only allow the microphone on **HTTPS** pages (and on
-`http://localhost`). Serve the panel over HTTPS with either:
+`http://localhost`), so the panel serves HTTPS whenever it listens on
+anything but loopback:
 
-- `--tls-self-signed`: the panel makes a certificate the first time and
-  keeps it beside the config (`intercom-cert.pem`, `intercom-key.pem`). It
-  names this machine (host name, `NAME.local`, its address) and
-  `localhost`; add more with `--tls-name`. Browsers warn about it once;
-  accept it to go on. Delete the two files to make a new one.
-- `--tls-cert FILE --tls-key FILE`: your own certificate (PEM). It wins over
-  `--tls-self-signed`.
+- By default it makes a **self-signed** certificate the first time and keeps
+  it beside the config (`intercom-cert.pem`, `intercom-key.pem`). It names
+  this machine (host name, `NAME.local`, its address) and `localhost`; add
+  more with `--tls-name` (e.g. its DNS name) before it's first made, or
+  delete the two files to make a new one. Browsers warn about it once;
+  accept it to go on.
+- `--tls-cert FILE --tls-key FILE`: your own certificate (PEM), e.g. from
+  your organisation's CA, so there's no warning.
+- `--no-tls`: plain HTTP anyway (behind a proxy that adds HTTPS, say). Live
+  buttons then say they need HTTPS instead of talking, except on localhost.
+- On loopback it's plain HTTP unless you ask (`--tls-self-signed`).
 
-They can also come from `$MCAST_INTERCOM_TLS_SELF_SIGNED` (`true`),
-`$MCAST_INTERCOM_TLS_CERT` and `$MCAST_INTERCOM_TLS_KEY`. Without HTTPS,
-live buttons say so instead of talking.
+These can also come from `$MCAST_INTERCOM_TLS_CERT`,
+`$MCAST_INTERCOM_TLS_KEY`, `$MCAST_INTERCOM_TLS_SELF_SIGNED` and
+`$MCAST_INTERCOM_NO_TLS` (`true`).
+
+The first time you talk, the browser asks to use the microphone. Firefox
+asks every time unless you tick *Remember this decision*. If you let go of
+the button to answer, the page carries on hands-free: tap to end it.
 
 The audio goes from the browser to the panel over a WebSocket, as 48 kHz
 mono, and on to `mcast serve` as one live sender per group. Live
