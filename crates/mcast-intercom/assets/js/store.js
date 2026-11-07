@@ -10,6 +10,8 @@ export const state = {
   media: [],
   phonebook: [],
   backend: null,
+  // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
+  upcoming: { time_zone: null, fires: [] },
 };
 
 const listeners = [];
@@ -25,7 +27,7 @@ function changed(part) {
 const endedListeners = [];
 export function onRunEnded(fn) { endedListeners.push(fn); }
 
-export const isOver = (run) => ["done", "stopped", "failed"].includes(run.state);
+export const isOver = (run) => ["done", "stopped", "failed", "missed"].includes(run.state);
 
 export async function refreshConfig() {
   try {
@@ -35,6 +37,15 @@ export async function refreshConfig() {
     state.configError = e.message;
   }
   changed("config");
+}
+
+export async function refreshUpcoming() {
+  try {
+    state.upcoming = await api("GET", "/upcoming?n=10");
+  } catch {
+    // The config has a problem; that's shown elsewhere.
+  }
+  changed("upcoming");
 }
 
 export async function refreshRuns() {
@@ -57,7 +68,7 @@ export async function refreshServer() {
 }
 
 export function refreshAll() {
-  return Promise.all([refreshConfig(), refreshRuns().catch(() => {}), refreshServer()]);
+  return Promise.all([refreshConfig(), refreshRuns().catch(() => {}), refreshServer(), refreshUpcoming()]);
 }
 
 export function apply(ev) {
@@ -66,13 +77,17 @@ export function apply(ev) {
       const before = state.runs.get(ev.run.id);
       state.runs.set(ev.run.id, ev.run);
       changed("runs");
-      if (isOver(ev.run) && before && !isOver(before)) {
+      // Ended now, or recorded already over (a missed schedule).
+      if (isOver(ev.run) && (!before || !isOver(before))) {
         for (const fn of endedListeners) fn(ev.run);
       }
+      // A schedule played: what's next has moved on.
+      if (!before && ev.run.trigger.type === "schedule") refreshUpcoming();
       break;
     }
     case "config_changed":
       refreshConfig();
+      refreshUpcoming();
       break;
     case "backend": {
       const wasUp = state.backend?.connected;
@@ -86,6 +101,38 @@ export function apply(ev) {
       refreshAll();
       break;
   }
+}
+
+// "Mon 9 Nov 12:00" from a fire's wall-clock time in the schedules' zone.
+export function fireTime(f) {
+  const [date, time] = f.local.split("T");
+  const [y, m, d] = date.split("-").map(Number);
+  const day = new Date(Date.UTC(y, m - 1, d))
+    .toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+  return `${f.weekday} ${day} ${time.slice(0, 5)}`;
+}
+
+// "in 5 min", "in 3 h", "in 2 days".
+export function fromNow(ms) {
+  const s = Math.max(0, (ms - Date.now()) / 1000);
+  if (s < 60) return "in under a minute";
+  if (s < 3600) return `in ${Math.round(s / 60)} min`;
+  if (s < 86400 * 2) return `in ${Math.round(s / 3600)} h`;
+  return `in ${Math.round(s / 86400)} days`;
+}
+
+// A moment as wall-clock time in the schedules' zone (the browser's if unknown).
+export function atTime(ms) {
+  const opts = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  try {
+    return new Date(ms).toLocaleString(undefined, { ...opts, timeZone: state.upcoming.time_zone || undefined });
+  } catch {
+    return new Date(ms).toLocaleString(undefined, opts);
+  }
+}
+
+export function announcementName(id) {
+  return state.config.announcements.find((a) => a.id === id)?.name ?? id;
 }
 
 export function zoneName(id) {

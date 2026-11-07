@@ -2,11 +2,12 @@
 
 import { api, follow, setToken, token } from "./api.js";
 import { h, replace, toast } from "./dom.js";
-import { refreshAll, apply, state, subscribe, onRunEnded } from "./store.js";
+import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded } from "./store.js";
 import * as panel from "./panel.js";
 import * as history from "./history.js";
 import * as announcements from "./announcements.js";
 import * as zones from "./zones.js";
+import * as schedules from "./schedules.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -101,6 +102,9 @@ async function start() {
   history.mount($("history"));
   announcements.mount($("announcements"));
   zones.mount($("zones"));
+  schedules.mount($("schedules"));
+  // "in 5 min" moves on, and once-only times drop off the list.
+  setInterval(() => refreshUpcoming(), 60000);
   subscribe(["server"], () => { showBackend(); showPhonebook(); });
   showBackend();
   showPhonebook();
@@ -109,6 +113,7 @@ async function start() {
     const played = run.targets.filter((t) => t.played > 0).length;
     if (run.state === "done") toast(`"${run.name}" played to ${played} of ${run.targets.length} groups`, "ok");
     else if (run.state === "failed") toast(`"${run.name}": ${run.error ?? "failed"}`, "error");
+    else if (run.state === "missed") toast(`"${run.name}": ${run.error}`, "info");
   });
 
   let first = true;

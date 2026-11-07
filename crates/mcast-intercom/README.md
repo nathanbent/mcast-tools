@@ -2,12 +2,12 @@
 
 An intercom control panel for `mcast serve`. You set up **zones** (sets of speakers)
 and **announcements** (an audio file or a chime, which zones it goes to, how
-many times, at what priority), then play them.
+many times, at what priority), then play them from a button or on a
+**schedule**.
 
 It is a client of the mcast HTTP API and nothing else: it doesn't use any
 other crate in this workspace, so it can be moved out on its own. See
-[`docs/intercom-plan.md`](../../docs/intercom-plan.md) for the plan:
-schedules come next.
+[`docs/intercom-plan.md`](../../docs/intercom-plan.md) for how it came about.
 
 ## Use
 
@@ -17,6 +17,7 @@ schedules come next.
 ```bash
 mcast intercom list            # zones and announcements
 mcast intercom check           # the config, and its media files and phonebook names on the server
+mcast intercom upcoming        # what the schedules play next
 mcast intercom play lunch      # by id or name; Ctrl-C stops it
 ```
 
@@ -28,9 +29,11 @@ MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651
 ```
 
 A page with a big button for each announcement (Stop and an *All stop* in
-the header), what's playing in each group right now, the history of recent
-plays, and editors for announcements and zones. Media files and phonebook
+the header), what's playing in each group right now and what's next, the
+history of recent plays, and editors for schedules, announcements and zones. Media files and phonebook
 names come from the mcast server; upload files through `mcast serve`.
+
+Schedules only play while `mcast intercom serve` runs.
 
 The panel is its own server with its own token (`--panel-token` or
 `$MCAST_INTERCOM_TOKEN`, required unless it listens on loopback). `--token`
@@ -65,7 +68,13 @@ file named by `--config` or `$MCAST_INTERCOM`. Edit it in the panel or by hand;
      "zones": ["upstairs", "downstairs"]},
     {"id": "fire", "name": "Fire drill", "audio": "chime_only", "chime": "alert",
      "repeat": 5, "zones": ["upstairs", "downstairs"], "priority": "emergency"}
-  ]
+  ],
+  "schedules": [
+    {"id": "lunch", "announcement": "lunch",
+     "when": {"weekly": {"days": ["mon", "tue", "wed", "thu", "fri"], "times": ["12:00", "12:45"]}}},
+    {"id": "drill", "announcement": "fire", "when": {"once": "2026-12-04T10:30"}, "enabled": false}
+  ],
+  "time_zone": "Europe/London"
 }
 ```
 
@@ -86,6 +95,14 @@ its speakers need: `encoding`, `volume_db` (added to the announcement's),
 | `repeat_gap_s` | `2` | Seconds between repeats |
 | `priority` | `normal` | What happens to a group something else is already sending to (below) |
 
+**Schedules.** `id`, `announcement` (its id), `enabled` (default `true`),
+an optional `name`, and `when`: `{"weekly": {"days": [...], "times": [...]}}`
+with days `mon` to `sun` and 24-hour times (`"08:30"`, or with seconds), or
+`{"once": "YYYY-MM-DDTHH:MM"}`.
+
+**`time_zone`**: the IANA name the times are in, e.g. `"Europe/London"`.
+Leave it out to use the system's.
+
 ## Playing
 
 Playing an announcement starts one sender on the mcast server for each
@@ -103,12 +120,32 @@ Each repeat tries every group again, so a group that was busy can join in
 later. A run is *done* if it played to at least one group, and *failed*
 if it played to none.
 
+## Schedules
+
+Times are wall-clock times in the config's time zone, so 12:00 stays at
+noon when the clocks change. On the day they change:
+
+- A time the clocks skip (01:30 when they go forward from 01:00 to 02:00)
+  plays at the same distance past the gap: 02:30.
+- A time that happens twice (01:30 when they go back from 02:00 to 01:00)
+  plays once, the first time.
+
+A scheduled play starts on time if the panel is running. If it's up to 60 s
+late (the panel was just starting) it still plays. Later than that it's
+recorded in the history as *missed* rather than played late, so a restart
+doesn't set off stale announcements. On starting, the panel looks back an hour
+for times it missed while it wasn't running. If the mcast server can't be
+reached at that moment, the play is recorded as *failed*; it isn't retried.
+
+Changes made in the panel take effect straight away. Changes to the file made
+by hand are picked up within 30 s.
+
 ## API
 
 Everything is under `/api/intercom/v1`, as JSON, with `Authorization: Bearer
 TOKEN` (or `?access_token=TOKEN`) when the panel has a token. Errors are
 `{"error": "..."}`: `404` for something that isn't there, `409` for a
-duplicate id or a zone still in use, `422` for a config that wouldn't be valid,
+duplicate id, or a zone or announcement still in use, `422` for a config that wouldn't be valid,
 `502` when the mcast server can't be reached.
 
 | Route | |
@@ -119,6 +156,9 @@ duplicate id or a zone still in use, `422` for a config that wouldn't be valid,
 | `GET`, `POST /zones` | List, or add one (without `id`, one is made from `name`) |
 | `GET`, `PUT`, `DELETE /zones/{id}` | `PUT` replaces it; the id can't change |
 | `GET`, `POST /announcements`, `GET`, `PUT`, `DELETE /announcements/{id}` | The same |
+| `GET`, `POST /schedules`, `GET`, `PUT`, `DELETE /schedules/{id}` | The same; without `id` or `name`, the id comes from the announcement |
+| `GET /upcoming?n=10` | `{"time_zone", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name"}], "next": {SCHEDULE: at_ms or null}}` |
+| `GET`, `PUT /settings` | `{"time_zone"}` (`null` for the system's); `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
@@ -135,8 +175,9 @@ A run:
               "job": 12, "error": null, "played": 0}]}
 ```
 
-Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
-`stopped` or `failed`. A target's is `starting`, `playing`, `done`, `busy`,
+A scheduled run's `trigger` is `{"type": "schedule", "id", "at_ms"}`, with the
+time it was due. Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
+`stopped`, `failed` or `missed`. A target's is `starting`, `playing`, `done`, `busy`,
 `preempted`, `stopped` or `failed`.
 
 ## Code
@@ -147,9 +188,10 @@ Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
 | `store.rs` | Loading and saving `intercom.json` |
 | `backend.rs` | The `Backend` trait (what the panel needs from a server) and `HttpBackend` |
 | `runner.rs` | Plays announcements: fan-out, priorities, repeats, stop |
+| `scheduler.rs` | When schedules are due (time zones, clock changes), and the thread that plays them |
 | `cli.rs` | `mcast intercom list`, `check`, `play` |
 | `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`) and the web page (`web.rs`) |
-| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `announcements.js`, `zones.js`); `api.js` is the only one that calls the server |
+| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`); `api.js` is the only one that calls the server |
 
 `cargo test -p mcast-intercom` runs the runner and the API against a fake
 backend and, in `tests/server.rs`, against a real in-process `mcast serve`.

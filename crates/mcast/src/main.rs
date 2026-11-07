@@ -512,12 +512,15 @@ struct TuiArgs {
 
 #[derive(Args)]
 #[command(
-    after_help = "Zones and announcements are kept in intercom.json in the mcast config \
-directory (or $MCAST_INTERCOM); see crates/mcast-intercom/README.md for its format.
+    after_help = "Zones, announcements and schedules are kept in intercom.json in the mcast \
+config directory (or $MCAST_INTERCOM); see crates/mcast-intercom/README.md for its format.
 
 Examples:
+  mcast intercom serve                  # the panel and schedules: http://127.0.0.1:8651/
+  MCAST_INTERCOM_TOKEN=change-me mcast intercom serve --listen 0.0.0.0:8651
   mcast intercom list
   mcast intercom check
+  mcast intercom upcoming               # what the schedules play next
   mcast intercom play lunch             # by id or name; Ctrl-C stops it"
 )]
 struct IntercomArgs {
@@ -548,7 +551,13 @@ enum IntercomCommand {
     Check,
     /// Play an announcement (by id or name) and follow it until it ends
     Play { announcement: String },
-    /// Run the intercom panel: a web page and HTTP/JSON API of its own
+    /// The next times anything is scheduled to play
+    Upcoming {
+        /// How many
+        #[arg(short, default_value_t = 10)]
+        n: usize,
+    },
+    /// Run the intercom panel (a web page and HTTP/JSON API of its own) and its schedules
     Serve(IntercomServeArgs),
 }
 
@@ -578,6 +587,7 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
     let backend = mcast_intercom::HttpBackend::new(&a.url, a.token);
     match a.command {
         IntercomCommand::List => mcast_intercom::cli::list(&path),
+        IntercomCommand::Upcoming { n } => mcast_intercom::cli::upcoming(&path, n),
         IntercomCommand::Check => mcast_intercom::cli::check(&path, &backend),
         IntercomCommand::Play { announcement } => {
             mcast_intercom::cli::play(&path, Arc::new(backend), &announcement, &stop)

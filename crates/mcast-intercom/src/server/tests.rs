@@ -106,7 +106,10 @@ async fn edits_zones_and_announcements() {
     let (s, v) = p.call(Method::GET, "/config", None).await;
     assert_eq!(
         (s, v),
-        (StatusCode::OK, json!({"zones": [], "announcements": []}))
+        (
+            StatusCode::OK,
+            json!({"zones": [], "announcements": [], "schedules": []})
+        )
     );
 
     // Ids come from names, and stay unique.
@@ -349,4 +352,91 @@ async fn wont_listen_on_the_network_without_a_token() {
         .await
         .unwrap_err();
     assert!(e.to_string().contains("without a token"), "{e}");
+}
+
+#[tokio::test]
+async fn schedules_and_whats_coming_up() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"time_zone": "Europe/London"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["effective_time_zone"], "Europe/London");
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/settings",
+            Some(json!({"time_zone": "Mars/Olympus"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        v["error"].as_str().unwrap().contains("unknown time zone"),
+        "{v}"
+    );
+
+    // Named after what it plays when it has no name of its own.
+    let every_day = json!({"announcement": "bell", "when": {"weekly": {
+        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "times": ["00:00", "12:00"]}}});
+    let (s, v) = p.call(Method::POST, "/schedules", Some(every_day)).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["id"], "bell");
+    assert_eq!(v["enabled"], true);
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/schedules",
+            Some(json!({"announcement": "bell", "when": {"once": "2026-13-01T00:00"}})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("isn't a date and time"),
+        "{v}"
+    );
+
+    let (s, v) = p.call(Method::GET, "/upcoming?n=3", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["time_zone"], "Europe/London");
+    let fires = v["fires"].as_array().unwrap();
+    assert_eq!(fires.len(), 3, "{v}");
+    assert_eq!(fires[0]["name"], "Bell");
+    assert!(fires[0]["at_ms"].as_u64().unwrap() > v["now_ms"].as_u64().unwrap());
+    assert_eq!(v["next"]["bell"], fires[0]["at_ms"]);
+    let t = fires[0]["local"].as_str().unwrap();
+    assert!(t.ends_with("T00:00:00") || t.ends_with("T12:00:00"), "{t}");
+
+    // Switched off: nothing coming up.
+    let (s, _) = p
+        .call(Method::PUT, "/schedules/bell", Some(json!({"announcement": "bell", "enabled": false, "when": {"once": "2030-01-01T09:00"}})))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, v) = p.call(Method::GET, "/upcoming", None).await;
+    assert_eq!(v["fires"], json!([]));
+    assert!(v["next"]["bell"].is_u64(), "still known when off: {v}");
+    p.call(
+        Method::PUT,
+        "/schedules/bell",
+        Some(json!({"announcement": "bell", "when": {"once": "2020-01-01T09:00"}})),
+    )
+    .await;
+    let (_, v) = p.call(Method::GET, "/upcoming", None).await;
+    assert_eq!(v["next"]["bell"], Value::Null, "passed");
+
+    // An announcement a schedule plays can't go.
+    let (s, v) = p.call(Method::DELETE, "/announcements/bell", None).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(v["error"].as_str().unwrap().contains("1 schedule"), "{v}");
+    let (s, _) = p.call(Method::DELETE, "/schedules/bell", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = p.call(Method::DELETE, "/announcements/bell", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
 }

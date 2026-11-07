@@ -171,7 +171,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 .badge.playing, .badge.done { color: var(--ok); border-color: currentColor; }
 .badge.failed, .badge.busy, .badge.preempted { color: var(--bad); border-color: currentColor; }
-.badge.starting, .badge.waiting, .badge.stopping { color: var(--warn); border-color: currentColor; }
+.badge.starting, .badge.waiting, .badge.stopping, .badge.missed { color: var(--warn); border-color: currentColor; }
 .badge.high { color: var(--warn); border-color: currentColor; }
 .badge.emergency { color: var(--bad); border-color: currentColor; font-weight: 600; }
 
@@ -283,6 +283,7 @@ button.danger.solid { background: var(--bad); border-color: var(--bad); color: #
 .run.done { border-left-color: var(--ok); }
 .run.failed { border-left-color: var(--bad); }
 .run.stopped { border-left-color: var(--muted); }
+.run.missed { border-left-color: var(--warn); }
 .run-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .run-head .spacer { min-width: 8px; }
 .targets { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; font-size: 14px; }
@@ -305,3 +306,14 @@ button.danger.solid { background: var(--bad); border-color: var(--bad); color: #
   nav.tabs { order: 10; width: 100%; flex-wrap: nowrap; overflow-x: auto; }
   main.single { padding: 12px; }
 }
+
+/* Schedules */
+
+p.next { margin: 0 0 14px; font-size: 15px; }
+.tz { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.tz form { flex-direction: row; gap: 8px; }
+.tz input { width: 220px; }
+.upcoming { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 14px; margin-bottom: 18px; font-variant-numeric: tabular-nums; }
+.upcoming .muted { text-align: right; }
+.days { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+tr.off td:not(.actions) { opacity: 0.55; }

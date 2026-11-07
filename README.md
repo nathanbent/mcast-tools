@@ -711,18 +711,21 @@ and a priority that decides whether it may take over a group something else is
 using. They're kept in `~/.config/mcast/intercom.json`:
 
 ```bash
-mcast intercom serve                                 # the panel: open http://127.0.0.1:8651/
+mcast intercom serve                                 # the panel and schedules: http://127.0.0.1:8651/
 mcast intercom list
 mcast intercom check                                 # media files and phonebook names exist?
+mcast intercom upcoming                              # what the schedules play next
 mcast intercom play "Lunch bell"                     # Ctrl-C stops it
 ```
 
-The panel has a button for each announcement, what's playing now, recent
-plays, and editors for announcements and zones. It is its own server with its
+The panel has a button for each announcement, what's playing now and next,
+recent plays, and editors for schedules, announcements and zones. Schedules
+play weekly or once at wall-clock times in a time zone you choose, and only
+while the panel runs. It is its own server with its
 own token (`--panel-token`); `--url` and `--token` point it at `mcast serve`.
 See [crates/mcast-intercom/README.md](crates/mcast-intercom/README.md) for the
-file's format and the panel's API. Schedules are planned
-([docs/intercom-plan.md](docs/intercom-plan.md)).
+file's format and the panel's API. A Raspberry Pi service for the panel is
+planned ([docs/intercom-plan.md](docs/intercom-plan.md)).
 
 ## Layout
 
@@ -736,7 +739,7 @@ file's format and the panel's API. Schedules are planned
 | `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
 | `crates/mcast-tui` | Terminal front end (`mcast tui`), an API client built on ratatui |
-| `crates/mcast-intercom` | Intercom panel (`mcast intercom`): zones, announcements, play now, its own web page and API; an API client that uses no other mcast crate |
+| `crates/mcast-intercom` | Intercom panel (`mcast intercom`): zones, announcements, schedules, its own web page and API; an API client that uses no other mcast crate |
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |

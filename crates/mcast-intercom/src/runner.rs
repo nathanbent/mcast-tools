@@ -30,9 +30,8 @@ const TAKEOVER_WAIT: Duration = Duration::from_millis(200);
 pub enum Trigger {
     /// A button, or the command line.
     Manual,
-    Schedule {
-        id: String,
-    },
+    /// A schedule, for the time it was due.
+    Schedule { id: String, at_ms: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -47,11 +46,16 @@ pub enum RunState {
     Stopped,
     /// Played to no group at all.
     Failed,
+    /// A schedule's time passed while the panel couldn't play it.
+    Missed,
 }
 
 impl RunState {
     pub fn is_over(self) -> bool {
-        matches!(self, RunState::Done | RunState::Stopped | RunState::Failed)
+        matches!(
+            self,
+            RunState::Done | RunState::Stopped | RunState::Failed | RunState::Missed
+        )
     }
 }
 
@@ -252,6 +256,45 @@ impl Runner {
         self.0.start_round(id);
         self.get(id)
             .ok_or_else(|| PlayError::Server(format!("run {id} vanished")))
+    }
+
+    /// Remember a play that never started: one that was missed, or that
+    /// failed before reaching any group (the server was away).
+    pub fn record(
+        &self,
+        a: &Announcement,
+        trigger: Trigger,
+        state: RunState,
+        error: String,
+    ) -> Run {
+        let id = {
+            let mut st = self.0.lock();
+            st.next_id += 1;
+            let id = st.next_id;
+            let now = now_ms();
+            st.runs.insert(
+                id,
+                Run {
+                    id,
+                    announcement: a.id.clone(),
+                    name: a.name.clone(),
+                    priority: a.priority,
+                    trigger,
+                    state,
+                    round: 1,
+                    rounds: a.repeat.max(1),
+                    started_ms: now,
+                    ended_ms: Some(now),
+                    error: Some(error),
+                    targets: Vec::new(),
+                    gap: Duration::ZERO,
+                },
+            );
+            prune(&mut st);
+            id
+        };
+        self.0.emit(id);
+        self.get(id).expect("just added")
     }
 
     pub fn backend_status(&self) -> BackendStatus {

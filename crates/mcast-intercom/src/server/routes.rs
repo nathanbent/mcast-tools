@@ -3,8 +3,9 @@
 
 use super::{ApiError, ApiResult, AppState, Event};
 use crate::backend::Entry;
-use crate::model::{Announcement, Config, Zone};
+use crate::model::{Announcement, Config, Schedule, Zone};
 use crate::runner::{PlayError, Run, Trigger};
+use crate::scheduler;
 use crate::store;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -82,6 +83,29 @@ impl Item for Announcement {
     fn all_mut(c: &mut Config) -> &mut Vec<Self> {
         &mut c.announcements
     }
+    fn in_use(c: &Config, id: &str) -> Option<String> {
+        let n = c.schedules.iter().filter(|s| s.announcement == id).count();
+        (n > 0).then(|| {
+            format!(
+                "announcement \"{id}\" is played by {n} schedule{}; delete {} first",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "it" } else { "them" }
+            )
+        })
+    }
+}
+
+impl Item for Schedule {
+    const KIND: &'static str = "schedule";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn all(c: &Config) -> &Vec<Self> {
+        &c.schedules
+    }
+    fn all_mut(c: &mut Config) -> &mut Vec<Self> {
+        &mut c.schedules
+    }
 }
 
 fn not_found<T: Item>(id: &str) -> ApiError {
@@ -104,6 +128,7 @@ async fn change<R: Send + 'static>(
         Ok::<_, ApiError>(r)
     })
     .await??;
+    s.0.scheduler.poke();
     let _ = s.0.events.send(Event::ConfigChanged);
     Ok(r)
 }
@@ -172,7 +197,15 @@ pub(super) async fn create<T: Item>(
             .filter(|i| !i.is_empty())
         {
             Some(id) => id.to_string(),
-            None => new_id::<T>(obj.get("name").and_then(Value::as_str).unwrap_or(""), c),
+            None => {
+                // Schedules' names are optional: name them after what they play.
+                let base = ["name", "announcement"]
+                    .iter()
+                    .filter_map(|k| obj.get(*k).and_then(Value::as_str))
+                    .find(|n| !n.trim().is_empty())
+                    .unwrap_or("");
+                new_id::<T>(base, c)
+            }
         };
         if T::all(c).iter().any(|x| x.id() == id) {
             return Err(ApiError::new(
@@ -320,4 +353,69 @@ pub(super) async fn phonebook(State(s): State<AppState>) -> ApiResult<Json<Vec<E
         .await?
         .map(Json)
         .map_err(bad_gateway)
+}
+
+// ---- schedules ----
+
+#[derive(serde::Deserialize)]
+pub(super) struct UpcomingQuery {
+    n: Option<usize>,
+}
+
+/// The next times anything is scheduled, and the time zone they're in.
+pub(super) async fn upcoming(
+    State(s): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<UpcomingQuery>,
+) -> ApiResult<Json<Value>> {
+    let cfg = s.load().await?;
+    let tz = cfg.tz().map_err(|e| ApiError::internal(format!("{e:#}")))?;
+    let n = q.n.unwrap_or(10).clamp(1, 100);
+    let now = jiff::Timestamp::now();
+    let fires = scheduler::upcoming(&cfg, &tz, now, n);
+    // Each schedule's next time, enabled or not; null when it won't come again.
+    let next: serde_json::Map<String, Value> = cfg
+        .schedules
+        .iter()
+        .map(|s| {
+            let at = scheduler::next_after(s, &tz, now).map(|t| t.as_millisecond());
+            (s.id.clone(), json!(at))
+        })
+        .collect();
+    Ok(Json(json!({
+        "time_zone": cfg.tz_name(),
+        "now_ms": crate::now_ms(),
+        "fires": fires,
+        "next": next,
+    })))
+}
+
+fn settings(c: &Config) -> Value {
+    json!({ "time_zone": c.time_zone, "effective_time_zone": c.tz_name() })
+}
+
+/// `{"time_zone": "Europe/London"}`, or null for the system's.
+pub(super) async fn get_settings(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    Ok(Json(settings(&s.load().await?)))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Settings {
+    time_zone: Option<String>,
+}
+
+pub(super) async fn put_settings(
+    State(s): State<AppState>,
+    body: Result<Json<Settings>, JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    let Json(new) = body?;
+    change(&s, move |c| {
+        c.time_zone = new
+            .time_zone
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        Ok(settings(c))
+    })
+    .await
+    .map(Json)
 }

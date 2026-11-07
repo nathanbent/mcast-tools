@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
-import { state, subscribe, isOver, zoneName, activeRun } from "./store.js";
+import { state, subscribe, isOver, zoneName, activeRun, fireTime, fromNow } from "./store.js";
 import { runCard, runState, stopRun } from "./runs.js";
 
 async function play(a) {
@@ -42,13 +42,17 @@ export function mount(el) {
     }
     const anns = state.config.announcements;
     const active = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
+    const next = state.upcoming.fires[0];
     replace(el,
+      next && h("p", { class: "next" },
+        h("span", { class: "muted" }, "Next: "), h("strong", {}, next.name),
+        ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
       anns.length
         ? h("div", { class: "tiles" }, anns.map(tile))
         : h("p", { class: "muted" }, "No announcements yet: add zones, then announcements, from the tabs above."),
       active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
       active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
   };
-  subscribe(["config", "runs"], render);
+  subscribe(["config", "runs", "upcoming"], render);
   render();
 }

@@ -29,10 +29,13 @@ export function numberInput(value, props = {}) {
 export const num = (input) => (input.value.trim() === "" ? null : Number(input.value));
 
 export function mountEditor(el, spec) {
-  // spec: { kind, path, items(), columns: [[header, item => text, wideOnly]], form(item, save, cancel) }
+  // spec: { kind, path, items(), columns: [[header, item => text or node, wideOnly]],
+  //         form(item, save, cancel), label?(item) for messages (default: its name),
+  //         before?() for anything to show above the list }
   const list = h("div");
   const formArea = h("div");
   let editing; // undefined: no form open; null: a new one; otherwise the id
+  const label = spec.label ?? ((item) => item.name);
 
   const close = () => { editing = undefined; replace(formArea); };
 
@@ -42,7 +45,7 @@ export function mountEditor(el, spec) {
       const saved = isNew
         ? await api("POST", spec.path, body)
         : await api("PUT", `${spec.path}/${encodeURIComponent(editing)}`, body);
-      toast(`${isNew ? "Added" : "Saved"} ${spec.kind} "${saved.name}"`, "ok");
+      toast(`${isNew ? "Added" : "Saved"} ${spec.kind} "${label(saved)}"`, "ok");
       close();
     } catch (e) {
       toast(`Couldn't save: ${e.message}`, "error");
@@ -52,16 +55,16 @@ export function mountEditor(el, spec) {
   const open = (item) => {
     editing = item ? item.id : null;
     replace(formArea, h("div", { class: "editor-form" },
-      h("h2", {}, item ? `Edit ${spec.kind}: ${item.name}` : `New ${spec.kind}`),
+      h("h2", {}, item ? `Edit ${spec.kind}: ${label(item)}` : `New ${spec.kind}`),
       spec.form(item, save, close)));
     formArea.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
 
   const remove = async (item) => {
-    if (!confirm(`Delete ${spec.kind} "${item.name}"?`)) return;
+    if (!confirm(`Delete ${spec.kind} "${label(item)}"?`)) return;
     try {
       await api("DELETE", `${spec.path}/${encodeURIComponent(item.id)}`);
-      toast(`Deleted ${spec.kind} "${item.name}"`, "ok");
+      toast(`Deleted ${spec.kind} "${label(item)}"`, "ok");
       if (editing === item.id) close();
     } catch (e) {
       toast(`Couldn't delete: ${e.message}`, "error");
@@ -71,11 +74,12 @@ export function mountEditor(el, spec) {
   const render = () => {
     const items = spec.items();
     replace(list,
+      spec.before?.(),
       state.configError && h("p", { class: "error" }, `The intercom config has a problem: ${state.configError}`),
       items.length
         ? h("div", { class: "scroll" }, h("table", { class: "items" },
             h("thead", {}, h("tr", {}, spec.columns.map(([head, , wide]) => h("th", { class: wide && "wide" }, head)), h("th"))),
-            h("tbody", {}, items.map((item) => h("tr", {},
+            h("tbody", {}, items.map((item) => h("tr", { class: spec.rowClass?.(item) || null },
               spec.columns.map(([, cell, wide]) => h("td", { class: wide && "wide" }, cell(item))),
               h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
                 h("button", { onclick: () => open(item) }, "Edit"),
@@ -85,7 +89,7 @@ export function mountEditor(el, spec) {
         h("button", { class: "primary", onclick: () => open(null) }, `Add ${spec.kind}`)));
   };
 
-  subscribe(["config", "server"], render);
+  subscribe(["config", "server", ...(spec.parts ?? [])], render);
   render();
   el.replaceChildren(list, formArea);
 }

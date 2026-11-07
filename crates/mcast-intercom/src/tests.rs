@@ -64,6 +64,8 @@ fn config() -> Config {
                 targets: vec![target("239.1.1.2:5000")],
             },
         ],
+        schedules: Vec::new(),
+        time_zone: None,
         announcements: vec![
             Announcement {
                 volume_db: Some(2.0),

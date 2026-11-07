@@ -100,6 +100,8 @@ fn config() -> Config {
                 targets: vec![target("239.255.77.73:5004")],
             },
         ],
+        schedules: Vec::new(),
+        time_zone: None,
         announcements: vec![
             chime("ding", "both", Priority::Normal),
             chime("polite", "busy", Priority::Normal),

@@ -8,8 +8,9 @@ mod routes;
 mod web;
 
 use crate::backend::Backend;
-use crate::model::{Announcement, Config, Zone};
+use crate::model::{Announcement, Config, Schedule, Zone};
 use crate::runner::{BackendStatus, Change, Run, Runner};
+use crate::scheduler::{Scheduler, GRACE};
 use crate::store;
 use anyhow::{bail, Context, Result};
 use axum::extract::{Request, State};
@@ -50,7 +51,7 @@ pub struct ServeConfig {
 pub enum Event {
     /// A run started or changed.
     Run { run: Run },
-    /// Zones or announcements changed; fetch them again.
+    /// Zones, announcements, schedules or settings changed; fetch them again.
     ConfigChanged,
     /// The connection to the mcast server changed.
     Backend { status: BackendStatus },
@@ -63,6 +64,8 @@ pub(crate) struct Inner {
     /// Held while changing the config file.
     pub(crate) config_lock: tokio::sync::Mutex<()>,
     pub(crate) events: broadcast::Sender<Event>,
+    /// Plays schedules; told when the config changes.
+    pub(crate) scheduler: Scheduler,
     token: Option<String>,
     closing: watch::Receiver<bool>,
 }
@@ -71,7 +74,7 @@ pub(crate) struct Inner {
 pub struct AppState(pub(crate) Arc<Inner>);
 
 impl AppState {
-    /// Start the runner. `closing` ends event streams when it becomes true,
+    /// Start the runner and the scheduler. `closing` ends event streams when it becomes true,
     /// so graceful shutdown isn't held up by open clients.
     pub fn new(
         backend: Arc<dyn Backend>,
@@ -90,7 +93,9 @@ impl AppState {
                 });
             })
         };
+        let scheduler = Scheduler::start(config.clone(), runner.clone(), GRACE);
         Self(Arc::new(Inner {
+            scheduler,
             runner,
             backend,
             config,
@@ -187,6 +192,15 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete::<Announcement>),
         )
         .route("/announcements/{id}/play", post(play))
+        .route("/schedules", get(list::<Schedule>).post(create::<Schedule>))
+        .route(
+            "/schedules/{id}",
+            get(get_one::<Schedule>)
+                .put(put::<Schedule>)
+                .delete(delete::<Schedule>),
+        )
+        .route("/upcoming", get(upcoming))
+        .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))
         .route("/runs/{id}", get(get_run).delete(stop_run))
         .route("/media", get(media))

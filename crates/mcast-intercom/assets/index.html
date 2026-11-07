@@ -15,6 +15,7 @@
     <nav class="tabs" aria-label="Sections">
       <button data-tab="panel" aria-selected="true">Panel</button>
       <button data-tab="history" aria-selected="false">History</button>
+      <button data-tab="schedules" aria-selected="false">Schedules</button>
       <button data-tab="announcements" aria-selected="false">Announcements</button>
       <button data-tab="zones" aria-selected="false">Zones</button>
     </nav>
@@ -35,6 +36,10 @@
       <h2 id="h-history">History</h2>
       <div id="history"></div>
     </section>
+    <section id="tab-schedules" aria-labelledby="h-schedules" hidden>
+      <h2 id="h-schedules">Schedules</h2>
+      <div id="schedules"></div>
+    </section>
     <section id="tab-announcements" aria-labelledby="h-announcements" hidden>
       <h2 id="h-announcements">Announcements</h2>
       <div id="announcements"></div>
@@ -47,6 +52,7 @@
 
   <div id="toasts" aria-live="polite"></div>
   <datalist id="phonebook-groups"></datalist>
+  <datalist id="time-zones"></datalist>
 
   <dialog id="login">
     <form id="login-form">

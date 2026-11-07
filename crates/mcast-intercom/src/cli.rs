@@ -1,8 +1,9 @@
 //! `mcast intercom ...`: list, check and play from the command line.
 
 use crate::backend::{Backend, HttpBackend};
-use crate::model::{Audio, Config, Target};
+use crate::model::{Audio, Config, Day, Target, When};
 use crate::runner::{Run, RunState, Runner, TargetState, Trigger};
+use crate::scheduler;
 use crate::store;
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -20,7 +21,7 @@ const RECONCILE_EVERY: Duration = Duration::from_secs(5);
 /// Print the zones and announcements.
 pub fn list(path: &Path) -> Result<()> {
     let cfg = store::load(path)?;
-    if cfg.zones.is_empty() && cfg.announcements.is_empty() {
+    if cfg.zones.is_empty() && cfg.announcements.is_empty() && cfg.schedules.is_empty() {
         println!("Nothing set up yet in {}.", path.display());
         return Ok(());
     }
@@ -59,6 +60,76 @@ pub fn list(path: &Path) -> Result<()> {
             a.name,
             a.zones.join(", ")
         );
+    }
+    if !cfg.schedules.is_empty() {
+        println!("Schedules (times in {}):", cfg.tz_name());
+        for sch in &cfg.schedules {
+            let what = cfg
+                .announcement(&sch.announcement)
+                .map_or(sch.announcement.as_str(), |a| a.name.as_str());
+            println!(
+                "  {:<16} {what}: {}{}",
+                sch.id,
+                describe_when(&sch.when),
+                if sch.enabled { "" } else { " (off)" }
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Describe when a schedule plays: "Mon-Fri 08:30, 12:00" or "once, 2026-12-24 16:30".
+pub fn describe_when(w: &When) -> String {
+    match w {
+        When::Once(at) => format!("once, {}", at.replace('T', " ")),
+        When::Weekly { days, times } => {
+            let all = [
+                Day::Mon,
+                Day::Tue,
+                Day::Wed,
+                Day::Thu,
+                Day::Fri,
+                Day::Sat,
+                Day::Sun,
+            ];
+            let name = |d: &Day| {
+                serde_json::to_value(d)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default()
+            };
+            let on = |d: &Day| days.contains(d);
+            let days = if all.iter().all(on) {
+                "every day".to_string()
+            } else if all[..5].iter().all(on) && !all[5..].iter().any(on) {
+                "Mon-Fri".to_string()
+            } else {
+                all.iter()
+                    .filter(|d| on(d))
+                    .map(|d| {
+                        let n = name(d);
+                        n[..1].to_uppercase() + &n[1..]
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!("{days} {}", times.join(", "))
+        }
+    }
+}
+
+/// The next times anything is scheduled to play.
+pub fn upcoming(path: &Path, n: usize) -> Result<()> {
+    let cfg = store::load(path)?;
+    let tz = cfg.tz()?;
+    let fires = scheduler::upcoming(&cfg, &tz, jiff::Timestamp::now(), n);
+    if fires.is_empty() {
+        println!("Nothing scheduled.");
+        return Ok(());
+    }
+    println!("Times in {}:", cfg.tz_name());
+    for f in fires {
+        println!("  {}  {} ({})", f.when(), f.name, f.schedule);
     }
     Ok(())
 }

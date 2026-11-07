@@ -2,11 +2,11 @@
 
 import { api } from "./api.js";
 import { h, ago, toast } from "./dom.js";
-import { isOver } from "./store.js";
+import { isOver, atTime } from "./store.js";
 
 const RUN_STATE = {
   playing: "playing", waiting: "between repeats", stopping: "stopping",
-  done: "done", stopped: "stopped", failed: "failed",
+  done: "done", stopped: "stopped", failed: "failed", missed: "missed",
 };
 
 const TARGET_STATE = {
@@ -40,8 +40,8 @@ export function runCard(run) {
       run.priority !== "normal" && h("span", { class: `badge ${run.priority}` }, run.priority),
       h("span", { class: "spacer" }),
       h("span", { class: "muted small" },
-        ago(run.started_ms),
-        isOver(run) && ` · played to ${played} of ${run.targets.length}`),
+        run.trigger.type === "schedule" ? `scheduled for ${atTime(run.trigger.at_ms)}` : ago(run.started_ms),
+        isOver(run) && run.targets.length > 0 && ` · played to ${played} of ${run.targets.length}`),
       !isOver(run) && h("button", { class: "danger", onclick: () => stopRun(run) }, "Stop")),
     run.error && h("div", { class: "error small" }, run.error),
     h("div", { class: "targets" },

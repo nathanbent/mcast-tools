@@ -12,11 +12,12 @@ pub mod backend;
 pub mod cli;
 pub mod model;
 pub mod runner;
+pub mod scheduler;
 pub mod server;
 pub mod store;
 
 pub use backend::{Backend, BackendError, HttpBackend};
-pub use model::{Announcement, Audio, Config, Priority, Target, Zone};
+pub use model::{Announcement, Audio, Config, Day, Priority, Schedule, Target, When, Zone};
 pub use runner::{
     BackendStatus, Change, PlayError, Run, RunId, RunState, Runner, TargetRun, TargetState, Trigger,
 };

@@ -18,6 +18,110 @@ pub const MAX_REPEAT_GAP_S: f64 = 3600.0;
 pub struct Config {
     pub zones: Vec<Zone>,
     pub announcements: Vec<Announcement>,
+    pub schedules: Vec<Schedule>,
+    /// IANA time zone for schedules, e.g. "Europe/London"; unset uses the
+    /// system's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+}
+
+/// Most times a weekly schedule can have.
+pub const MAX_TIMES: usize = 48;
+
+/// When to play an announcement by itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Schedule {
+    pub id: String,
+    /// Optional; the panel shows the announcement's name without one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Announcement id.
+    pub announcement: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    pub when: When,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Wall-clock times in the config's time zone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum When {
+    /// `{"weekly": {"days": ["mon", "fri"], "times": ["08:30", "12:00"]}}`
+    Weekly { days: Vec<Day>, times: Vec<String> },
+    /// `{"once": "2026-12-24T16:30"}`
+    Once(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Day {
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+    Sun,
+}
+
+impl Day {
+    pub fn weekday(self) -> jiff::civil::Weekday {
+        use jiff::civil::Weekday as W;
+        match self {
+            Day::Mon => W::Monday,
+            Day::Tue => W::Tuesday,
+            Day::Wed => W::Wednesday,
+            Day::Thu => W::Thursday,
+            Day::Fri => W::Friday,
+            Day::Sat => W::Saturday,
+            Day::Sun => W::Sunday,
+        }
+    }
+}
+
+/// A time of day: `HH:MM` or `HH:MM:SS`.
+pub fn parse_time(s: &str) -> Result<jiff::civil::Time> {
+    let ok = matches!(s.len(), 5 | 8) && s.as_bytes()[2] == b':';
+    match s.parse::<jiff::civil::Time>() {
+        Ok(t) if ok => Ok(t),
+        _ => bail!("\"{s}\" isn't a time of day like 08:30"),
+    }
+}
+
+/// A date and time: `YYYY-MM-DDTHH:MM` (or with seconds).
+pub fn parse_datetime(s: &str) -> Result<jiff::civil::DateTime> {
+    let ok = matches!(s.len(), 16 | 19) && s.as_bytes()[10] == b'T';
+    match s.parse::<jiff::civil::DateTime>() {
+        Ok(t) if ok => Ok(t),
+        _ => bail!("\"{s}\" isn't a date and time like 2026-12-24T16:30"),
+    }
+}
+
+impl Config {
+    /// The time zone schedules are in.
+    pub fn tz(&self) -> Result<jiff::tz::TimeZone> {
+        match &self.time_zone {
+            Some(name) => jiff::tz::TimeZone::get(name).map_err(|_| {
+                anyhow::anyhow!("unknown time zone \"{name}\" (use a name like Europe/London)")
+            }),
+            None => Ok(jiff::tz::TimeZone::system()),
+        }
+    }
+
+    /// The time zone's name, for people.
+    pub fn tz_name(&self) -> String {
+        match &self.time_zone {
+            Some(n) => n.clone(),
+            None => jiff::tz::TimeZone::system()
+                .iana_name()
+                .map_or_else(|| "the system's time zone".into(), str::to_string),
+        }
+    }
 }
 
 /// A set of speakers that are paged together.
@@ -249,6 +353,43 @@ impl Config {
             check_number(&format!("{what}: volume_db"), a.volume_db)?;
             check_number(&format!("{what}: lead_in_ms"), a.lead_in_ms)?;
         }
+        let mut ids = HashSet::new();
+        for sch in &self.schedules {
+            let what = format!("schedule \"{}\"", sch.id);
+            check_id("schedule", &sch.id)?;
+            if !sch.name.is_empty() {
+                check_name("schedule", &sch.name)?;
+            }
+            if !ids.insert(sch.id.as_str()) {
+                bail!("two schedules have the id \"{}\"", sch.id);
+            }
+            if !self.announcements.iter().any(|a| a.id == sch.announcement) {
+                bail!("{what}: no announcement \"{}\"", sch.announcement);
+            }
+            match &sch.when {
+                When::Weekly { days, times } => {
+                    if days.is_empty() {
+                        bail!("{what} has no days");
+                    }
+                    if days.iter().collect::<HashSet<_>>().len() != days.len() {
+                        bail!("{what} has a day twice");
+                    }
+                    if times.is_empty() {
+                        bail!("{what} has no times");
+                    }
+                    if times.len() > MAX_TIMES {
+                        bail!("{what} has more than {MAX_TIMES} times");
+                    }
+                    for t in times {
+                        parse_time(t).map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
+                    }
+                }
+                When::Once(at) => {
+                    parse_datetime(at).map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
+                }
+            }
+        }
+        self.tz()?;
         Ok(())
     }
 }
