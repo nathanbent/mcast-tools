@@ -27,4 +27,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck pi/install.sh pi/files/mcast-pi-status pi/files/motd
+      - run: shellcheck pi/install.sh pi/files/mcast-pi-status pi/files/motd scripts/mcast-play.sh
