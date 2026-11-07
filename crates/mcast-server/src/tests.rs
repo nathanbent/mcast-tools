@@ -7,6 +7,8 @@ struct Harness {
     app: Router,
     state: AppState,
     dir: PathBuf,
+    /// Set to true as `serve` does when shutting down.
+    closing: watch::Sender<bool>,
 }
 
 impl Drop for Harness {
@@ -29,12 +31,13 @@ fn harness(token: Option<&str>) -> Harness {
         phonebook: dir.join("phonebook.conf"),
         chimes: dir.join("chimes.json"),
     };
-    let (_tx, rx) = watch::channel(false);
+    let (closing, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
     Harness {
         app: router(state.clone()),
         state,
         dir,
+        closing,
     }
 }
 
@@ -835,6 +838,55 @@ async fn media_folders_moves_and_pages_by_path() {
     let (_, folders) = call(&h, "GET", "/api/v1/media-folders", None, None).await;
     assert_eq!(folders, json!([]));
     let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// A live page still being talked on mustn't hold up a graceful shutdown.
+#[tokio::test(flavor = "multi_thread")]
+async fn shutting_down_ends_a_live_upload() {
+    let h = harness(None);
+    let (s, job) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(
+            json!({"group": "239.255.77.25:5004", "sap": false, "tail_ms": 0,
+                    "source": {"type": "live", "rate": 16000}}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{job}");
+    let id = job["id"].as_u64().unwrap();
+    // A body that keeps coming, as while someone talks.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+    let feeder = tokio::spawn(async move {
+        while tx.send(Ok(vec![0u8; 640])).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    let body = Body::from_stream(tokio_stream_from(rx));
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/jobs/{id}/live"))
+        .body(body)
+        .unwrap();
+    let app = h.app.clone();
+    let reply = tokio::spawn(async move { app.oneshot(req).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!reply.is_finished(), "the upload ended by itself");
+    h.closing.send(true).unwrap();
+    let resp = tokio::time::timeout(Duration::from_secs(3), reply)
+        .await
+        .expect("still uploading after shutdown began")
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    feeder.abort();
+}
+
+fn tokio_stream_from<T: Send + 'static>(
+    mut rx: tokio::sync::mpsc::Receiver<T>,
+) -> impl futures_util::Stream<Item = T> + Send + 'static {
+    futures_util::stream::poll_fn(move |cx| rx.poll_recv(cx))
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -236,7 +236,30 @@ impl HttpBackend {
     fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> BackendResult<T> {
         Ok(self.request(&self.agent, "GET", path).call()?.into_json()?)
     }
+
+    /// Whether a job with a live source has been ended by the server: it's
+    /// stopping or over, or is soon. A page whose feed was closed plays what
+    /// it has left and its end chime first, so allow it a few seconds.
+    fn job_winding_down(&self, job: u64) -> bool {
+        let deadline = std::time::Instant::now() + LIVE_WIND_DOWN;
+        loop {
+            match Backend::job(self, job) {
+                Ok(j) if j.state != "starting" && j.state != "running" => return true,
+                // Gone from the server's list: long over.
+                Err(e) if e.status == 404 => return true,
+                Err(e) if e.status == 0 => return false,
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
 }
+
+/// How long a live page the server ended may take to finish playing.
+const LIVE_WIND_DOWN: Duration = Duration::from_secs(10);
 
 impl Backend for HttpBackend {
     fn describe(&self) -> String {
@@ -365,10 +388,19 @@ impl Backend for HttpBackend {
             current: Vec::new(),
             at: 0,
         };
-        self.request(&agent, "POST", &format!("/jobs/{job}/live"))
+        match self
+            .request(&agent, "POST", &format!("/jobs/{job}/live"))
             .set("Content-Type", "application/octet-stream")
-            .send(body)?;
-        Ok(())
+            .send(body)
+        {
+            Ok(_) => Ok(()),
+            // When the job ends first (stopped, taken over, or no audio for
+            // a while), the server answers and hangs up while we're still
+            // sending, so its answer shows up as a broken pipe. Tell that
+            // apart from a server we really can't reach by asking after the job.
+            Err(ureq::Error::Transport(_)) if self.job_winding_down(job) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn follow(&self, on: FeedFn) {

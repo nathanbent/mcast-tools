@@ -23,7 +23,7 @@ impl From<LiveError> for ApiError {
 /// `POST /jobs/{id}/live`: the request body, as it arrives, is the page's
 /// audio (16-bit little-endian PCM at the source's rate and channels). When
 /// the body ends, so does the page, with its end chime; if the job is
-/// stopped first, the reply comes then.
+/// stopped first, or the server is shutting down, the reply comes then.
 pub(crate) async fn stream_live(
     State(s): State<AppState>,
     Path(id): Path<JobId>,
@@ -32,11 +32,20 @@ pub(crate) async fn stream_live(
     let feed = s.0.jobs.live_feed(id)?;
     let mut stream = body.into_data_stream();
     let mut bytes = 0u64;
+    let closing = s.0.closing.clone();
     let result = loop {
         if feed.is_closed() {
             break Err(ApiError::from(LiveError::Ended));
         }
-        // Look up now and then, so a stop is noticed while nothing arrives.
+        // An upload that's still going would hold up a graceful shutdown for
+        // as long as someone talks: end the page instead.
+        if *closing.borrow() {
+            break Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the server is shutting down",
+            ));
+        }
+        // Look up now and then, so a stop (or shutdown) is noticed while nothing arrives.
         let next = tokio::time::timeout(std::time::Duration::from_millis(500), stream.next());
         match next.await {
             Err(_) => continue,
