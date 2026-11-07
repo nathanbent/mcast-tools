@@ -90,6 +90,13 @@ pub struct SenderStats {
     pub capture_dropped: u64,
 }
 
+/// Live counters for a running sender, readable from another thread.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub packets: AtomicU64,
+    pub send_errors: AtomicU64,
+}
+
 /// Result of measuring a file's loudness before sending.
 #[derive(Debug, Clone, Copy)]
 pub struct LoudnessInfo {
@@ -467,7 +474,16 @@ impl Sender {
     }
 
     /// Stream until the source ends, `duration` elapses, or `stop` is set.
-    pub fn run(mut self, stop: &AtomicBool) -> Result<SenderStats> {
+    pub fn run(self, stop: &AtomicBool) -> Result<SenderStats> {
+        self.run_with_progress(stop, Arc::default())
+    }
+
+    /// Like [`Sender::run`], updating `progress` as packets go out.
+    pub fn run_with_progress(
+        mut self,
+        stop: &AtomicBool,
+        progress: Arc<Progress>,
+    ) -> Result<SenderStats> {
         // Announces until dropped at the end of `run`, then sends a SAP deletion.
         let _announcer = match &self.announce {
             Some((net, interval)) => Some(
@@ -487,6 +503,7 @@ impl Sender {
             ptime: self.ptime,
             limit: None,
             stats: SenderStats::default(),
+            progress,
             fatal: None,
         };
         let (rate, src_channels) = self.source_format;
@@ -660,6 +677,7 @@ struct Output {
     ptime: Duration,
     limit: Option<u64>,
     stats: SenderStats,
+    progress: Arc<Progress>,
     fatal: Option<anyhow::Error>,
 }
 
@@ -684,13 +702,19 @@ impl Output {
         }
         match &mut self.target {
             Target::Network(socket) => match socket.send(pkt) {
-                Ok(_) => self.stats.packets += 1,
+                Ok(_) => {
+                    self.stats.packets += 1;
+                    self.progress.packets.store(self.stats.packets, Ordering::Relaxed);
+                }
                 // Transient conditions (full buffers, no route yet) shouldn't kill a stream.
                 Err(e)
                     if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
                         || e.raw_os_error() == Some(105) /* ENOBUFS */ =>
                 {
-                    self.stats.send_errors += 1
+                    self.stats.send_errors += 1;
+                    self.progress
+                        .send_errors
+                        .store(self.stats.send_errors, Ordering::Relaxed);
                 }
                 Err(e) => self.fatal = Some(anyhow::Error::from(e).context("sending packet")),
             },
@@ -714,7 +738,12 @@ impl Output {
                         Ok(())
                     });
                 match result {
-                    Ok(()) => self.stats.packets += 1,
+                    Ok(()) => {
+                        self.stats.packets += 1;
+                        self.progress
+                            .packets
+                            .store(self.stats.packets, Ordering::Relaxed);
+                    }
                     Err(e) => self.fatal = Some(e.context("rendering")),
                 }
             }

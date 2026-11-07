@@ -251,6 +251,35 @@ Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   163
 
 TTL and DSCP are reported on Linux.
 
+## API server
+
+`mcast serve` runs everything above as a long-lived service with an HTTP/JSON
+API, for web front ends, home automation, or scripts on other machines:
+
+```bash
+mcast serve                                          # http://127.0.0.1:8650/api/v1
+MCAST_TOKEN=change-me mcast serve --listen 0.0.0.0:8650
+```
+
+```bash
+curl -H "Authorization: Bearer change-me" -T page.mp3 http://pager:8650/api/v1/media/page.mp3
+```
+
+```bash
+curl -H "Authorization: Bearer change-me" -H "Content-Type: application/json" \
+  -d '{"group": "239.192.2.1:10000", "encoding": "g711u", "mode": "voice", "chime": "default",
+       "lead_in_ms": 1000, "tos": 184, "source": {"type": "file", "path": "page.mp3"}}' \
+  http://pager:8650/api/v1/senders
+```
+
+It keeps a list of SAP-announced streams, runs the stream monitor, and
+streams job progress and changes as server-sent events (`GET /api/v1/events`).
+A page to a group that one of its jobs is already sending to is refused with
+`409 Conflict`. Audio files are uploaded to its media directory
+(`~/.local/share/mcast/media` by default) and named by file name in requests.
+Listening on anything but loopback requires a token. See
+[docs/api.md](docs/api.md) for every route and field.
+
 ## Layout
 
 | Crate | Purpose |
@@ -258,6 +287,8 @@ TTL and DSCP are reported on Linux.
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
+| `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
+| `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
 
