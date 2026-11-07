@@ -604,8 +604,10 @@ A page to a group that one of its jobs is already sending to is refused with
 Listening on anything but loopback requires a token. See
 [docs/api.md](docs/api.md) for every route and field.
 
-The GUI pages from uploaded files, live input, a test tone or the chord pad, shows what's
-playing with a stop button, lists announced streams with a Listen button, and
+The GUI pages from uploaded files, live input, a test tone or the chord pad;
+chats on real-time text channels; sends files and pictures and receives them
+into its media list (with thumbnails); shows what's playing with a stop
+button; lists announced streams with Listen, Join and Receive buttons; and
 shows the monitor with level meters. It asks for the token if one is set.
 `--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
 the GUI's files from disk, so edits show up on reload without rebuilding.
@@ -617,8 +619,9 @@ ssh pager mcast tui                                  # the server on that box
 MCAST_TOKEN=change-me mcast tui --url http://pager:8650
 ```
 
-Tabs for what's playing, announced streams, the monitor and media; `p` opens
-the page form, `?` lists the keys. Like the web GUI, it's a client of the
+Tabs for what's playing, text chat, announced streams, the monitor and
+media (send and receive files there too); `p` opens the page form, `?`
+lists the keys. Like the web GUI, it's a client of the
 API: it needs `mcast serve` running, and every client sees the same jobs.
 
 ## Layout

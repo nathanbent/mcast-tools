@@ -2,6 +2,7 @@
 //! the API, so it can run on the server (e.g. over SSH) or anywhere that can
 //! reach it, and it sees the same jobs as every other client.
 
+mod actions;
 mod api;
 mod app;
 mod form;

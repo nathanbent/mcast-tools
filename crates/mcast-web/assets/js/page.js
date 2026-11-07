@@ -15,6 +15,8 @@ const CODECS = [
   ["g722", "G.722 wideband"], ["opus", "Opus"], ["l16", "L16 (AES67)"], ["l24", "L24 (AES67)"],
 ];
 
+const AUDIO = /\.(wav|mp3|flac|ogg|oga|m4a|aac|mp4|alac)$/i;
+
 let form;
 let values = { ...DEFAULTS, ...saved.get("page", {}) };
 
@@ -95,14 +97,15 @@ async function stopJob(id) {
 }
 
 function sourceFields() {
-  const files = state.media.map((m) => [m.name, m.name]);
+  // Only audio can be paged; pictures and other files are sent under Files.
+  const files = state.media.filter((m) => AUDIO.test(m.name)).map((m) => [m.name, m.name]);
   const inputs = state.devices.filter((d) => d.kind === "input").map((d) => [d.name, d.name]);
   switch (values.source) {
     case "file":
       return [
         files.length
           ? field("File", select("file", files))
-          : h("p", { class: "muted" }, "No audio uploaded yet; add some under Media."),
+          : h("p", { class: "muted" }, "No audio files yet; add some under Media."),
         field("", h("span", { class: "check" }, bind("loop", { type: "checkbox" }), " Loop")),
       ];
     case "capture":

@@ -9,8 +9,10 @@ pub mod request;
 pub mod watch;
 
 pub use announcements::{Announced, Announcements};
-pub use jobs::{JobId, JobInfo, JobState, Jobs, StartError};
-pub use request::{RecvRequest, SendRequest};
+pub use jobs::{
+    JobId, JobInfo, JobKind, JobState, Jobs, ReceivedFile, StartError, TextError, TextLine,
+};
+pub use request::{FileRecvRequest, FileSendRequest, RecvRequest, SendRequest, TextRequest};
 pub use watch::{MonitorSnapshot, Watch};
 
 use serde::Serialize;
@@ -42,6 +44,15 @@ pub enum Event {
     },
     Monitor {
         snapshot: MonitorSnapshot,
+    },
+    /// A line of text, received on a text channel or typed into one.
+    TextLine {
+        line: jobs::TextLine,
+    },
+    /// A file finished arriving and was saved.
+    FileReceived {
+        job: JobId,
+        file: jobs::ReceivedFile,
     },
 }
 

@@ -1,9 +1,13 @@
 // Uploaded audio: drop files in, page them, delete them.
 
-import { api, upload } from "./api.js";
+import { api, mediaUrl, upload } from "./api.js";
 import { h, replace, bytes, toast } from "./dom.js";
 import { state, subscribe, refresh } from "./store.js";
 import { useFile } from "./page.js";
+import { useFile as sendFile } from "./files.js";
+
+const PICTURE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+const AUDIO = /\.(wav|mp3|flac|ogg|oga|m4a|aac|mp4|alac)$/i;
 
 // Server-side names are plain file names without a leading dot.
 function safeName(name) {
@@ -38,16 +42,21 @@ async function remove(name) {
 function render(list) {
   replace(list, state.media.length
     ? h("ul", { class: "media" }, state.media.map((m) => h("li", {},
-        h("span", { class: "name" }, m.name),
+        PICTURE.test(m.name)
+          ? h("a", { href: mediaUrl(m.name), target: "_blank", rel: "noopener" },
+              h("img", { class: "thumb", src: mediaUrl(m.name), alt: "", loading: "lazy" }))
+          : h("span", { class: "thumb none", "aria-hidden": "true" }),
+        h("a", { class: "name", href: mediaUrl(m.name), download: m.name, title: "Download" }, m.name),
         h("span", { class: "muted small" }, bytes(m.bytes)),
-        h("button", { onclick: () => useFile(m.name) }, "Page this"),
+        AUDIO.test(m.name) && h("button", { onclick: () => useFile(m.name) }, "Page this"),
+        h("button", { onclick: () => sendFile(m.name) }, "Send as file"),
         h("button", { class: "danger subtle", "aria-label": `Delete ${m.name}`, onclick: () => remove(m.name) }, "Delete"))))
     : h("p", { class: "muted" }, "No files yet."));
 }
 
 export function mount(el) {
   const status = h("div", { class: "muted small", "aria-live": "polite" });
-  const input = h("input", { type: "file", accept: "audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac", multiple: true,
+  const input = h("input", { type: "file", multiple: true,
     hidden: true, onchange: (e) => { add([...e.target.files], status); e.target.value = ""; } });
   const drop = h("div", { class: "drop", tabindex: 0, role: "button",
       onclick: () => input.click(),
@@ -55,7 +64,8 @@ export function mount(el) {
       ondragover: (e) => { e.preventDefault(); drop.classList.add("over"); },
       ondragleave: () => drop.classList.remove("over"),
       ondrop: (e) => { e.preventDefault(); drop.classList.remove("over"); add([...e.dataTransfer.files], status); } },
-    "Drop audio files here, or click to choose", h("small", {}, "WAV, MP3, FLAC, Ogg, AAC/M4A"));
+    "Drop files here, or click to choose",
+    h("small", {}, "Audio to page (WAV, MP3, FLAC, Ogg, AAC/M4A), or any file or picture to send"));
   const list = h("div");
   el.append(drop, input, status, list);
   render(list);

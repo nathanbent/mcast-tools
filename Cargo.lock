@@ -1189,7 +1189,9 @@ dependencies = [
  "anyhow",
  "mcast-audio",
  "mcast-core",
+ "mcast-file",
  "mcast-monitor",
+ "mcast-text",
  "serde",
  "serde_json",
 ]

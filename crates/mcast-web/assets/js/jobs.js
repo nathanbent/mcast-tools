@@ -13,6 +13,19 @@ async function stop(id) {
 
 function stats(job) {
   const s = job.stats || {};
+  if (job.kind === "text") {
+    return `${s.lines_sent ?? 0} sent · ${s.lines_received ?? 0} received · ${s.senders ?? 0} others heard`;
+  }
+  if (job.kind === "file_send") {
+    if (!s.file) return "starting";
+    const of = s.count > 1 ? ` (${s.index} of ${s.count})` : "";
+    const pct = s.total ? ` · ${Math.min(100, Math.round((s.sent * 100) / s.total))} %` : "";
+    return `${s.file}${of}${s.looping ? " · looping" : pct} · ${s.sent} packets`;
+  }
+  if (job.kind === "file_recv") {
+    const now = s.receiving ? `receiving ${s.receiving} (${s.percent ?? 0} %)` : "waiting for files";
+    return `${now} · ${s.received ?? 0} saved${s.failed ? ` · ${s.failed} failed` : ""}`;
+  }
   if (job.kind === "send") {
     const parts = [seconds(s.seconds || 0), `${s.packets ?? 0} packets`];
     if (s.send_errors) parts.push(`${s.send_errors} send errors`);
@@ -23,8 +36,10 @@ function stats(job) {
   return parts.join(" · ");
 }
 
+const VERBS = { send: "Paging", recv: "Playing", text: "Text", file_send: "Sending files", file_recv: "Receiving files" };
+
 function title(job) {
-  const verb = job.kind === "send" ? "Paging" : "Playing";
+  const verb = VERBS[job.kind] ?? job.kind;
   return `${verb} ${job.name ? `“${job.name}”` : job.group ?? ""}`;
 }
 

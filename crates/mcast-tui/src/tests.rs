@@ -2,6 +2,7 @@
 
 use crate::api::{Client, Feed};
 use crate::app::{App, Mode, Msg, Tab};
+use crate::form::FormKind;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -93,10 +94,10 @@ fn pages_and_sees_the_overlap() {
 
     // Page a tone from the form.
     key(&mut app, KeyCode::Char('p'));
-    assert_eq!(app.mode, Mode::Page);
-    app.form.set("source", "tone");
-    app.form.set("group", "239.255.77.61:5004");
-    app.form.set("chime", "false");
+    assert_eq!(app.mode, Mode::Form(FormKind::Page));
+    app.forms.page.set("source", "tone");
+    app.forms.page.set("group", "239.255.77.61:5004");
+    app.forms.page.set("chime", "false");
     key(&mut app, KeyCode::Enter);
     pump(&mut app, &rx, "the page to start", |a| !a.busy);
     assert_eq!(app.mode, Mode::Normal, "{:?}", app.status);
@@ -139,7 +140,11 @@ fn draws_every_screen_at_any_size() {
     });
     for mode in [
         Mode::Normal,
-        Mode::Page,
+        Mode::Form(FormKind::Page),
+        Mode::Form(FormKind::Text),
+        Mode::Form(FormKind::SendFiles),
+        Mode::Form(FormKind::ReceiveFiles),
+        Mode::Compose("hello".into()),
         Mode::Help,
         Mode::Upload("/tmp/x".into()),
         Mode::ConfirmDelete("a.wav".into()),
@@ -176,8 +181,8 @@ fn uploads_and_pages_from_the_media_tab() {
     pump(&mut app, &rx, "the upload", |a| !a.media.is_empty());
     std::fs::remove_file(&wav).unwrap();
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.mode, Mode::Page);
-    assert_eq!(app.form.get("file"), app.media[0].name);
+    assert_eq!(app.mode, Mode::Form(FormKind::Page));
+    assert_eq!(app.forms.page.get("file"), app.media[0].name);
     key(&mut app, KeyCode::Esc);
     key(&mut app, KeyCode::Char('d'));
     key(&mut app, KeyCode::Char('y'));
@@ -207,4 +212,118 @@ fn reports_a_lost_server() {
         rx.recv_timeout(Duration::from_secs(10)),
         Ok(Feed::Disconnected(_))
     ));
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        key(app, KeyCode::Char(c));
+    }
+}
+
+#[test]
+fn chats_and_sends_files_by_keyboard() {
+    let srv = server(None);
+    let (mut app, rx) = app(&srv.url);
+    pump(&mut app, &rx, "the event stream", |a| a.connection.is_ok());
+
+    // Join a channel from the Text tab (j), as a listener and as a talker.
+    app.tab = Tab::Text;
+    assert!(screen(&app, 100, 12).contains("No text channel open"));
+    let group = "239.255.77.62:5004";
+    app.forms.text.set("group", group);
+    app.forms.text.set("name", "ear");
+    app.forms.text.set("listen", "true");
+    key(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.mode, Mode::Form(FormKind::Text));
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the listener", |a| {
+        !a.busy && a.channels().len() == 1
+    });
+    let ear = app.channels()[0].id;
+    app.forms.text.set("name", "desk");
+    app.forms.text.set("listen", "false");
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the talker", |a| {
+        !a.busy && a.channels().len() == 2
+    });
+    assert_eq!(app.tab, Tab::Text);
+    let desk = app.current_channel().unwrap().id;
+    assert_ne!(desk, ear);
+
+    // Type a message: Enter sends and stays ready for the next.
+    key(&mut app, KeyCode::Char('i'));
+    type_text(&mut app, "hello from the tui");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Compose(String::new()));
+    key(&mut app, KeyCode::Esc);
+    pump(&mut app, &rx, "the line to be heard", |a| {
+        a.texts.get(&ear).is_some_and(|l| !l.is_empty())
+    });
+    assert_eq!(app.texts[&ear][0].text, "hello from the tui");
+    let s = screen(&app, 100, 12);
+    assert!(
+        s.contains("desk: hello from the tui") && s.contains("2 channels"),
+        "{s}"
+    );
+    // Switch to the listener: it can't be typed into.
+    key(&mut app, KeyCode::Char(']'));
+    assert_eq!(app.current_channel().unwrap().id, ear);
+    key(&mut app, KeyCode::Char('i'));
+    assert_eq!(app.mode, Mode::Normal);
+    assert!(screen(&app, 100, 12).contains("desk: hello from the tui"));
+
+    // Files: upload, receive (r), send the selected file (f).
+    let src = srv
+        .dir
+        .join("..")
+        .join(format!("mcast-tui-pic-{}.png", mcast_core::random_u32()));
+    std::fs::write(&src, vec![7u8; 20_000]).unwrap();
+    app.tab = Tab::Media;
+    key(&mut app, KeyCode::Char('u'));
+    type_text(&mut app, src.to_str().unwrap());
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the upload", |a| a.media.len() == 1);
+    std::fs::remove_file(&src).unwrap();
+    // Pictures can't be paged.
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.mode, Mode::Normal);
+    let files_group = "239.255.77.63:5004";
+    key(&mut app, KeyCode::Char('r'));
+    assert_eq!(app.mode, Mode::Form(FormKind::ReceiveFiles));
+    app.forms.receive.set("group", files_group);
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the receiver", |a| {
+        !a.busy && a.mode == Mode::Normal
+    });
+    app.tab = Tab::Media;
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.mode, Mode::Form(FormKind::SendFiles));
+    assert_eq!(app.forms.send.get("file"), app.media[0].name);
+    app.forms.send.set("group", files_group);
+    app.forms.send.set("rate", "20000");
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the copy to arrive", |a| a.media.len() == 2);
+    let copy = app
+        .media
+        .iter()
+        .find(|m| m.name.contains("-2.png"))
+        .map(|m| m.name.clone());
+    assert!(
+        copy.is_some(),
+        "received copy saved under a new name: {:?}",
+        app.media
+    );
+    let s = screen(&app, 120, 30);
+    assert!(s.contains(&copy.unwrap()), "{s}");
+}
+
+#[test]
+fn help_fits_a_normal_terminal() {
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new(Client::new("http://127.0.0.1:1", None), tx);
+    app.mode = Mode::Help;
+    let s = screen(&app, 140, 24);
+    // Both ends of the list are on screen.
+    assert!(s.contains("switch tab") && s.contains("Esc closes"), "{s}");
 }

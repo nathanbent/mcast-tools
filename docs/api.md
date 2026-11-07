@@ -27,10 +27,10 @@ Errors are JSON: `{"error": "message"}`.
 |---|---|
 | 401 | Missing or wrong token |
 | 404 | No such job, media file or route |
-| 409 | A page to a group already being sent to (adds `"job": ID`, the job sending there) |
+| 409 | Sending to a group another job is already sending to (adds `"job": ID`, the job sending there); text to a channel that has ended |
 | 413 | Upload over `--max-upload-mb` |
 | 415 / 400 | Not JSON / malformed JSON |
-| 422 | Invalid request: unknown field, bad value, missing media file, unknown device |
+| 422 | Invalid request: unknown field, bad value, missing media file, unknown device, no such announced stream |
 
 ## Routes
 
@@ -45,7 +45,13 @@ Errors are JSON: `{"error": "message"}`.
 | DELETE | `/jobs/{id}` | Stop a job; waits up to 3 s and returns it (`stopping` if still winding down) |
 | POST | `/senders` | Start sending (body: send request). `201` with the job |
 | POST | `/receivers` | Start receiving (body: receive request). `201` with the job |
+| POST | `/texts` | Join a text channel (body: text request). `201` with the job |
+| POST | `/jobs/{id}/text` | `{"text": "..."}`: send on a text channel, a line per line. Returns the lines |
+| GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
+| POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
+| POST | `/file-receivers` | Receive files into the media directory (body: file receive request). `201` with the job |
 | GET | `/media` | `[{"name", "bytes", "modified_ms"}]` |
+| GET | `/media/{name}` | Download a file. Pictures and audio come with their type; anything else downloads as `application/octet-stream`, so nothing received can run in a browser |
 | PUT | `/media/{name}` | Upload a file (raw body). Replaces any file of that name |
 | DELETE | `/media/{name}` | Delete a file |
 | GET | `/events` | Server-sent events (below) |
@@ -89,9 +95,28 @@ Every field is optional; the defaults match `mcast audio send`.
 File and chime paths are names of uploaded media files. `render` exists in
 the request type but is only available from the CLI.
 
-**Overlapping pages:** a send request to a group (address *and* port) that
-another job of this server is sending to gets `409`. Stop that job first.
-Senders elsewhere on the network aren't checked.
+A page from an uploaded file, with a chime and voice processing for phones:
+
+```bash
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"group": "239.192.2.1:10000", "encoding": "g711u", "mode": "voice", "chime": "default",
+       "lead_in_ms": 800, "tos": 184, "source": {"type": "file", "path": "page.mp3"}}' \
+  http://127.0.0.1:8650/api/v1/senders
+```
+
+The chord pad for 30 seconds, to check speakers and levels on another zone:
+
+```bash
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"group": "239.192.2.2:10000", "encoding": "g722", "mode": "music",
+       "source": {"type": "pad", "level_dbfs": -18}, "duration_s": 30}' \
+  http://127.0.0.1:8650/api/v1/senders
+```
+
+**Overlapping senders:** a request that would send to a group (address
+*and* port) another job of this server is sending to, whether a page, a
+text channel or a file sender, gets `409`. Stop that job first. Senders
+elsewhere on the network aren't checked.
 
 ## Receive request
 
@@ -114,6 +139,71 @@ Senders elsewhere on the network aren't checked.
 
 Recording to WAV is CLI-only.
 
+## Text request
+
+A text channel sends what clients post to `/jobs/{id}/text` and reports
+everyone else's real-time text as lines (`text_line` events, and
+`GET /jobs/{id}/text`). It returns once it's listening. Every field is optional.
+
+| Field | Default | |
+|---|---|---|
+| `group` | | Channel group; otherwise `stream`, else `"239.69.1.1:5004"` |
+| `stream` | | Join the announced text stream whose name contains this |
+| `name` | host name | Our name, shown to the others over RTCP |
+| `send` | `true` | `false` only listens (and doesn't reserve the group) |
+| `sap` | `false` | Announce our text with SAP under `name` |
+| `sap_group`, `sap_interval_s` | from scope, `5` | |
+| `redundancy` | `true` | Repeat each packet's text in the next two (RFC 2198) |
+| `t140_pt`, `red_pt` | `98`, `100` | With `group` |
+| `interface`, `ttl`, `loopback`, `tos` | | As for senders |
+| `rtcp`, `rtcp_interval_s` | `true`, `5` | |
+
+```bash
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "Front desk"}' http://127.0.0.1:8650/api/v1/texts
+curl -H "Authorization: Bearer $MCAST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"text": "Fire drill at 3pm"}' http://127.0.0.1:8650/api/v1/jobs/1/text
+```
+
+A line is `{"job", "from", "ssrc", "text", "own", "at_ms"}`: `from` is the
+sender's RTCP name (or address until it's known), and `own` marks lines
+typed here.
+
+## File send request
+
+Sends media files one after another; the last can loop so late joiners get
+it too. Files are read before anything is sent, so a missing one fails the
+request.
+
+| Field | Default | |
+|---|---|---|
+| `files` | (required) | Media file names |
+| `group` | `"239.69.2.1:5004"` | |
+| `rate_kbps` | `2000` | Keep it modest on networks that also carry voice |
+| `redundancy` | `0.5` | Extra repair data per file (0.5 sends 1.5x the file) |
+| `loop` | `false` | Keep sending the last file until stopped |
+| `name` | `"<hostname> files"` | SAP session name |
+| `sap`, `sap_group`, `sap_interval_s` | `true`, from scope, `5` | |
+| `payload_type` | `110` | |
+| `interface`, `ttl`, `loopback`, `tos`, `rtcp`, `rtcp_interval_s` | | As for senders |
+
+## File receive request
+
+Saves each file that arrives (and passes its checksum) into the media
+directory under a safe name: no directories or hidden names, and `-2`,
+`-3`... instead of replacing a file already there. Received files can be
+downloaded, paged, or sent on. Each one is reported as a `file_received`
+event.
+
+| Field | Default | |
+|---|---|---|
+| `group` | | Otherwise `stream`, else `"239.69.2.1:5004"` |
+| `stream` | | The announced file stream whose name contains this |
+| `max_size_mb` | 100, or `--max-upload-mb` if smaller | Refuse larger files; can't exceed `--max-upload-mb` |
+| `payload_type` | `110` | With `group` |
+| `name` | host name | Our name in RTCP receiver reports |
+| `interface`, `rtcp`, `rtcp_interval_s` | | |
+
 ## Jobs
 
 ```json
@@ -128,13 +218,20 @@ Recording to WAV is CLI-only.
 }
 ```
 
-`state` is `starting`, `running`, `stopping`, `finished` (source ended),
+`kind` is `send` (audio), `recv` (audio), `text`, `file_send` or
+`file_recv`. `state` is `starting`, `running`, `stopping`, `finished` (source ended),
 `stopped` (on request) or `failed` (see `error`). Receive jobs' `stats` are
 `packets`, `lost`, `concealed`, `late`, `invalid`, `underruns`, `overflows`,
 `buffered_ms`, and `transit_ms` (from the sender's RTCP: time from the
 sender's clock to arrival, `null` until a report arrives; only a true delay
 when both clocks are synced). The sender's RTCP name and BYE appear in
 `notes`.
+
+Text jobs' `stats`: `lines_sent`, `lines_received`, `chars_sent`,
+`packets_sent`, `senders`. File send: `file`, `index` and `count` (which
+file of how many), `sent`, `needed` (packets that hold the file) and
+`total` (`null` while looping), `looping`. File receive: `receiving` and
+`percent` (the file arriving now), `received`, `failed`.
 
 ## Streams
 
@@ -143,9 +240,14 @@ when both clocks are synced). The sender's RTCP name and BYE appear in
   "name": "Lobby page", "origin": "192.0.2.2", "from": "192.0.2.2:41000",
   "audio": {"group": "239.192.2.1:10000", "payload_type": 0, "encoding": "PCMU",
             "sample_rate": 8000, "channels": 1, "ptime_ms": 20.0, "playable": true},
+  "text": null, "file": null,
   "sdp": "v=0\r\n..."
 }
 ```
+
+A text stream has `"text": {"group", "t140_pt", "red_pt"}` and a file
+stream `"file": {"group", "payload_type"}`; join or receive them by `stream`
+name.
 
 ## Monitor
 
@@ -168,6 +270,8 @@ its data is JSON with that `type` too:
 | `stream_added`, `stream_changed` | `{"stream": STREAM}` |
 | `stream_removed` | `{"stream": STREAM, "reason": "deleted"\|"expired"}` |
 | `monitor` | `{"snapshot": SNAPSHOT}`, every second |
+| `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one |
+| `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
 | `lagged` | `{"missed": N}`: the client fell behind; refetch the lists |
 
 Fetch the lists first, then apply events. For example:
