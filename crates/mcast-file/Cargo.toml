@@ -1,0 +1,13 @@
+[package]
+name = "mcast-file"
+description = "Send files and pictures over multicast with RaptorQ fountain codes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+crc32fast.workspace = true
+image.workspace = true
+mcast-core.workspace = true
+raptorq.workspace = true

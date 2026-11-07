@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use mcast_audio::codec::{OpusBandwidth, OpusMode};
 use mcast_audio::process::Mode;
 use mcast_audio::{receiver, sender, Codec, StreamInfo, StreamSpec};
+use mcast_control::request::hostname;
 use mcast_control::request::{ChimeRequest, SinkRequest, SourceRequest, DEFAULT_GROUP};
 use mcast_control::{describe, RecvRequest, SendRequest};
 use mcast_core::sap::{self, Directory, DirectoryEvent};
@@ -14,7 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod file;
 mod presets;
+mod text;
 mod update;
 
 #[derive(Parser)]
@@ -31,6 +34,12 @@ enum Command {
     /// Audio over RTP multicast: send, receive, discover
     #[command(subcommand)]
     Audio(AudioCommand),
+    /// Real-time text (T.140) over RTP multicast: send, receive, chat
+    #[command(subcommand)]
+    Text(text::TextCommand),
+    /// Files and pictures over multicast (RaptorQ fountain code): send, receive, show
+    #[command(subcommand)]
+    File(file::FileCommand),
     /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
     Monitor(MonitorArgs),
     /// Save options for `audio send`, `recv`, `discover`, `monitor` or `update` under a name; run with `mcast @NAME`
@@ -131,7 +140,7 @@ enum AudioCommand {
     Send(SendArgs),
     /// Play (or record) a stream; finds one via SAP unless --group is given
     Recv(RecvArgs),
-    /// List audio streams announced with SAP
+    /// List streams announced with SAP (audio, text and files)
     Discover(DiscoverArgs),
     /// List audio input and output devices
     Devices,
@@ -148,6 +157,19 @@ struct NetArgs {
     /// Don't loop packets back to receivers on this host
     #[arg(long)]
     no_loopback: bool,
+}
+
+impl NetArgs {
+    /// Socket options for `group` (text and file commands; audio goes
+    /// through `SendRequest`/`RecvRequest`, which do the same).
+    fn options(&self, group: SocketAddr) -> Result<mcast_core::MulticastOptions> {
+        mcast_control::request::NetRequest {
+            interface: Some(self.iface),
+            ttl: self.ttl,
+            loopback: !self.no_loopback,
+        }
+        .options(group, Interface::Any)
+    }
 }
 
 #[derive(Args)]
@@ -179,6 +201,22 @@ impl SapListenArgs {
         };
         // Forget sessions that stop announcing (senders re-announce every few seconds to ~minutes).
         Ok(Directory::open(&groups, iface, Duration::from_secs(300))?)
+    }
+}
+
+#[derive(Args)]
+struct RtcpArgs {
+    /// Don't send or listen for RTCP (sender/receiver reports on the RTP port + 1)
+    #[arg(long)]
+    no_rtcp: bool,
+    /// Average seconds between RTCP reports
+    #[arg(long, default_value_t = 5.0, value_name = "SECS")]
+    rtcp_interval: f64,
+}
+
+impl RtcpArgs {
+    fn interval(&self) -> Option<Duration> {
+        (!self.no_rtcp).then(|| Duration::from_secs_f64(self.rtcp_interval.max(0.1)))
     }
 }
 
@@ -285,6 +323,8 @@ struct SendArgs {
     /// Also write the stream's SDP to this file (for ffplay, VLC, etc.)
     #[arg(long, value_name = "FILE")]
     sdp: Option<PathBuf>,
+    #[command(flatten)]
+    rtcp: RtcpArgs,
 }
 
 /// `--tone` value: a sine frequency or the pad.
@@ -345,6 +385,11 @@ struct RecvArgs {
     /// Seconds between stats lines (0 to disable)
     #[arg(long, default_value_t = 2.0)]
     stats: f64,
+    /// Name to report ourselves as over RTCP, e.g. the room [default: hostname]
+    #[arg(short, long)]
+    name: Option<String>,
+    #[command(flatten)]
+    rtcp: RtcpArgs,
 }
 
 #[derive(Args)]
@@ -455,6 +500,8 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Send(a)) => audio_send(a, &stop),
         Command::Audio(AudioCommand::Recv(a)) => audio_recv(a, &stop),
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
+        Command::Text(c) => text::run(c, &stop),
+        Command::File(c) => file::run(c, &stop),
         Command::Monitor(a) => monitor(a, &stop),
         Command::Preset(c) => preset(c),
         Command::Update(a) => update::run(a),
@@ -602,6 +649,8 @@ fn send_request(a: &SendArgs) -> Result<SendRequest> {
         sap: !a.no_sap,
         sap_group: a.sap_group,
         sap_interval_s: a.sap_interval,
+        rtcp: !a.rtcp.no_rtcp,
+        rtcp_interval_s: a.rtcp.rtcp_interval,
     })
 }
 
@@ -649,6 +698,9 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
             eprintln!("receive with: {cmd}");
         }
     }
+    if let Some(g) = s.rtcp_group() {
+        eprintln!("RTCP sender reports on {g} (--no-rtcp to turn off)");
+    }
     let stats = s.run(stop)?;
     eprintln!(
         "sent {} packets ({:.1}s of audio), {} send errors",
@@ -685,6 +737,9 @@ fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
         },
         duration_s: a.duration,
         stats_interval_s: a.stats,
+        rtcp: !a.rtcp.no_rtcp,
+        rtcp_interval_s: a.rtcp.rtcp_interval,
+        name: a.name.clone(),
     };
     let resolved = match req.direct() {
         Some(r) => {
@@ -744,6 +799,20 @@ fn audio_recv(a: RecvArgs, stop: &AtomicBool) -> Result<()> {
         receiver::Event::DecodeError { message } => {
             eprintln!("warning: {message}; check --encoding/--rate/--channels")
         }
+        receiver::Event::SenderInfo { ssrc, cname, name } => {
+            let who = match (name, cname) {
+                (Some(n), Some(c)) => format!("\"{n}\" ({c})"),
+                (Some(n), None) => format!("\"{n}\""),
+                (None, Some(c)) => c,
+                (None, None) => "sender".into(),
+            };
+            eprintln!("rtcp: ssrc {ssrc:08x} is {who}")
+        }
+        receiver::Event::Bye { ssrc, reason } => match reason {
+            Some(r) => eprintln!("rtcp: ssrc {ssrc:08x} ended the stream: {r}"),
+            None => eprintln!("rtcp: ssrc {ssrc:08x} ended the stream"),
+        },
+        receiver::Event::Warning { message } => eprintln!("warning: {message}"),
     })?;
     eprintln!("done: {}", format_stats(&stats));
     Ok(())
@@ -762,9 +831,14 @@ fn audio_discover(a: DiscoverArgs, stop: &AtomicBool) -> Result<()> {
                 DirectoryEvent::Deleted(s) => ("-", s, " (ended)"),
                 DirectoryEvent::Expired(s) => ("-", s, " (timed out)"),
             };
-            let desc = match StreamInfo::from_sdp(&s.sdp) {
-                Some(info) => info.to_string(),
-                None => format!("\"{}\" (no audio stream)", s.sdp.name),
+            let desc = if let Some(info) = StreamInfo::from_sdp(&s.sdp) {
+                info.to_string()
+            } else if let Some(text) = mcast_text::TextInfo::from_sdp(&s.sdp) {
+                text.to_string()
+            } else if let Some(file) = mcast_file::FileInfo::from_sdp(&s.sdp) {
+                file.to_string()
+            } else {
+                format!("\"{}\" (no stream we know)", s.sdp.name)
             };
             println!("{mark} {desc} from {}{why}", s.origin);
             if a.sdp && matches!(event, DirectoryEvent::Added(_) | DirectoryEvent::Changed(_)) {
@@ -778,7 +852,7 @@ fn audio_discover(a: DiscoverArgs, stop: &AtomicBool) -> Result<()> {
 }
 
 fn format_stats(s: &receiver::ReceiverStats) -> String {
-    format!(
+    let mut line = format!(
         "packets {} lost {} (concealed {}) late {} invalid {} | buffer {:.1}ms underruns {} overflows {}",
         s.packets,
         s.lost,
@@ -788,7 +862,12 @@ fn format_stats(s: &receiver::ReceiverStats) -> String {
         s.buffered.as_secs_f64() * 1000.0,
         s.underruns,
         s.overflows
-    )
+    );
+    if let Some(t) = s.transit_secs {
+        let (t, b) = (t * 1000.0, s.buffered.as_secs_f64() * 1000.0);
+        line += &format!(" | transit {}, playing {} behind sender", ms(t), ms(t + b));
+    }
+    line
 }
 
 fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
@@ -832,6 +911,7 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
         next += interval;
         let rows = m.report();
         let groups = m.groups();
+        let listeners = m.listeners();
         let mut out = std::io::stdout().lock();
         if live {
             write!(out, "\x1b[H\x1b[2J")?;
@@ -841,10 +921,13 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
                 fmt_elapsed(start.elapsed()),
                 rows.len()
             )?;
-            write!(out, "{}", monitor_table(&groups, &rows, true))?;
+            write!(out, "{}", monitor_table(&groups, &rows, &listeners, true))?;
         } else {
             let t = fmt_elapsed(start.elapsed());
-            for line in monitor_table(&groups, &rows, false).lines().skip(1) {
+            for line in monitor_table(&groups, &rows, &listeners, false)
+                .lines()
+                .skip(1)
+            {
                 writeln!(out, "{t}  {line}")?;
             }
         }
@@ -855,7 +938,10 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
         "\nsummary after {} (jitter is the maximum seen):",
         fmt_elapsed(start.elapsed())
     );
-    print!("{}", monitor_table(&m.groups(), &totals, false));
+    print!(
+        "{}",
+        monitor_table(&m.groups(), &totals, &m.listeners(), false)
+    );
     Ok(())
 }
 
@@ -925,6 +1011,7 @@ fn level_meter(dbfs: f64) -> String {
 fn monitor_table(
     groups: &[mcast_monitor::GroupStatus],
     rows: &[mcast_monitor::StreamReport],
+    listeners: &[mcast_monitor::ListenerReport],
     meters: bool,
 ) -> String {
     use std::fmt::Write;
@@ -963,6 +1050,7 @@ fn monitor_table(
                 "waiting for packets".into()
             };
             let _ = writeln!(s, "{label:<30} {:<21} {status}", "-");
+            write_listeners(&mut s, listeners.iter().filter(|l| l.group == g.group));
             continue;
         }
         for (i, r) in mine.iter().enumerate() {
@@ -970,13 +1058,25 @@ fn monitor_table(
             let opt =
                 |v: Option<f64>, unit: &str| v.map_or("-".to_string(), |v| format!("{v:.1}{unit}"));
             let codec = match (&r.codec, r.payload_type, r.is_rtp()) {
+                (_, _, false) if g.kind.is_some() && r.packets < 3 => g.kind.unwrap().to_string(),
                 (_, _, false) => "not RTP".to_string(),
+                (None, _, _) if g.kind.is_some() => g.kind.unwrap().to_string(),
                 (Some(c), _, _) => c.clone(),
                 (None, Some(pt), _) => format!("pt {pt}"),
                 (None, None, _) => "-".into(),
             };
             let dscp = r.dscp().map_or("-".into(), mcast_monitor::dscp_name);
-            let status = if r.idle > Duration::from_secs(2) {
+            let bye = r.rtcp.as_ref().and_then(|x| x.bye.as_ref());
+            let status = if let Some(reason) = bye {
+                match reason {
+                    Some(why) => format!("ended (BYE: {why})"),
+                    None => "ended (BYE)".into(),
+                }
+            } else if g.kind.is_some() && r.idle > Duration::from_secs(1) {
+                format!("idle {}s", r.idle.as_secs())
+            } else if g.kind.is_some() {
+                "active".into()
+            } else if r.idle > Duration::from_secs(2) {
                 format!("no packets for {}s", r.idle.as_secs())
             } else if g.ended {
                 "ended".into()
@@ -1007,9 +1107,105 @@ fn monitor_table(
                 dscp,
                 status
             );
+            if let Some(x) = &r.rtcp {
+                let _ = writeln!(s, "{:<30} {}", "", format_sender_rtcp(x));
+            }
+            write_listeners(
+                &mut s,
+                listeners
+                    .iter()
+                    .filter(|l| l.group == g.group && (l.about.is_none() || l.about == r.ssrc)),
+            );
         }
+        // Listeners reporting on a source we no longer see.
+        let orphans = listeners.iter().filter(|l| {
+            l.group == g.group && l.about.is_some() && !mine.iter().any(|r| r.ssrc == l.about)
+        });
+        write_listeners(&mut s, orphans);
     }
     s
+}
+
+/// Milliseconds with one decimal, without "-0.0".
+fn ms(v: f64) -> String {
+    let v = if v.abs() < 0.05 { 0.0 } else { v };
+    format!("{v:.1}ms")
+}
+
+fn format_sender_rtcp(x: &mcast_monitor::SenderRtcp) -> String {
+    let mut parts = Vec::new();
+    if let Some(who) = x.name.as_ref().or(x.cname.as_ref()) {
+        parts.push(format!("\"{who}\""));
+    }
+    let every = x
+        .interval
+        .map_or(String::new(), |i| format!(" every {:.1}s", i.as_secs_f64()));
+    parts.push(format!("SR{every}, last {}s ago", x.last_report.as_secs()));
+    parts.push(format!("one-way {}", ms(x.one_way_secs * 1000.0)));
+    if let Some(ppm) = x.media_clock_ppm {
+        parts.push(format!("media clock {ppm:+.0} ppm"));
+    }
+    let mut line = format!("└ rtcp: {}", parts.join(", "));
+    if x.last_report > Duration::from_secs(15) && x.bye.is_none() {
+        line += "  (reports stopped)";
+    }
+    line
+}
+
+/// One line per listener, then the spread of their playout delays.
+fn write_listeners<'a>(
+    s: &mut String,
+    listeners: impl Iterator<Item = &'a mcast_monitor::ListenerReport>,
+) {
+    use std::fmt::Write;
+    let listeners: Vec<_> = listeners.collect();
+    for l in &listeners {
+        let mut parts = Vec::new();
+        if let Some(p) = l.loss_percent {
+            parts.push(format!("loss {p:.1}%"));
+        }
+        if let Some(j) = l.jitter_ms {
+            parts.push(format!("jitter {j:.1}ms"));
+        }
+        if let (Some(lat), Some(t), Some(b)) = (l.latency_ms(), l.transit_ms, l.buffered_ms) {
+            parts.push(format!(
+                "plays {} behind (transit {} + buffer {})",
+                ms(lat),
+                ms(t),
+                ms(b)
+            ));
+        }
+        let heard = if l.left {
+            "left".to_string()
+        } else {
+            format!("heard {}s ago", l.last_heard.as_secs())
+        };
+        parts.push(heard);
+        let _ = writeln!(
+            s,
+            "{:<30} └ listener {} ({}): {}",
+            "",
+            truncate(&l.label(), 24),
+            l.from.ip(),
+            parts.join(", ")
+        );
+    }
+    let latencies: Vec<f64> = listeners
+        .iter()
+        .filter(|l| !l.left)
+        .filter_map(|l| l.latency_ms())
+        .collect();
+    if latencies.len() >= 2 {
+        let min = latencies.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = latencies.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let _ = writeln!(
+            s,
+            "{:<30} └ sync: {} listeners within {:.1}ms of each other",
+            "",
+            latencies.len(),
+            max - min
+        );
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {

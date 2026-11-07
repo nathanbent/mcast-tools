@@ -83,6 +83,8 @@ Every field is optional; the defaults match `mcast audio send`.
 | `sap` | `true` | Announce with SAP |
 | `sap_group` | from scope | |
 | `sap_interval_s` | `5` | |
+| `rtcp` | `true` | Send RTCP sender reports (and BYE) on the RTP port + 1 |
+| `rtcp_interval_s` | `5` | Average time between reports |
 
 File and chime paths are names of uploaded media files. `render` exists in
 the request type but is only available from the CLI.
@@ -106,6 +108,9 @@ Senders elsewhere on the network aren't checked.
 | `sink` | default device | `{"type": "play", "device": "Speakers"}` |
 | `duration_s` | | |
 | `stats_interval_s` | `2` | |
+| `rtcp` | `true` | Hear the sender's RTCP and send receiver reports |
+| `rtcp_interval_s` | `5` | |
+| `name` | hostname | Our name in receiver reports, e.g. the room |
 
 Recording to WAV is CLI-only.
 
@@ -126,7 +131,10 @@ Recording to WAV is CLI-only.
 `state` is `starting`, `running`, `stopping`, `finished` (source ended),
 `stopped` (on request) or `failed` (see `error`). Receive jobs' `stats` are
 `packets`, `lost`, `concealed`, `late`, `invalid`, `underruns`, `overflows`,
-`buffered_ms`.
+`buffered_ms`, and `transit_ms` (from the sender's RTCP: time from the
+sender's clock to arrival, `null` until a report arrives; only a true delay
+when both clocks are synced). The sender's RTCP name and BYE appear in
+`notes`.
 
 ## Streams
 

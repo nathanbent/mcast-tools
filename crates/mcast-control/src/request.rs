@@ -7,6 +7,7 @@ use mcast_audio::chime::{Chime, ChimeSource};
 use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
 use mcast_audio::process::{Mode, ProcessOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
+use mcast_core::rtcp::RtcpConfig;
 use mcast_core::sap::{self, Directory, DirectoryEvent};
 use mcast_core::{Interface, MulticastOptions};
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,10 @@ pub struct SendRequest {
     pub sap: bool,
     pub sap_group: Option<SocketAddr>,
     pub sap_interval_s: f64,
+    /// Send RTCP sender reports (and BYE at the end) on the RTP port + 1.
+    pub rtcp: bool,
+    /// Average seconds between RTCP reports.
+    pub rtcp_interval_s: f64,
 }
 
 impl Default for SendRequest {
@@ -221,6 +226,8 @@ impl Default for SendRequest {
             sap: true,
             sap_group: None,
             sap_interval_s: 5.0,
+            rtcp: true,
+            rtcp_interval_s: 5.0,
         }
     }
 }
@@ -303,11 +310,16 @@ impl SendRequest {
                 Some(OpusBandwidth::Narrow | OpusBandwidth::Wide) => OpusMode::Voice,
                 _ => OpusMode::Music,
             });
+        let name = self
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{} audio", hostname()));
+        let rtcp = self.rtcp.then(|| RtcpConfig {
+            name: Some(name.clone()),
+            interval: Duration::from_secs_f64(self.rtcp_interval_s.max(0.1)),
+        });
         let announce = (self.sap && self.render.is_none()).then(|| sender::Announce {
-            name: self
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("{} audio", hostname())),
+            name,
             sap_group: self.sap_group,
             interval: Duration::from_secs_f64(self.sap_interval_s.max(0.5)),
         });
@@ -338,6 +350,7 @@ impl SendRequest {
             tail: ms(self.tail_ms),
             render: self.render.clone(),
             announce,
+            rtcp,
         })
     }
 
@@ -405,6 +418,11 @@ pub struct RecvRequest {
     pub duration_s: Option<f64>,
     /// Seconds between stats updates (0 disables them).
     pub stats_interval_s: f64,
+    /// Listen for the sender's RTCP and send receiver reports (RTP port + 1).
+    pub rtcp: bool,
+    pub rtcp_interval_s: f64,
+    /// Our name in receiver reports, e.g. the room; `None` is the hostname.
+    pub name: Option<String>,
 }
 
 impl Default for RecvRequest {
@@ -425,6 +443,9 @@ impl Default for RecvRequest {
             sink: SinkRequest::default(),
             duration_s: None,
             stats_interval_s: 2.0,
+            rtcp: true,
+            rtcp_interval_s: 5.0,
+            name: None,
         }
     }
 }
@@ -569,6 +590,10 @@ impl RecvRequest {
             } else {
                 Duration::MAX
             },
+            rtcp: self.rtcp.then(|| RtcpConfig {
+                name: Some(self.name.clone().unwrap_or_else(hostname)),
+                interval: Duration::from_secs_f64(self.rtcp_interval_s.max(0.1)),
+            }),
         })
     }
 }

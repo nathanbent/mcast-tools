@@ -1,6 +1,7 @@
 //! Shared building blocks for mcast-tools: multicast sockets, RTP, SAP and SDP.
 
 pub mod net;
+pub mod rtcp;
 pub mod rtp;
 pub mod sap;
 pub mod sdp;

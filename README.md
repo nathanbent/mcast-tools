@@ -1,7 +1,8 @@
 # mcast-tools
 
-A collection of multicast tools, written in Rust. The first set is audio:
-uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
+A collection of multicast tools, written in Rust: audio over RTP multicast
+(the AES67 PCM payloads, plus G.711, G.722 and Opus), real-time text, files
+and pictures, and a stream monitor.
 
 ## Install
 
@@ -357,6 +358,46 @@ audio send
   `ffplay -protocol_whitelist file,udp,rtp stream.sdp` or VLC.
 - ffmpeg can play our streams straight from SAP: `ffplay sap://239.255.255.255`.
 
+### RTCP: heartbeat and sync
+
+Senders and receivers also talk RTCP (RFC 3550) on the RTP port + 1
+(5005 for a stream on 5004). This is the same port ffmpeg's RTP output, and
+so `mcast-play.sh`, has always used.
+
+- **Senders** send a Sender Report about every 5 s. It maps the stream's
+  RTP timestamps to the sender's wall clock and includes the stream name. When
+  the stream ends they send a BYE.
+- **Receivers** (`mcast audio recv`) send Receiver Reports with their loss
+  and jitter, their name (`-n Kitchen`, default the hostname), and how far
+  behind the sender they're playing.
+
+```bash
+mcast audio send --file page.wav -e g711u -n "Page"
+mcast audio recv --stream page -n Kitchen
+#   rtcp: ssrc 319ca154 is "Page" (mcast@10.0.0.5)
+#   packets 377 lost 0 ... | transit 1.2ms, playing 41.2ms behind sender
+#   rtcp: ssrc 319ca154 ended the stream
+```
+
+"Transit" compares the arrival time against the sender's clock, so it is only
+the real network delay if both machines' clocks are in sync (NTP gets within a
+few ms; PTP within µs). Without synced clocks it shows the difference between
+the clocks instead, which is still steady unless the clocks drift.
+"Playing behind" adds the audio waiting in the playout buffer. It doesn't
+include the sound card's own latency, which isn't visible to us.
+
+| Option | Meaning |
+|---|---|
+| `--no-rtcp` | Don't send or listen for RTCP |
+| `--rtcp-interval SECS` | Average time between reports (default 5; each is randomised ±50% as RFC 3550 asks) |
+| `-n, --name` | (`recv`) Name to report, e.g. the room |
+
+RTCP is a few hundred bytes every few seconds. If your phones page on
+consecutive ports (e.g. channel 1 on 10000, channel 2 on 10001), channel 1's
+RTCP lands on channel 2's port. Phones should drop it, since it looks like an
+RTP packet with payload type 72, which no codec uses. `mcast` receivers
+recognise it and skip it. To be safe, `--no-rtcp` stops it being sent at all.
+
 Defaults: group `239.69.0.1:5004`, 48 kHz, 2 channels, L16, 1 ms packets, TTL 16.
 
 Network options:
@@ -367,6 +408,110 @@ Network options:
 | `-i, --iface` | IPv4 interface address, or interface index for IPv6 |
 | `--ttl` | TTL / hop limit |
 | `--no-loopback` | Don't deliver to receivers on the same host |
+
+## Text
+
+Real-time text over RTP: T.140 per RFC 4103, the format IP phones and
+accessibility (TTY replacement) systems use for text calls. Text is gathered
+for up to 300 ms per packet, and each packet repeats the previous two packets'
+text (RFC 2198 redundancy). A receiver can therefore lose up to two packets in
+a row and still rebuild the text. Text lost beyond that shows as `�`. Nothing
+is sent while nobody types. RTCP (above) keeps the heartbeat going and carries
+each sender's name.
+
+```bash
+mcast text send "fire drill at 3pm"            # one message, announced via SAP as "<host> text"
+mcast text send -n Ops < notices.txt          # each line of a file
+tail -f app.log | mcast text send -n "App log" # follow a log
+mcast text recv                               # print the first text stream announced
+mcast text recv --stream ops                  # the one whose name contains "ops"
+mcast text recv -g 239.69.1.1:5004            # skip discovery
+mcast text chat -n Alice                      # send what you type, print everyone else
+```
+
+`recv` prints whole lines with the sender's name (`Ops: fire drill at 3pm`).
+A half-typed line is shown once its sender has been quiet for 3 s.
+`--raw` prints the characters as they arrive, with no names.
+
+`chat` is send and receive on one group (default `239.69.1.1:5004`, kept away
+from the audio and paging groups), without SAP. Everyone who runs
+`mcast text chat` on the same group sees each other's lines:
+
+```
+chatting on 239.69.1.1:5004 as "Bob". Type and press Enter; Ctrl-D or Ctrl-C to leave.
+[Alice is here]
+Alice: hi bob
+Alice: how's the lobby?
+[Alice left]
+```
+
+| Option | Meaning |
+|---|---|
+| `-n, --name` | Name shown to receivers (sent via SAP and RTCP) |
+| `-g, --group` | Group and port [default `239.69.1.1:5004`] |
+| `--no-red` | Plain T.140, without redundant copies |
+| `--pt`, `--red-pt` | Payload types [default 98 for T.140, 100 for redundancy, as in RFC 4103's examples] |
+| `--no-sap`, `--sap-group`, `--no-rtcp`, `--tos`, `--ttl`, `-i` | As for audio |
+
+With SAP on, `send` waits 1 s before the first text so receivers that
+discover the stream have time to join. `mcast audio discover` lists text
+streams too, and `mcast monitor` shows them (status "active", or "idle Ns"
+between messages).
+
+## Files and pictures
+
+Send any file, such as a picture, to everyone on a group at once:
+
+```bash
+mcast file send sunset.jpg                     # announced via SAP as "<host> files"
+mcast file send *.png --rate 5000              # several, one after another, at 5 Mbit/s
+mcast file send poster.jpg --loop              # keep sending until Ctrl-C, for late joiners
+mcast file recv                                # save whatever arrives in this directory
+mcast file recv --show --once                  # show the first picture in the terminal, then exit
+mcast file recv -o ~/inbox --stream photos     # from the "Photos" sender, into ~/inbox
+mcast file show sunset.jpg                     # just the terminal preview, no network
+```
+
+```
+receiving fractal.jpg (271.6 KB) from 10.0.0.5
+got fractal.jpg (271.6 KB) in 1.6s, from 199 packets (199 needed), checksum OK; saved ./fractal.jpg
+```
+
+Multicast has no retransmission, so files are sent with a **fountain code**
+(RaptorQ, RFC 6330). The sender sends the file's pieces, then extra "repair"
+pieces. A receiver can rebuild the file from *any* set of pieces slightly
+larger than the file, whichever ones it happened to catch. With the default
+`--redundancy 0.5` the sender sends 1.5× the file, so every receiver can lose
+up to about a third of the packets, each a different third, and still get
+the file. That was tested with 25% random loss. With `--loop` the sender keeps
+making new repair pieces, so a receiver that joins late finishes as soon as it
+has caught enough.
+
+- `--show` draws pictures (PNG, JPEG, GIF, WebP, BMP) with coloured
+  half-block characters, which works in any 24-bit-colour terminal.
+- Each file carries a CRC-32. A file that fails the check isn't saved.
+- Received names are reduced to a plain file name: no directories, no
+  leading dots, no control characters. Existing files aren't overwritten:
+  `cat.jpg` becomes `cat (1).jpg`.
+- `--max-size` (default 512 MB) refuses bigger files before allocating
+  anything. Malformed packets are ignored.
+- A file that stops arriving is given up on after 30 s.
+
+| Option | Meaning |
+|---|---|
+| `--rate KBIT` | Sending rate (default 2000). Mind voice traffic on the same network |
+| `-r, --redundancy` | Extra repair data as a fraction of the file (default 0.5) |
+| `--loop` | Keep sending the last file until Ctrl-C |
+| `-o, --out DIR` | Where to save (default `.`); `--no-save` to only look |
+| `--show`, `--width COLS` | Show pictures in the terminal |
+| `--once` | Exit after the first file |
+| `-g, --group` | Default `239.69.2.1:5004`, away from audio, paging and text |
+
+Files travel as RTP (payload type 110, `x-mcast-file`), so `mcast monitor`
+shows their rate and loss. They also carry RTCP, so the sender's heartbeat and
+each receiver's loss show up too. The payload format is documented in
+`crates/mcast-file/src/wire.rs`. It's specific to mcast-tools; the standard
+for broadcast file delivery, FLUTE (RFC 6726), is a lot more machinery.
 
 ## Monitor
 
@@ -401,6 +546,33 @@ Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   163
   Traffic that isn't RTP is still counted. A summary prints on exit.
 
 TTL and DSCP are reported on Linux.
+
+The monitor also listens on each group's RTCP port and adds lines under each
+stream: the sender's heartbeat, and everyone listening:
+
+```
+Page 239.69.0.11:5004          10.0.0.5:59325        PCMU/8000/1      50.0     68.8   0.0%     0   0.1ms 20.0ms   16 EF    ██████████  -2.4 dBFS
+                               └ rtcp: "Page", SR every 5.0s, last 2s ago, one-way 0.4ms, media clock +12 ppm
+                               └ listener Kitchen (10.0.0.21): loss 0.0%, jitter 0.2ms, plays 41.3ms behind (transit 1.3 + buffer 40.0), heard 1s ago
+                               └ listener Lobby (10.0.0.22): loss 0.4%, jitter 1.1ms, plays 43.9ms behind (transit 3.9 + buffer 40.0), heard 3s ago
+                               └ sync: 2 listeners within 2.6ms of each other
+```
+
+- **SR … last Ns ago**: the sender's heartbeat. "(reports stopped)" appears
+  if none arrive for 15 s, and the status says "ended (BYE)" when the sender
+  signs off.
+- **one-way**: when the last SR arrived minus its timestamp: the network
+  delay if the clocks are synced, otherwise the offset between them.
+- **media clock**: how fast the stream's sample clock runs against the
+  sender's wall clock, after 10 s of reports. A capture card that's 50 ppm
+  fast gains 180 ms an hour, and receivers have to absorb that.
+- **listener**: any RTP receiver that sends reports, with its loss and
+  jitter. `mcast audio recv` also reports how far behind it plays. The
+  **sync** line shows the spread across listeners, which tells you whether
+  rooms are hearing the same thing at the same time.
+
+These delay figures are only as good as the clocks they're measured with.
+Listeners are forgotten 30 s after their last report.
 
 ## Web GUI and API server
 
@@ -453,9 +625,11 @@ API: it needs `mcast serve` running, and every client sees the same jobs.
 
 | Crate | Purpose |
 |---|---|
-| `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
+| `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP (packets and sender/receiver sessions), SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
-| `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
+| `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, SDP |
+| `crates/mcast-file` | Files over multicast: RaptorQ encoding, packet format, receiver/assembler, terminal picture preview |
+| `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
 | `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
 | `crates/mcast-tui` | Terminal front end (`mcast tui`), an API client built on ratatui |
@@ -468,5 +642,6 @@ subcommand in the CLI.
 
 ## Roadmap ideas
 
-- Audio: PTP-aligned timestamps (AES67), resampling on playback
-- Other: file transfer, chat, ping/latency, relay/bridge between interfaces
+- Audio: PTP-aligned timestamps (AES67), resampling on playback, playing
+  in step across receivers (using the RTCP clock mapping)
+- Other: ping/latency, relay/bridge between interfaces
