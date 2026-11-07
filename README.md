@@ -2,7 +2,8 @@
 
 A collection of multicast tools, written in Rust: audio over RTP multicast
 (the AES67 PCM payloads, plus G.711, G.722 and Opus), real-time text, files
-and pictures, and a stream monitor.
+and pictures, a stream monitor, and probes that watch multicast around the
+network and raise alerts when it breaks.
 
 ## Install
 
@@ -608,7 +609,8 @@ The GUI pages from uploaded files, live input, a test tone or the chord pad;
 chats on real-time text channels; sends files and pictures and receives them
 into its media list (with thumbnails); shows what's playing with a stop
 button; lists announced streams with Listen, Join and Receive buttons; and
-shows the monitor with level meters. It asks for the token if one is set.
+shows the monitor with level meters. Its Probes tab shows every
+[probe](#probes) and its alerts. It asks for the token if one is set.
 `--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
 the GUI's files from disk, so edits show up on reload without rebuilding.
 
@@ -626,31 +628,41 @@ API: it needs `mcast serve` running, and every client sees the same jobs.
 
 ## Probes
 
-Put a probe (a Raspberry Pi, say) wherever you want to know how multicast is
-doing, and have it report to `mcast serve`. Probes watch the streams, keep
-loss/jitter/gap statistics, check in every 10 s (that's the heartbeat), and
-take their configuration from the server. With `--unicast` the server also
-sends each probe a unicast copy of every page, and says per stream whether
-loss is on multicast only (look at IGMP snooping, the querier, PIM, Wi-Fi)
-or on both paths (the network itself):
+A probe is a small receiver (a Raspberry Pi, say) that you leave wherever
+you want to know how multicast is doing. It watches the streams there and
+reports loss, jitter and gaps to `mcast serve` every 10 s. The server shows
+every probe on the web GUI's Probes tab (and in `mcast tui`), and raises an
+alert when a probe goes quiet or a stream starts losing packets.
 
 ```bash
-mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES      # server
-mcast probe run --token PROBES                                      # each probe: finds the server by multicast
-MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN mcast probe config idf-3 --unicast --label "IDF 3"
-MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN mcast probe list
+mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES   # the server
+mcast probe run --token PROBES                                   # each probe
 ```
 
-The server announces itself by multicast, so probes find it on their own
-(and only use one that knows their token); `--server URL` names it instead.
-Probes connect out to the server, so they need no open port except UDP 5104
-for the unicast copies. Reports that can't be delivered are queued and sent
-when the server is back. See [docs/probes.md](docs/probes.md) for the design,
-verdicts and roadmap, and [docs/api.md](docs/api.md#probes) for the routes.
-The web GUI has a Probes view (the Probes tab, or `/#probes`) with each
-probe's state, verdicts and loss timeline, where probes can be configured
-and added before they're deployed. `mcast tui` has a Probes tab (6) too:
-`u` toggles unicast copies, `l`/`g`/`i` set the label, groups and interval.
+The probe finds the server by the server's multicast beacon, and only uses a
+server that knows its token. Where multicast doesn't reach, give it
+`--server http://10.0.0.5:8650`. It connects out to the server, so it needs
+no open port for that, and it keeps its reports while the server is
+unreachable. Probes are configured on the server: what to watch, how often
+to report, and so on.
+
+```bash
+export MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN
+mcast probe config idf-3 --label "3rd floor IDF" --unicast
+mcast probe list
+mcast probe alerts
+```
+
+With `--unicast`, every page the server sends also goes to that probe by
+unicast. The probe compares the two, so loss on multicast only (IGMP
+snooping, the querier, PIM, Wi-Fi) is told apart from loss on the network
+itself. Alerts go to a chat webhook with `mcast serve --alert-webhook URL`.
+On a Raspberry Pi, [pi/install.sh](pi/README.md#probes) sets a probe up as a
+systemd service.
+
+The guide is [docs/probes.md](docs/probes.md): configuration, the unicast
+comparison, alerts, discovery, security and troubleshooting. The routes are
+in [docs/api.md](docs/api.md#probes).
 
 ## Layout
 

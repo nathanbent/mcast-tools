@@ -497,7 +497,12 @@ struct ServeArgs {
     beacon_ttl: u32,
     /// POST alerts (a probe offline, multicast loss) to this URL as JSON with
     /// a "text" field, which Slack and Mattermost incoming webhooks show
-    #[arg(long, env = "MCAST_ALERT_WEBHOOK", value_name = "URL")]
+    #[arg(
+        long,
+        env = "MCAST_ALERT_WEBHOOK",
+        hide_env_values = true,
+        value_name = "URL"
+    )]
     alert_webhook: Option<String>,
 }
 

@@ -9,7 +9,13 @@ mcast serve [--listen 127.0.0.1:8650] [--token TOKEN] [--media-dir DIR]
             [--watch ADDR:PORT]... [--no-monitor]
             [--probe-token TOKEN] [--probe-state FILE]
             [--no-beacon] [--beacon-group ADDR:PORT] [--beacon-url URL] [--beacon-ttl 16]
+            [--alert-webhook URL]
 ```
+
+The probe, beacon and alert options are explained in [probes.md](probes.md).
+The secrets can come from the environment instead of the command line:
+`MCAST_TOKEN`, `MCAST_PROBE_TOKEN` and `MCAST_ALERT_WEBHOOK` (a chat
+webhook URL is a secret too).
 
 Ctrl-C or SIGTERM stops every job (withdrawing their SAP announcements) before exiting.
 
@@ -68,6 +74,8 @@ Errors are JSON: `{"error": "message"}`.
 | GET | `/probe-hello?nonce=HEX` | No token needed: `{"name", "proofs": [...]}`, HMAC-SHA256 of `mcast-probe-hello:NONCE` under each token the server accepts, as hex, so a probe that found the server by beacon can check it knows its token. Nonces are 16-128 hex digits |
 | POST | `/probes/{id}/checkin` | A probe's heartbeat and reports (below); the only route `--probe-token` opens |
 | GET, PUT | `/probe-defaults` | The configuration of probes without their own |
+| GET | `/alerts` | `{"active": [ALERT...], "recent": [ALERT...]}`: alerts about probes, active ones oldest first, then the last 200 resolved, newest first (below) |
+| GET, PUT | `/alert-rules` | When alerts are raised (below). `PUT` returns the rules saved; turning a kind off resolves its active alerts |
 
 `POST /senders` returns once the sender is ready: files are decoded and
 loudness-measured first, so a bad file fails the request instead of the job.
@@ -272,27 +280,31 @@ name.
 
 ## Probes
 
-See [probes.md](probes.md) for what probes are for. A probe config:
+See [probes.md](probes.md) for what probes are and how to use them.
+
+A probe config (`PUT /probes/{id}/config`, `/probe-defaults`). Every field
+is optional and unknown fields are refused:
 
 | Field | Default | |
 |---|---|---|
-| `label` | | Shown in listings |
+| `label` | `null` | Shown in listings and alerts (at most 100 characters) |
 | `sap` | `true` | Watch every SAP-announced stream |
-| `groups` | `[]` | Also watch these multicast groups |
+| `groups` | `[]` | Also watch these multicast groups (`"ADDR:PORT"`) |
 | `report_interval_s` | `10` | Seconds per report and check-in (1 to 3600) |
-| `unicast` | `false` | Send this probe a unicast copy of every sender job's packets |
+| `unicast` | `false` | Send this probe a unicast copy of every page this server sends |
 
-A probe (`GET /probes/{id}`): `id`, `online`, `config` (the one it should
-run), `custom_config` (its own rather than the defaults), `config_applied`
+A probe (`GET /probes/{id}`): `id`, `online` (it checked in within three
+report intervals plus 5 s), `config` (the one it should run), `custom_config` (its own rather than the defaults), `config_applied`
 (its last check-in said it runs `config`), `hostname`, `version`,
 `unicast_addr`, `first_seen_ms`, `last_seen_ms`, `uptime_s`, `queued`
 (reports still waiting on the probe), `dropped` (reports it discarded while
 the server was unreachable), `latest` (its last report), `comparisons` and
 `totals`.
 
-A report: `seq`, `start_ms`, `end_ms`, `streams` (monitor rows, as below,
-covering the interval; the unicast port shows as a group like
-`0.0.0.0:5104`) and `groups`.
+A report: `seq`, `start_ms`, `end_ms`, `streams` (monitor rows, as in
+[Monitor](#monitor), but covering the report interval; the unicast port
+shows as a group like `0.0.0.0:5104`) and `groups` (the groups watched, with
+any `error` joining one).
 
 A comparison, from the latest report, for each unicast copy: `ssrc`, `name`,
 `group` (the multicast group, if seen), `multicast` and `unicast`
@@ -307,22 +319,63 @@ A total, per stream since the probe was first seen: `group`, `unicast`,
 ### Check-in
 
 `POST /probes/{id}/checkin`, from `mcast probe run`. IDs are 1-64 letters,
-digits, `.`, `_` or `-`.
+digits, `.`, `_` or `-`; a check-in from an unknown ID adds the probe.
 
 ```json
-{"version": "0.1.1", "hostname": "pi-idf3", "boot": 3735928559, "uptime_s": 120.5,
- "config": {...}, "unicast_addr": "10.0.3.17:5104",
- "reports": [{"seq": 12, "start_ms": ..., "end_ms": ..., "streams": [...]}],
+{"version": "0.2.0", "hostname": "pi-idf3", "boot": 3735928559, "uptime_s": 120.5,
+ "config": {"label": null, "sap": true, "groups": [], "report_interval_s": 10, "unicast": true},
+ "unicast_addr": "10.0.3.17:5104",
+ "reports": [{"seq": 12, "start_ms": 1794026259854, "end_ms": 1794026269854, "streams": [], "groups": []}],
  "queued": 0, "dropped": 0}
 ```
 
-`boot` is random for each run of the probe and `seq` counts its reports from
-1; reports the server already has are ignored, so retries are safe.
-`config` is what the probe runs (`null` before its first reply). The reply:
+Only `version` and `boot` are required. `boot` is random for each run of the
+probe and `seq` counts its reports from 1, so reports the server already has
+are ignored and retries are safe. `config` is what the probe runs (`null`
+before its first reply), `unicast_addr` where it wants unicast copies
+(`null`: none), `queued` how many more reports it still holds, and `dropped`
+how many it discarded because its queue was full. At most 360 reports per
+check-in (`mcast probe run` sends 30). The reply:
 
 ```json
 {"config": {...}, "acked_seq": 12, "server_time_ms": 1794026269854}
 ```
+
+### Alerts
+
+See [probes.md](probes.md#alerts) for when alerts are raised and resolved.
+An alert:
+
+| Field | |
+|---|---|
+| `id` | Counts up from 1 for each run of the server |
+| `kind` | `probe_offline`, `multicast_loss` or `no_multicast` |
+| `probe` | The probe's ID |
+| `label` | The probe's label when the alert was raised, or `null` |
+| `stream` | The stream's name, or its group if it has none; `null` for `probe_offline` |
+| `group` | The multicast group, or `null` |
+| `message` | One line for people, e.g. "idf-3 (3rd floor IDF): 2.4% multicast loss on Lobby; its unicast copy is clean, so look at the multicast path (...)" |
+| `raised_ms` | When it started: the report that crossed the threshold, or the probe's last check-in |
+| `resolved_ms` | When it ended, or `null` while active |
+| `worst_loss_percent` | `multicast_loss`: the worst interval's loss while active |
+| `unicast_clean` | `multicast_loss`: `true` if the stream's unicast copy arrived clean when it was raised, `false` if lossy too, `null` if the probe doesn't get copies |
+
+Alert rules (`GET`/`PUT /alert-rules`). Every field is optional in a `PUT`
+(missing ones take the defaults) and unknown fields are refused:
+
+| Field | Default | |
+|---|---|---|
+| `offline` | `true` | Alert when a probe stops checking in |
+| `multicast_loss` | `true` | Alert on multicast loss |
+| `loss_percent` | `1` | Loss in one report interval that counts as bad (more than 0, at most 100) |
+| `no_multicast` | `true` | Alert when a stream's unicast copy arrives but the stream doesn't |
+| `raise_after` | `2` | Bad intervals in a row before an alert is raised (1 to 100) |
+| `clear_after` | `3` | Clean intervals in a row before it's resolved (1 to 100) |
+
+With `--alert-webhook URL`, each raised or resolved alert is also POSTed to
+the URL as `{"text": "ALERT: MESSAGE" or "RESOLVED: MESSAGE", "event":
+"alert_raised" or "alert_resolved", "alert": ALERT}`; see
+[probes.md](probes.md#alerts).
 
 ## Events
 
@@ -339,6 +392,7 @@ its data is JSON with that `type` too:
 | `monitor` | `{"snapshot": SNAPSHOT}`, every second |
 | `probe_updated` | `{"probe": PROBE}`: it checked in, went offline, or was reconfigured |
 | `probe_removed` | `{"id": "..."}` |
+| `alert_raised`, `alert_resolved` | `{"alert": ALERT}` |
 | `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one |
 | `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
 | `lagged` | `{"missed": N}`: the client fell behind; refetch the lists |

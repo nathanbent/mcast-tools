@@ -59,7 +59,7 @@ The release binaries are 64-bit only, so the 32-bit OS isn't supported.
 
 The same script sets up a Pi as a [probe](../docs/probes.md): it watches the
 multicast streams where it's plugged in and reports loss, jitter and gaps to
-your `mcast serve` server, which shows them on its Probes page.
+your `mcast serve` server, which shows them on its web GUI's Probes tab.
 
 1. On the **server** (a Pi set up as above, or any `mcast serve`), get its
    probe token: `install.sh` prints it at the end, and it's
@@ -77,9 +77,15 @@ your `mcast serve` server, which shows them on its Probes page.
    beacon, and only uses one that knows its token. Where multicast doesn't
    reach the server (another subnet, say), set
    `PROBE_SERVER="http://10.0.0.5:8650"`.
-3. It shows up on the server's Probes page under its hostname
+3. It shows up on the server's Probes tab under its hostname
    (`PROBE_ID` to choose another name). Configure it there: which groups to
    watch, the report interval, and unicast copies for comparison.
+
+The server raises an alert when a probe stops checking in or a stream
+starts losing packets. To get them in a chat channel, set
+`MCAST_ALERT_WEBHOOK` in the server's `pi.conf` to a Slack or Mattermost
+incoming-webhook URL and re-run `install.sh`. See
+[alerts](../docs/probes.md#alerts).
 
 A Pi can be both a server and a probe (leave `MCAST_SERVE=yes`). The probe
 runs as `mcast-probe.service`, as the `mcast` user, and restarts on its own.

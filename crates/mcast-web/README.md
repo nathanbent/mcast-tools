@@ -23,8 +23,10 @@ and reload the page to see changes.
 | `js/jobs.js` | Now playing / recent jobs |
 | `js/streams.js` | SAP-announced streams and Listen |
 | `js/monitor.js` | Monitor table and level meters |
-| `js/media.js` | Uploads |
-| `js/probes.js` | The Probes view (`#probes`): probes, verdicts, loss timeline, configuration |
+| `js/media.js` | Media list and uploads |
+| `js/text.js` | Real-time text channels |
+| `js/files.js` | Sending and receiving files |
+| `js/probes.js` | The Probes view (`#probes`): alerts and alert rules, probes, verdicts, loss timeline, configuration |
 
 Each panel is one module exporting `mount(element)`; add a panel by adding a
 module and a `<section>` in `index.html`. There are two views, the console

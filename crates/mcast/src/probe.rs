@@ -174,14 +174,16 @@ pub struct ConfigArgs {
     /// Go back to the defaults
     #[arg(long, conflicts_with_all = ["label", "no_label", "sap", "no_sap", "group", "no_groups", "interval", "unicast", "no_unicast"])]
     reset: bool,
-    /// Label shown in listings
+    /// Label shown in listings and alerts
     #[arg(long)]
     label: Option<String>,
+    /// Remove the label
     #[arg(long, conflicts_with = "label")]
     no_label: bool,
     /// Watch streams announced with SAP
     #[arg(long)]
     sap: bool,
+    /// Don't watch announced streams (only --group ones)
     #[arg(long, conflicts_with = "sap")]
     no_sap: bool,
     /// Watch this group (replaces the list; repeat for more)
@@ -190,12 +192,13 @@ pub struct ConfigArgs {
     /// Watch no groups besides announced ones
     #[arg(long, conflicts_with = "group")]
     no_groups: bool,
-    /// Seconds per report (and check-in)
+    /// Seconds per report (and check-in), 1 to 3600
     #[arg(long, value_name = "SECONDS")]
     interval: Option<f64>,
     /// Have the server send unicast copies of its pages, to compare
     #[arg(long)]
     unicast: bool,
+    /// Stop the unicast copies
     #[arg(long, conflicts_with = "unicast")]
     no_unicast: bool,
     #[command(flatten)]
