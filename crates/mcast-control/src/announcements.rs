@@ -4,6 +4,8 @@ use crate::{Event, EventSink};
 use mcast_audio::StreamInfo;
 use mcast_core::sap::{Directory, DirectoryEvent, Session};
 use mcast_core::Interface;
+use mcast_file::session::FileInfo;
+use mcast_text::session::TextInfo;
 use serde::Serialize;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +23,10 @@ pub struct Announced {
     pub from: SocketAddr,
     /// Its audio stream, if it has one we understand.
     pub audio: Option<AudioStream>,
+    /// Its real-time text stream, if any.
+    pub text: Option<TextStream>,
+    /// Its file stream, if any.
+    pub file: Option<FileStream>,
     pub sdp: String,
 }
 
@@ -36,6 +42,28 @@ pub struct AudioStream {
     pub playable: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TextStream {
+    pub group: SocketAddr,
+    pub t140_pt: u8,
+    pub red_pt: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FileStream {
+    pub group: SocketAddr,
+    pub payload_type: u8,
+}
+
+/// One session, with what each kind of client needs from it.
+#[derive(Debug, Clone)]
+struct Entry {
+    shown: Announced,
+    audio: Option<StreamInfo>,
+    text: Option<TextInfo>,
+    file: Option<FileInfo>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EndReason {
@@ -45,9 +73,11 @@ pub enum EndReason {
     Expired,
 }
 
-impl Announced {
-    fn new(s: &Session) -> (Self, Option<StreamInfo>) {
+impl Entry {
+    fn new(s: &Session) -> Self {
         let info = StreamInfo::from_sdp(&s.sdp);
+        let text = TextInfo::from_sdp(&s.sdp);
+        let file = FileInfo::from_sdp(&s.sdp);
         let audio = info.as_ref().map(|i| AudioStream {
             group: i.group,
             payload_type: i.payload_type,
@@ -57,18 +87,36 @@ impl Announced {
             ptime_ms: i.ptime_ms,
             playable: i.spec().is_some(),
         });
-        let a = Announced {
+        let shown = Announced {
             name: s.sdp.name.clone(),
             origin: s.origin,
             from: s.from,
             audio,
+            text: text.as_ref().map(|t| TextStream {
+                group: t.group,
+                t140_pt: t.t140_pt,
+                red_pt: t.red_pt,
+            }),
+            file: file.as_ref().map(|f| FileStream {
+                group: f.group,
+                payload_type: f.payload_type,
+            }),
             sdp: s.sdp.to_string(),
         };
-        (a, info)
+        Entry {
+            shown,
+            audio: info,
+            text,
+            file,
+        }
     }
 }
 
-type List = Arc<Mutex<Vec<(Announced, Option<StreamInfo>)>>>;
+fn shown(s: &Session) -> Announced {
+    Entry::new(s).shown
+}
+
+type List = Arc<Mutex<Vec<Entry>>>;
 
 /// Listens for SAP announcements in a background thread.
 pub struct Announcements {
@@ -102,22 +150,22 @@ impl Announcements {
                         if events.is_empty() {
                             continue;
                         }
-                        let snapshot: Vec<_> = dir.sessions().map(Announced::new).collect();
+                        let snapshot: Vec<_> = dir.sessions().map(Entry::new).collect();
                         *list.lock().unwrap_or_else(|e| e.into_inner()) = snapshot;
                         for e in events {
                             sink(match e {
-                                DirectoryEvent::Added(s) => Event::StreamAdded {
-                                    stream: Announced::new(&s).0,
-                                },
-                                DirectoryEvent::Changed(s) => Event::StreamChanged {
-                                    stream: Announced::new(&s).0,
-                                },
+                                DirectoryEvent::Added(s) => {
+                                    Event::StreamAdded { stream: shown(&s) }
+                                }
+                                DirectoryEvent::Changed(s) => {
+                                    Event::StreamChanged { stream: shown(&s) }
+                                }
                                 DirectoryEvent::Deleted(s) => Event::StreamRemoved {
-                                    stream: Announced::new(&s).0,
+                                    stream: shown(&s),
                                     reason: EndReason::Deleted,
                                 },
                                 DirectoryEvent::Expired(s) => Event::StreamRemoved {
-                                    stream: Announced::new(&s).0,
+                                    stream: shown(&s),
                                     reason: EndReason::Expired,
                                 },
                             });
@@ -132,20 +180,30 @@ impl Announcements {
         })
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(Announced, Option<StreamInfo>)>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry>> {
         self.list.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Everything currently announced, sorted by name.
     pub fn list(&self) -> Vec<Announced> {
-        let mut v: Vec<Announced> = self.lock().iter().map(|(a, _)| a.clone()).collect();
+        let mut v: Vec<Announced> = self.lock().iter().map(|e| e.shown.clone()).collect();
         v.sort_by(|a, b| a.name.cmp(&b.name).then(a.sdp.cmp(&b.sdp)));
         v
     }
 
     /// Announced audio streams, for picking one to receive.
     pub fn streams(&self) -> Vec<StreamInfo> {
-        self.lock().iter().filter_map(|(_, i)| i.clone()).collect()
+        self.lock().iter().filter_map(|e| e.audio.clone()).collect()
+    }
+
+    /// Announced text streams, for joining one by name.
+    pub fn text_streams(&self) -> Vec<TextInfo> {
+        self.lock().iter().filter_map(|e| e.text.clone()).collect()
+    }
+
+    /// Announced file streams, for receiving from one by name.
+    pub fn file_streams(&self) -> Vec<FileInfo> {
+        self.lock().iter().filter_map(|e| e.file.clone()).collect()
     }
 }
 

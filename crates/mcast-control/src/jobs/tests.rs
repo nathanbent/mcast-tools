@@ -1,5 +1,6 @@
 use super::*;
 use crate::request::SourceRequest;
+use std::net::SocketAddr;
 
 fn tone(group: &str) -> SendRequest {
     SendRequest {
@@ -116,4 +117,190 @@ impl Jobs {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn text_channel_sends_and_hears_lines() {
+    use crate::request::TextRequest;
+    let (jobs, events) = jobs();
+    let group: SocketAddr = "239.255.77.16:5004".parse().unwrap();
+    let listener = jobs
+        .start_text(
+            TextRequest {
+                group: Some(group),
+                send: false,
+                name: Some("ear".into()),
+                ..TextRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    let talker = jobs
+        .start_text(
+            TextRequest {
+                group: Some(group),
+                name: Some("desk".into()),
+                ..TextRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    assert_eq!(talker.kind, JobKind::Text);
+
+    // A second sender on the channel from this server is refused, as is a page there.
+    let again = TextRequest {
+        group: Some(group),
+        ..TextRequest::default()
+    };
+    assert!(matches!(
+        jobs.start_text(again, &[]),
+        Err(StartError::Conflict { .. })
+    ));
+    assert!(matches!(
+        jobs.start_sender(tone("239.255.77.16:5004")),
+        Err(StartError::Conflict { .. })
+    ));
+
+    let sent = jobs.send_text(talker.id, "hello\nsecond line").unwrap();
+    assert_eq!(sent.len(), 2);
+    assert!(sent.iter().all(|l| l.own && l.from == "desk"));
+    wait_for("both lines to arrive", || {
+        jobs.text_history(listener.id).unwrap().len() == 2
+    });
+    let heard = jobs.text_history(listener.id).unwrap();
+    assert_eq!(heard[0].text, "hello");
+    assert_eq!(heard[1].text, "second line");
+    assert!(!heard[0].own);
+    // The talker doesn't hear itself back, only its own record.
+    assert_eq!(jobs.text_history(talker.id).unwrap().len(), 2);
+    assert!(events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| matches!(e, Event::TextLine { line } if line.job == listener.id)));
+
+    assert_eq!(
+        jobs.send_text(listener.id, "hi"),
+        Err(TextError::NotSending)
+    );
+    assert_eq!(jobs.send_text(talker.id, "  \n"), Err(TextError::Empty));
+    assert_eq!(jobs.send_text(999, "hi"), Err(TextError::NoJob));
+    let page = jobs.start_sender(tone("239.255.77.17:5004")).unwrap();
+    assert_eq!(jobs.send_text(page.id, "hi"), Err(TextError::NotText));
+    jobs.stop(page.id, Duration::from_secs(5));
+    jobs.stop(talker.id, Duration::from_secs(5));
+    assert_eq!(jobs.send_text(talker.id, "late"), Err(TextError::Ended));
+    jobs.stop(listener.id, Duration::from_secs(5));
+}
+
+#[test]
+fn files_go_from_sender_to_saved_copy() {
+    use crate::request::{FileRecvRequest, FileSendRequest};
+    let (jobs, events) = jobs();
+    let dir = std::env::temp_dir().join(format!("mcast-jobs-files-{}", mcast_core::random_u32()));
+    let (src, out) = (dir.join("src"), dir.join("out"));
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(&out).unwrap();
+    let data: Vec<u8> = (0..50_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    std::fs::write(src.join("site map.png"), &data).unwrap();
+    // Something already called that, so the copy gets a new name.
+    std::fs::write(out.join("site map.png"), b"older").unwrap();
+
+    let group: SocketAddr = "239.255.77.18:5004".parse().unwrap();
+    let rx = jobs
+        .start_file_receiver(
+            FileRecvRequest {
+                group: Some(group),
+                rtcp: false,
+                out_dir: out.clone(),
+                ..FileRecvRequest::default()
+            },
+            &[],
+        )
+        .unwrap();
+    let tx = jobs
+        .start_file_sender(FileSendRequest {
+            group,
+            files: vec![src.join("site map.png")],
+            sap: false,
+            rtcp: false,
+            rate_kbps: 20_000,
+            ..FileSendRequest::default()
+        })
+        .unwrap();
+    // One sender per group.
+    let again = FileSendRequest {
+        group,
+        files: vec![src.join("site map.png")],
+        sap: false,
+        ..FileSendRequest::default()
+    };
+    assert!(matches!(
+        jobs.start_file_sender(again),
+        Err(StartError::Conflict { .. })
+    ));
+
+    wait_for("the file to arrive", || {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, Event::FileReceived { .. }))
+    });
+    let file = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            Event::FileReceived { job, file } if *job == rx.id => Some(file.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(file.name, "site map-2.png");
+    assert_eq!(file.sent_as.as_deref(), Some("site map.png"));
+    assert_eq!(file.verified, Some(true));
+    assert_eq!(file.content_type.as_deref(), Some("image/png"));
+    assert_eq!(std::fs::read(out.join("site map-2.png")).unwrap(), data);
+    // No temporary files left behind.
+    let names: Vec<String> = std::fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
+
+    wait_for("the sender to finish", || {
+        jobs.get(tx.id).unwrap().state == JobState::Finished
+    });
+    let Some(JobStats::FileRecv(s)) = jobs.stop(rx.id, Duration::from_secs(5)).unwrap().stats
+    else {
+        panic!("no receive stats");
+    };
+    assert_eq!(s.received, 1);
+
+    // Bad requests fail up front.
+    let missing = FileSendRequest {
+        files: vec![src.join("nope.png")],
+        ..FileSendRequest::default()
+    };
+    assert!(matches!(
+        jobs.start_file_sender(missing),
+        Err(StartError::Invalid(_))
+    ));
+    let nowhere = FileRecvRequest {
+        out_dir: dir.join("missing"),
+        ..FileRecvRequest::default()
+    };
+    assert!(matches!(
+        jobs.start_file_receiver(nowhere, &[]),
+        Err(StartError::Invalid(_))
+    ));
+    std::fs::remove_dir_all(&dir).unwrap();
 }

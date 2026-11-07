@@ -6,8 +6,12 @@
 //! Shared pieces live here; each kind of stream has its own module.
 
 mod audio;
+mod file;
+mod text;
 
 pub use audio::*;
+pub use file::*;
+pub use text::*;
 
 use anyhow::{bail, Result};
 use mcast_core::{Interface, MulticastOptions};

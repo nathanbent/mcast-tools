@@ -5,8 +5,13 @@
 //! This module is the manager; each kind of job starts in its own module.
 
 mod audio;
+mod file;
+mod text;
 
-use crate::request::{RecvRequest, SendRequest};
+pub use file::ReceivedFile;
+pub use text::{TextError, TextLine};
+
+use crate::request::{FileRecvRequest, FileSendRequest, RecvRequest, SendRequest, TextRequest};
 use crate::{now_ms, Event, EventSink};
 use mcast_audio::receiver;
 use mcast_audio::sender::Progress;
@@ -27,10 +32,16 @@ const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
 pub type JobId = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum JobKind {
+    /// Audio sender (a page, tone or live input).
     Send,
+    /// Audio receiver.
     Recv,
+    /// Real-time text channel.
+    Text,
+    FileSend,
+    FileRecv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -59,6 +70,9 @@ impl JobState {
 pub enum JobRequest {
     Send(SendRequest),
     Recv(RecvRequest),
+    Text(TextRequest),
+    FileSend(FileSendRequest),
+    FileRecv(FileRecvRequest),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -107,6 +121,9 @@ impl From<&receiver::ReceiverStats> for RecvStats {
 pub enum JobStats {
     Send(SendStats),
     Recv(RecvStats),
+    Text(text::TextStats),
+    FileSend(file::FileSendStats),
+    FileRecv(file::FileRecvStats),
 }
 
 /// A job as reported to clients.
@@ -161,6 +178,8 @@ struct Job {
     stop: Arc<AtomicBool>,
     /// The group this job sends to, reserved while it's active.
     sends_to: Option<SocketAddr>,
+    /// Text channels: where typed text goes, and recent lines.
+    text: Option<text::Channel>,
     /// Sender progress, and frames per packet and sample rate to turn it into seconds.
     progress: Option<(Arc<Progress>, u64, u32)>,
     thread: Option<JoinHandle<()>>,
@@ -241,6 +260,7 @@ impl Shared {
                 info: info.clone(),
                 stop,
                 sends_to,
+                text: None,
                 progress: None,
                 thread: None,
             },
