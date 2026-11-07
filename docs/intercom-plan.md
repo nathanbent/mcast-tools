@@ -1,6 +1,6 @@
 # Intercom control panel: plan
 
-Status: all four phases built: `crates/mcast-intercom` (`mcast intercom list|check|upcoming|play|serve`) and the Raspberry Pi service (`ENABLE_INTERCOM` in `pi/pi.conf`).
+Status (see `intercom-roadmap.md` for what comes next): all four phases built: `crates/mcast-intercom` (`mcast intercom list|check|upcoming|play|serve`) and the Raspberry Pi service (`ENABLE_INTERCOM` in `pi/pi.conf`).
 
 A small control panel on top of `mcast serve`: you define **zones** (sets of
 speakers), **announcements** (audio + chimes + where it goes), and
