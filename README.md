@@ -21,7 +21,7 @@ Send a test tone, a WAV file, or live input:
 
 ```bash
 mcast audio send --tone 440                    # 440 Hz at -12 dBFS
-mcast audio send --wav music.wav --loop        # rate/channels taken from the file
+mcast audio send --wav music.wav --loop        # L16 at the file's own rate/channels
 mcast audio send --capture                     # default input device
 mcast audio send --capture "USB" -g 239.69.0.5:5004 -e l24
 ```
@@ -46,20 +46,41 @@ List devices with `mcast audio devices`.
 
 ### Codecs
 
-| Codec | Send | Receive | Notes |
+| Codec | `-e` | Rate / channels | Default ptime, payload type |
 |---|---|---|---|
-| L16, L24 | yes | yes | any rate/channels (AES67 payloads) |
-| G.711 µ-law / A-law (PCMU/PCMA) | – | yes | detected from payload type 0 / 8 |
-| G.722 | – | yes | detected from payload type 9; 16 kHz output |
-| Opus | – | yes | dynamic payload type: pass `-e opus` unless announced via SAP; uses in-band FEC and PLC for lost packets |
+| L16, L24 | `l16`, `l24` | any (48 kHz stereo by default) | 1 ms, 96 (10/11 for 44.1 kHz L16) |
+| G.711 µ-law | `pcmu` / `g711u` | 8 kHz mono | 20 ms, 0 |
+| G.711 A-law | `pcma` / `g711a` | 8 kHz mono | 20 ms, 8 |
+| G.722 | `g722` | 16 kHz mono | 20 ms, 9 |
+| Opus | `opus` | 48 kHz, mono (or `-c 2`) | 20 ms, 107 |
 
-Paging streams (e.g. from ffmpeg `-f rtp`) can be played with just the group:
+All of them can be sent and received. The G.711 and G.722 encoders and decoders
+produce byte-for-byte the same output as ffmpeg's.
+
+Sending converts the source to the codec's rate and channels (high-quality
+windowed-sinc resampling, stereo averaged to mono), so any WAV file or input
+device works with any codec:
+
+```bash
+mcast audio send -e g711u --wav page.wav -g 239.192.2.1:10000 --tos 184     # paging, DSCP EF
+mcast audio send -e g722 --wav page.wav -g 239.192.2.1:10000
+mcast audio send -e opus --opus-mode voice --bitrate 32 --opus-bandwidth wb --capture
+```
+
+Opus options: `--bitrate` (kbit/s, default 64), `--opus-mode voice|music`,
+`--opus-bandwidth nb|wb|swb|fb`, `--no-fec` (in-band FEC is on by default, tuned for 5% loss).
+`--ptime` and `--pt` override the defaults above.
+
+Receiving: streams announced via SAP need no flags. With `--group`, G.711 and
+G.722 are detected from the payload type; Opus needs `-e opus`:
 
 ```bash
 mcast audio recv -g 239.192.2.1:10000               # G.711 or G.722, codec from payload type
 mcast audio recv -g 239.192.2.1:10000 -e opus       # Opus
 mcast audio recv -g 239.192.2.1:10000 --wav page.wav
 ```
+
+Lost Opus packets are rebuilt from the next packet's FEC data, or concealed by libopus.
 
 ### Discovery details
 
@@ -89,7 +110,7 @@ Network options:
 | Crate | Purpose |
 |---|---|
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
-| `crates/mcast-audio` | PCM encoding, G.711/G.722/Opus decoding, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
+| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
 | `crates/mcast` | The `mcast` CLI |
 
 New tool families go in their own crate (e.g. `crates/mcast-<thing>`) and get a
@@ -97,6 +118,6 @@ subcommand in the CLI.
 
 ## Roadmap ideas
 
-- Audio: G.711/G.722/Opus sending, PTP-aligned timestamps (AES67), resampling
+- Audio: PTP-aligned timestamps (AES67), resampling on playback, voice processing (filters/loudness) like mcast-play.sh
 - Monitor: join groups and show rate, loss, jitter
 - Other: file transfer, chat, ping/latency, relay/bridge between interfaces

@@ -7,7 +7,8 @@ use crate::format::{AudioFormat, Encoding};
 use std::fmt;
 use std::str::FromStr;
 
-pub use g722::G722Decoder;
+pub use g722::{G722Decoder, G722Encoder};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
@@ -137,9 +138,248 @@ impl StreamSpec {
     }
 }
 
+impl StreamSpec {
+    /// RTP timestamp clock (8000 for G.722 despite 16 kHz audio, per RFC 3551).
+    pub fn rtp_clock_rate(&self) -> u32 {
+        match self.codec {
+            Codec::G722 => 8_000,
+            _ => self.sample_rate,
+        }
+    }
+
+    /// Static payload type where RFC 3551 assigns one, else a dynamic one.
+    pub fn default_payload_type(&self) -> u8 {
+        match self.codec {
+            Codec::Pcmu => 0,
+            Codec::Pcma => 8,
+            Codec::G722 => 9,
+            Codec::Opus => 107,
+            Codec::L16 | Codec::L24 => self.output_format().default_payload_type(),
+        }
+    }
+
+    /// 1 ms for uncompressed PCM (AES67), 20 ms for telephony codecs and Opus.
+    pub fn default_ptime(&self) -> Duration {
+        match self.codec {
+            Codec::L16 | Codec::L24 => Duration::from_millis(1),
+            _ => Duration::from_millis(20),
+        }
+    }
+
+    /// Check a packet time is one this codec can produce.
+    pub fn check_ptime(&self, ptime: Duration) -> Result<(), String> {
+        let ms = ptime.as_secs_f64() * 1000.0;
+        match self.codec {
+            Codec::Opus
+                if ![2.5, 5.0, 10.0, 20.0, 40.0, 60.0]
+                    .iter()
+                    .any(|v| (v - ms).abs() < 1e-6) =>
+            {
+                Err(format!(
+                    "Opus needs a ptime of 2.5, 5, 10, 20, 40 or 60 ms, not {ms}"
+                ))
+            }
+            _ if ms <= 0.0 => Err("ptime must be positive".into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// `a=rtpmap` value (without the payload type).
+    pub fn rtpmap(&self) -> String {
+        match self.codec {
+            Codec::L16 | Codec::L24 => {
+                format!("{}/{}/{}", self.codec, self.sample_rate, self.channels)
+            }
+            // RFC 7587: always "/2"; mono vs stereo is signalled in fmtp.
+            Codec::Opus => "opus/48000/2".into(),
+            _ => format!("{}/{}", self.codec, self.rtp_clock_rate()),
+        }
+    }
+
+    pub fn encoder(&self, opus: &OpusOptions) -> Result<Box<dyn Encoder>, String> {
+        Ok(match self.codec {
+            Codec::L16 | Codec::L24 => Box::new(PcmEncoder(self.output_format())),
+            Codec::Pcmu => Box::new(G711Encoder { alaw: false }),
+            Codec::Pcma => Box::new(G711Encoder { alaw: true }),
+            Codec::G722 => Box::new(G722Encoder::new()),
+            Codec::Opus => Box::new(OpusEncoder::new(self.channels, opus)?),
+        })
+    }
+}
+
 impl fmt::Display for StreamSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}/{}", self.codec, self.sample_rate, self.channels)
+    }
+}
+
+/// Turns one packet's worth of interleaved f32 samples into an RTP payload.
+pub trait Encoder: Send {
+    fn encode(&mut self, samples: &[f32], out: &mut Vec<u8>) -> Result<(), String>;
+}
+
+/// Full-scale is ±32768, the inverse of the G.711/G.722 decoders and of
+/// reading 16-bit WAV, so 16-bit input passes through unchanged.
+fn to_i16(s: f32) -> i16 {
+    (s * 32768.0)
+        .round()
+        .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
+struct PcmEncoder(AudioFormat);
+
+impl Encoder for PcmEncoder {
+    fn encode(&mut self, samples: &[f32], out: &mut Vec<u8>) -> Result<(), String> {
+        self.0.encode(samples, out);
+        Ok(())
+    }
+}
+
+struct G711Encoder {
+    alaw: bool,
+}
+
+impl Encoder for G711Encoder {
+    fn encode(&mut self, samples: &[f32], out: &mut Vec<u8>) -> Result<(), String> {
+        let f = if self.alaw {
+            g711::linear_to_alaw
+        } else {
+            g711::linear_to_ulaw
+        };
+        out.extend(samples.iter().map(|&s| f(to_i16(s))));
+        Ok(())
+    }
+}
+
+impl Encoder for G722Encoder {
+    fn encode(&mut self, samples: &[f32], out: &mut Vec<u8>) -> Result<(), String> {
+        let pcm: Vec<i16> = samples.iter().map(|&s| to_i16(s)).collect();
+        self.encode_into(&pcm, out);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpusMode {
+    /// Favours speech intelligibility (libopus OPUS_APPLICATION_VOIP).
+    Voice,
+    /// Favours fidelity for music and mixed content.
+    #[default]
+    Music,
+}
+
+impl FromStr for OpusMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "voice" | "voip" => Ok(OpusMode::Voice),
+            "music" | "audio" => Ok(OpusMode::Music),
+            _ => Err(format!("unknown Opus mode '{s}' (expected voice or music)")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpusBandwidth {
+    Narrow,
+    Wide,
+    SuperWide,
+    Full,
+}
+
+impl FromStr for OpusBandwidth {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "nb" | "narrow" => Ok(OpusBandwidth::Narrow),
+            "wb" | "wide" => Ok(OpusBandwidth::Wide),
+            "swb" | "superwide" => Ok(OpusBandwidth::SuperWide),
+            "fb" | "full" => Ok(OpusBandwidth::Full),
+            _ => Err(format!(
+                "unknown Opus bandwidth '{s}' (expected nb, wb, swb, fb)"
+            )),
+        }
+    }
+}
+
+/// Opus encoder settings. Defaults match a typical paging setup:
+/// 64 kbit/s VBR with in-band FEC tuned for 5% loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpusOptions {
+    pub mode: OpusMode,
+    pub bitrate: u32,
+    pub max_bandwidth: Option<OpusBandwidth>,
+    pub fec: bool,
+    pub expected_loss_percent: u8,
+}
+
+impl Default for OpusOptions {
+    fn default() -> Self {
+        Self {
+            mode: OpusMode::Music,
+            bitrate: 64_000,
+            max_bandwidth: None,
+            fec: true,
+            expected_loss_percent: 5,
+        }
+    }
+}
+
+struct OpusEncoder {
+    encoder: opus::Encoder,
+    buf: Vec<u8>,
+}
+
+impl OpusEncoder {
+    fn new(channels: u16, o: &OpusOptions) -> Result<Self, String> {
+        let e = |e: opus::Error| e.to_string();
+        let ch = if channels == 2 {
+            opus::Channels::Stereo
+        } else {
+            opus::Channels::Mono
+        };
+        let app = match o.mode {
+            OpusMode::Voice => opus::Application::Voip,
+            OpusMode::Music => opus::Application::Audio,
+        };
+        let mut encoder = opus::Encoder::new(48_000, ch, app).map_err(e)?;
+        encoder
+            .set_bitrate(opus::Bitrate::Bits(o.bitrate as i32))
+            .map_err(e)?;
+        encoder.set_vbr(true).map_err(e)?;
+        encoder.set_inband_fec(o.fec).map_err(e)?;
+        encoder
+            .set_packet_loss_perc(if o.fec {
+                o.expected_loss_percent as i32
+            } else {
+                0
+            })
+            .map_err(e)?;
+        if let Some(bw) = o.max_bandwidth {
+            encoder
+                .set_max_bandwidth(match bw {
+                    OpusBandwidth::Narrow => opus::Bandwidth::Narrowband,
+                    OpusBandwidth::Wide => opus::Bandwidth::Wideband,
+                    OpusBandwidth::SuperWide => opus::Bandwidth::Superwideband,
+                    OpusBandwidth::Full => opus::Bandwidth::Fullband,
+                })
+                .map_err(e)?;
+        }
+        Ok(Self {
+            encoder,
+            buf: vec![0; 4000],
+        })
+    }
+}
+
+impl Encoder for OpusEncoder {
+    fn encode(&mut self, samples: &[f32], out: &mut Vec<u8>) -> Result<(), String> {
+        let n = self
+            .encoder
+            .encode_float(samples, &mut self.buf)
+            .map_err(|e| e.to_string())?;
+        out.extend_from_slice(&self.buf[..n]);
+        Ok(())
     }
 }
 
@@ -278,6 +518,70 @@ mod tests {
             Codec::Pcma
         );
         assert_eq!(StreamSpec::from_static_payload_type(96), None);
+    }
+
+    /// Encode then decode a 1 kHz tone; check level and frequency survive.
+    fn roundtrip(spec: StreamSpec) -> (f64, f64) {
+        let mut enc = spec.encoder(&OpusOptions::default()).unwrap();
+        let mut dec = spec.decoder().unwrap();
+        let frames = spec.sample_rate as usize / 50; // 20 ms
+        let ch = spec.channels as usize;
+        let mut out = Vec::new();
+        let mut payload = Vec::new();
+        for p in 0..50 {
+            let pkt: Vec<f32> = (0..frames * ch)
+                .map(|i| {
+                    let n = p * frames + i / ch;
+                    (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / spec.sample_rate as f32).sin()
+                        * 0.5
+                })
+                .collect();
+            payload.clear();
+            enc.encode(&pkt, &mut payload).unwrap();
+            dec.decode(&payload, &mut out).unwrap();
+        }
+        let mono: Vec<f32> = out.iter().step_by(ch).copied().collect();
+        let mid = &mono[mono.len() / 4..mono.len() * 3 / 4];
+        let rms = (mid.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / mid.len() as f64).sqrt();
+        let crossings = mid.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        (
+            rms / (0.5 / 2f64.sqrt()),
+            crossings as f64 * spec.sample_rate as f64 / mid.len() as f64,
+        )
+    }
+
+    #[test]
+    fn every_codec_roundtrips() {
+        for spec in [
+            StreamSpec::new(Codec::L16, 48_000, 2),
+            StreamSpec::new(Codec::L24, 48_000, 1),
+            StreamSpec::new(Codec::Pcmu, 0, 0),
+            StreamSpec::new(Codec::Pcma, 0, 0),
+            StreamSpec::new(Codec::G722, 0, 0),
+            StreamSpec::new(Codec::Opus, 0, 1),
+            StreamSpec::new(Codec::Opus, 0, 2),
+        ] {
+            let (gain, freq) = roundtrip(spec);
+            assert!((gain - 1.0).abs() < 0.05, "{spec}: gain {gain}");
+            assert!((freq - 1000.0).abs() < 5.0, "{spec}: {freq} Hz");
+        }
+    }
+
+    #[test]
+    fn rtp_details() {
+        let g722 = StreamSpec::new(Codec::G722, 0, 0);
+        assert_eq!(
+            (
+                g722.rtp_clock_rate(),
+                g722.default_payload_type(),
+                g722.rtpmap()
+            ),
+            (8_000, 9, "G722/8000".into())
+        );
+        let opus = StreamSpec::new(Codec::Opus, 0, 1);
+        assert_eq!(opus.rtpmap(), "opus/48000/2");
+        assert!(opus.check_ptime(Duration::from_millis(20)).is_ok());
+        assert!(opus.check_ptime(Duration::from_millis(1)).is_err());
     }
 
     #[test]

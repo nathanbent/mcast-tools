@@ -56,6 +56,8 @@ pub struct MulticastOptions {
     pub ttl: u32,
     /// Deliver our own packets back to local receivers.
     pub loopback: bool,
+    /// IP TOS / IPv6 traffic class for outgoing packets (e.g. 184 = DSCP EF).
+    pub tos: Option<u32>,
 }
 
 impl MulticastOptions {
@@ -71,6 +73,7 @@ impl MulticastOptions {
             interface: Interface::Any,
             ttl: 16,
             loopback: true,
+            tos: None,
         })
     }
 }
@@ -99,9 +102,23 @@ pub fn open_sender(opts: &MulticastOptions) -> io::Result<UdpSocket> {
                     ))
                 }
             }
+            if let Some(tos) = opts.tos {
+                socket.set_tos(tos)?;
+            }
             socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)).into())?;
         }
         IpAddr::V6(_) => {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "android",
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
+            if let Some(tos) = opts.tos {
+                socket.set_tclass_v6(tos)?;
+            }
             socket.set_multicast_hops_v6(opts.ttl)?;
             socket.set_multicast_loop_v6(opts.loopback)?;
             match opts.interface {

@@ -125,19 +125,26 @@ where
     Ok(stream)
 }
 
-/// Start capturing from `device`, sending interleaved f32 chunks to `tx`.
-/// Chunks are dropped (not blocked on) if the consumer falls behind.
-pub fn capture(device: &Device, format: &AudioFormat, tx: SyncSender<Vec<f32>>) -> Result<Stream> {
-    let sample_format = device.default_input_config()?.sample_format();
-    let config = stream_config(format);
-    let stream = match sample_format {
+/// The rate and channel count `device` captures at by default.
+pub fn input_format(device: &Device) -> Result<(u32, u16)> {
+    let c = device.default_input_config()?;
+    Ok((c.sample_rate().0, c.channels()))
+}
+
+/// Start capturing from `device` at its default rate and channel count (see
+/// [`input_format`]), sending interleaved f32 chunks to `tx`. Chunks are
+/// dropped (not blocked on) if the consumer falls behind.
+pub fn capture(device: &Device, tx: SyncSender<Vec<f32>>) -> Result<Stream> {
+    let supported = device.default_input_config()?;
+    let config = supported.config();
+    let stream = match supported.sample_format() {
         SampleFormat::F32 => build_input::<f32>(device, &config, tx),
         SampleFormat::I16 => build_input::<i16>(device, &config, tx),
         SampleFormat::U16 => build_input::<u16>(device, &config, tx),
         SampleFormat::I32 => build_input::<i32>(device, &config, tx),
         other => bail!("unsupported input sample format {other:?}"),
     }
-    .with_context(|| format!("opening input device for {format}"))?;
+    .context("opening input device")?;
     stream.play()?;
     Ok(stream)
 }

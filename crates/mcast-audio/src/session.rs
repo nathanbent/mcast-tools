@@ -1,7 +1,6 @@
 //! Mapping between audio streams and SDP session descriptions.
 
 use crate::codec::{Codec, StreamSpec};
-use crate::format::AudioFormat;
 use mcast_core::random_u32;
 use mcast_core::sdp::{Attribute, Connection, Media, Origin, SessionDescription};
 use std::fmt;
@@ -94,14 +93,16 @@ impl fmt::Display for StreamInfo {
 }
 
 /// Build an SDP for a stream we're sending.
+#[allow(clippy::too_many_arguments)]
 pub fn describe(
     name: &str,
     origin: IpAddr,
     group: SocketAddr,
     ttl: u32,
-    format: AudioFormat,
+    spec: StreamSpec,
     payload_type: u8,
     ptime: Duration,
+    opus_fec: bool,
 ) -> SessionDescription {
     let id = random_u32().to_string();
     let attr = |name: &str, value: Option<String>| Attribute {
@@ -109,6 +110,26 @@ pub fn describe(
         value,
     };
     let ptime_ms = (ptime.as_secs_f64() * 1000.0 * 1000.0).round() / 1000.0;
+    let mut attributes = vec![
+        attr("recvonly", None),
+        attr("rtpmap", Some(format!("{payload_type} {}", spec.rtpmap()))),
+    ];
+    if spec.codec == Codec::Opus {
+        let mut fmtp = vec![];
+        if spec.channels == 2 {
+            fmtp.push("sprop-stereo=1");
+        }
+        if opus_fec {
+            fmtp.push("useinbandfec=1");
+        }
+        if !fmtp.is_empty() {
+            attributes.push(attr(
+                "fmtp",
+                Some(format!("{payload_type} {}", fmtp.join("; "))),
+            ));
+        }
+    }
+    attributes.push(attr("ptime", Some(ptime_ms.to_string())));
     SessionDescription {
         origin: Origin {
             username: "-".into(),
@@ -117,7 +138,7 @@ pub fn describe(
             address: origin.to_string(),
         },
         name: name.into(),
-        info: Some(format!("mcast-tools audio {format}")),
+        info: Some(format!("mcast-tools audio {spec}")),
         connection: Some(Connection {
             address: group.ip(),
             ttl: group.is_ipv4().then_some(ttl.min(255) as u8),
@@ -129,17 +150,7 @@ pub fn describe(
             protocol: "RTP/AVP".into(),
             formats: vec![payload_type.to_string()],
             connection: None,
-            attributes: vec![
-                attr("recvonly", None),
-                attr(
-                    "rtpmap",
-                    Some(format!(
-                        "{payload_type} {}/{}/{}",
-                        format.encoding, format.sample_rate, format.channels
-                    )),
-                ),
-                attr("ptime", Some(ptime_ms.to_string())),
-            ],
+            attributes,
         }],
     }
 }
@@ -147,34 +158,58 @@ pub fn describe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::Encoding;
     use mcast_core::sdp;
 
     #[test]
     fn describe_then_read_back() {
-        let fmt = AudioFormat {
-            sample_rate: 48_000,
-            channels: 2,
-            encoding: Encoding::L24,
-        };
         let group: SocketAddr = "239.69.0.1:5004".parse().unwrap();
-        let sdp_text = describe(
-            "Lobby",
-            "10.0.0.5".parse().unwrap(),
-            group,
-            16,
-            fmt,
-            96,
-            Duration::from_millis(1),
-        )
-        .to_string();
-        assert!(sdp_text.contains("a=rtpmap:96 L24/48000/2\r\n"));
-        assert!(sdp_text.contains("c=IN IP4 239.69.0.1/16\r\n"));
-        let info = StreamInfo::from_sdp(&sdp::parse(&sdp_text).unwrap()).unwrap();
-        assert_eq!(info.name, "Lobby");
-        assert_eq!(info.group, group);
-        assert_eq!(info.ptime_ms, Some(1.0));
-        assert_eq!(info.spec(), Some(StreamSpec::new(Codec::L24, 48_000, 2)));
+        let origin = "10.0.0.5".parse().unwrap();
+        let cases = [
+            (
+                StreamSpec::new(Codec::L24, 48_000, 2),
+                96,
+                "a=rtpmap:96 L24/48000/2\r\n",
+            ),
+            (
+                StreamSpec::new(Codec::Pcmu, 0, 0),
+                0,
+                "a=rtpmap:0 PCMU/8000\r\n",
+            ),
+            (
+                StreamSpec::new(Codec::G722, 0, 0),
+                9,
+                "a=rtpmap:9 G722/8000\r\n",
+            ),
+            (
+                StreamSpec::new(Codec::Opus, 0, 2),
+                107,
+                "a=fmtp:107 sprop-stereo=1; useinbandfec=1\r\n",
+            ),
+            (
+                StreamSpec::new(Codec::Opus, 0, 1),
+                107,
+                "a=fmtp:107 useinbandfec=1\r\n",
+            ),
+        ];
+        for (spec, pt, line) in cases {
+            let text = describe(
+                "Lobby",
+                origin,
+                group,
+                16,
+                spec,
+                pt,
+                Duration::from_millis(20),
+                true,
+            )
+            .to_string();
+            assert!(text.contains(line), "{spec}: {text}");
+            assert!(text.contains("c=IN IP4 239.69.0.1/16\r\n"));
+            let info = StreamInfo::from_sdp(&sdp::parse(&text).unwrap()).unwrap();
+            assert_eq!((info.name.as_str(), info.group), ("Lobby", group));
+            assert_eq!(info.ptime_ms, Some(20.0));
+            assert_eq!(info.spec(), Some(spec), "{spec}");
+        }
     }
 
     #[test]

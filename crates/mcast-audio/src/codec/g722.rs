@@ -1,7 +1,7 @@
-//! G.722 64 kbit/s decoder (sub-band ADPCM, ITU-T G.722).
+//! G.722 64 kbit/s encoder and decoder (sub-band ADPCM, ITU-T G.722).
 //!
 //! A port of the public-domain reference implementation (CMU 1993, as
-//! adapted by Steve Underwood). Produces 16 kHz 16-bit mono.
+//! adapted by Steve Underwood). 16 kHz 16-bit mono in and out.
 
 #[derive(Default, Clone)]
 struct Band {
@@ -49,6 +49,20 @@ const QM6: [i32; 64] = [
     11192, 10232, 9360, 8576, 7856, 7192, 6576, 6000, 5456, 4944, 4464, 4008, 3576, 3168, 2776,
     2400, 2032, 1688, 1360, 1040, 728, 432, 136, -432, -136,
 ];
+const Q6: [i32; 32] = [
+    0, 35, 72, 110, 150, 190, 233, 276, 323, 370, 422, 473, 530, 587, 650, 714, 786, 858, 940,
+    1023, 1121, 1219, 1339, 1458, 1612, 1765, 1980, 2195, 2557, 2919, 0, 0,
+];
+const ILN: [i32; 32] = [
+    0, 63, 62, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11,
+    10, 9, 8, 7, 6, 5, 4, 0,
+];
+const ILP: [i32; 32] = [
+    0, 61, 60, 59, 58, 57, 56, 55, 54, 53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39,
+    38, 37, 36, 35, 34, 33, 32, 0,
+];
+const IHN: [usize; 3] = [0, 1, 0];
+const IHP: [usize; 3] = [0, 3, 2];
 const QMF: [i32; 12] = [3, -11, 12, 32, -210, 951, 3876, -805, 362, -156, 53, -11];
 
 impl Default for G722Decoder {
@@ -100,6 +114,72 @@ impl G722Decoder {
             }
             emit(sat(xout1 >> 11) as i16);
             emit(sat(xout2 >> 11) as i16);
+        }
+    }
+}
+
+pub struct G722Encoder {
+    band: [Band; 2],
+    x: [i32; 24],
+}
+
+impl Default for G722Encoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl G722Encoder {
+    pub fn new() -> Self {
+        let mut band: [Band; 2] = Default::default();
+        band[0].det = 32;
+        band[1].det = 8;
+        Self { band, x: [0; 24] }
+    }
+
+    /// Encode 16 kHz samples (an even count); every two samples yield one byte.
+    pub fn encode_into(&mut self, samples: &[i16], out: &mut Vec<u8>) {
+        for pair in samples.chunks_exact(2) {
+            // Transmit QMF: split into low and high bands at 8 kHz each.
+            self.x.copy_within(2.., 0);
+            self.x[22] = pair[0] as i32;
+            self.x[23] = pair[1] as i32;
+            let mut sumodd = 0;
+            let mut sumeven = 0;
+            for i in 0..12 {
+                sumodd += self.x[2 * i] * QMF[i];
+                sumeven += self.x[2 * i + 1] * QMF[11 - i];
+            }
+            let xlow = (sumeven + sumodd) >> 14;
+            let xhigh = (sumeven - sumodd) >> 14;
+
+            // Low band: SUBTRA, QUANTL (6 bits).
+            let lo = &mut self.band[0];
+            let el = sat(xlow - lo.s);
+            let wd = if el >= 0 { el } else { -(el + 1) };
+            let mut i = 1;
+            while i < 30 && wd >= (Q6[i] * lo.det) >> 12 {
+                i += 1;
+            }
+            let ilow = if el < 0 { ILN[i] } else { ILP[i] } as usize;
+            let ril = ilow >> 2;
+            let dlow = (lo.det * QM4[ril]) >> 15;
+            lo.nb = (((lo.nb * 127) >> 7) + WL[RL42[ril]]).clamp(0, 18432);
+            lo.det = scale(lo.nb, 8);
+            block4(lo, dlow);
+
+            // High band: SUBTRA, QUANTH (2 bits).
+            let hi = &mut self.band[1];
+            let eh = sat(xhigh - hi.s);
+            let wd = if eh >= 0 { eh } else { -(eh + 1) };
+            let mih = if wd >= (564 * hi.det) >> 12 { 2 } else { 1 };
+            let ihigh = if eh < 0 { IHN[mih] } else { IHP[mih] };
+            let dhigh = (hi.det * QM2[ihigh]) >> 15;
+            hi.nb = (((hi.nb * 127) >> 7) + WH[RH2[ihigh]]).clamp(0, 22528);
+            hi.det = scale(hi.nb, 10);
+            block4(hi, dhigh);
+
+            out.push(((ihigh << 6) | ilow) as u8);
         }
     }
 }
@@ -194,5 +274,28 @@ mod tests {
         });
         assert_eq!(n, 4000);
         assert_eq!(hash, 0x7fcb_b226_3f7e_ed61);
+    }
+
+    /// The same integer test signal ffmpeg encoded into `encoded.g722`.
+    fn test_signal() -> Vec<i16> {
+        let mut seed: i64 = 12345;
+        (0..1600i64)
+            .map(|i| {
+                seed = (seed * 1_103_515_245 + 12345) & 0x7fff_ffff;
+                let tri1 = ((i * 37) % 400 - 200).abs() * 60 - 6000;
+                let tri2 = ((i * 211) % 160 - 80).abs() * 40 - 1600;
+                (tri1 + tri2 + ((seed >> 16) % 2001 - 1000)).clamp(-32768, 32767) as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn encoder_bit_exact_with_ffmpeg() {
+        let mut out = Vec::new();
+        G722Encoder::new().encode_into(&test_signal(), &mut out);
+        assert_eq!(
+            out.as_slice(),
+            include_bytes!("../../tests/data/encoded.g722")
+        );
     }
 }

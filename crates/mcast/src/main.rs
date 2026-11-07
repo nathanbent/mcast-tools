@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
+use mcast_audio::codec::{OpusBandwidth, OpusMode, OpusOptions};
 use mcast_audio::{receiver, sender, AudioFormat, Codec, StreamInfo, StreamSpec};
 use mcast_core::sap::{self, Directory, DirectoryEvent};
 use mcast_core::{Interface, MulticastOptions};
@@ -68,28 +69,14 @@ struct FormatArgs {
     /// Channel count [default: 2]
     #[arg(short, long)]
     channels: Option<u16>,
-    /// Encoding: l16, l24 (send and receive); pcmu/g711u, pcma/g711a, g722, opus (receive)
-    /// [default: l16]
+    /// Encoding: l16, l24, pcmu/g711u, pcma/g711a, g722, opus [default: l16]
     #[arg(short, long)]
     encoding: Option<Codec>,
 }
 
 impl FormatArgs {
-    /// PCM format for sending.
-    fn send_format(&self) -> Result<AudioFormat> {
-        let d = AudioFormat::default();
-        let codec = self.encoding.unwrap_or(Codec::L16);
-        let Some(encoding) = codec.pcm_encoding() else {
-            bail!("sending {codec} isn't supported yet; use l16 or l24");
-        };
-        Ok(AudioFormat {
-            sample_rate: self.rate.unwrap_or(d.sample_rate),
-            channels: self.channels.unwrap_or(d.channels),
-            encoding,
-        })
-    }
-
-    /// Decoding spec for receiving (codec-fixed rates/channels win).
+    /// Stream spec (codec-fixed rates/channels win). L16/L24 default to
+    /// 48 kHz stereo; G.711, G.722 and Opus to mono.
     fn spec(&self) -> StreamSpec {
         let d = AudioFormat::default();
         let codec = self.encoding.unwrap_or(Codec::L16);
@@ -138,19 +125,35 @@ struct SendArgs {
     net: NetArgs,
     #[command(flatten)]
     format: FormatArgs,
-    /// Packet time in milliseconds (AES67 uses 1)
-    #[arg(long, default_value_t = 1.0)]
-    ptime: f64,
-    /// RTP payload type (default: RFC 3551 static type, else 96)
+    /// Packet time in ms [default: 1 for L16/L24 (AES67), 20 for G.711/G.722/Opus]
+    #[arg(long)]
+    ptime: Option<f64>,
+    /// RTP payload type [default: 0 PCMU, 8 PCMA, 9 G.722, 107 Opus, 96 L16/L24]
     #[arg(long)]
     pt: Option<u8>,
+    /// IP TOS byte for the audio packets, e.g. 184 (DSCP EF) for voice QoS
+    #[arg(long)]
+    tos: Option<u32>,
+    /// Opus bitrate in kbit/s
+    #[arg(long, default_value_t = 64)]
+    bitrate: u32,
+    /// Opus tuning: voice or music
+    #[arg(long, default_value = "music")]
+    opus_mode: OpusMode,
+    /// Opus maximum audio bandwidth: nb (4 kHz), wb (8 kHz), swb (12 kHz), fb (20 kHz)
+    #[arg(long)]
+    opus_bandwidth: Option<OpusBandwidth>,
+    /// Disable Opus in-band forward error correction
+    #[arg(long)]
+    no_fec: bool,
     /// Send a sine tone at this frequency (Hz) [default source]
     #[arg(long, group = "source")]
     tone: Option<f32>,
     /// Tone level in dBFS
     #[arg(long, default_value_t = -12.0, allow_negative_numbers = true)]
     level: f32,
-    /// Send a WAV file (its rate and channel count are used)
+    /// Send a WAV file (resampled to the codec's rate; L16/L24 keep the
+    /// file's rate and channels unless --rate/--channels are given)
     #[arg(long, group = "source")]
     wav: Option<PathBuf>,
     /// Loop the WAV file
@@ -283,11 +286,21 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
         sap_group: a.sap_group,
         interval: Duration::from_secs_f64(a.sap_interval.max(0.5)),
     });
+    let mut net = a.net.options(a.group)?;
+    net.tos = a.tos;
     let s = sender::Sender::new(sender::SenderConfig {
-        net: a.net.options(a.group)?,
-        format: a.format.send_format()?,
-        ptime: Duration::from_secs_f64(a.ptime / 1000.0),
+        net,
+        stream: a.format.spec(),
+        match_wav_format: a.format.rate.is_none() && a.format.channels.is_none(),
+        ptime: a.ptime.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
         payload_type: a.pt,
+        opus: OpusOptions {
+            mode: a.opus_mode,
+            bitrate: a.bitrate * 1000,
+            max_bandwidth: a.opus_bandwidth,
+            fec: !a.no_fec,
+            ..OpusOptions::default()
+        },
         source,
         duration: a.duration.map(Duration::from_secs_f64),
         announce,
@@ -296,30 +309,44 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
         std::fs::write(path, s.sdp().to_string())?;
         eprintln!("wrote SDP to {}", path.display());
     }
-    let fmt = s.format();
+    let spec = s.spec();
+    let (src_rate, src_ch) = s.source_format();
+    let conversion = if (src_rate, src_ch) != (spec.sample_rate, spec.channels) {
+        format!(", converted from {src_rate} Hz/{src_ch}ch")
+    } else {
+        String::new()
+    };
     eprintln!(
-        "sending {fmt} to {} ({} frames/packet). Ctrl-C to stop.",
+        "sending {spec} to {} (pt {}, {} ms packets{conversion}). Ctrl-C to stop.",
         a.group,
-        s.frames_per_packet()
+        s.payload_type(),
+        s.ptime().as_secs_f64() * 1000.0,
     );
     match s.sap_group() {
         Some(g) => eprintln!(
             "announcing \"{}\" via SAP on {g}; receive with: mcast audio recv",
             s.sdp().name
         ),
-        None => eprintln!(
-            "receive with: mcast audio recv -g {} -r {} -c {} -e {}",
-            a.group,
-            fmt.sample_rate,
-            fmt.channels,
-            fmt.encoding.to_string().to_lowercase()
-        ),
+        None => {
+            let mut cmd = format!(
+                "mcast audio recv -g {} -e {}",
+                a.group,
+                spec.codec.to_string().to_lowercase()
+            );
+            if spec.codec.pcm_encoding().is_some() || spec.codec == Codec::Opus {
+                cmd += &format!(" -c {}", spec.channels);
+            }
+            if spec.codec.pcm_encoding().is_some() {
+                cmd += &format!(" -r {}", spec.sample_rate);
+            }
+            eprintln!("receive with: {cmd}");
+        }
     }
     let stats = s.run(stop)?;
     eprintln!(
         "sent {} packets ({:.1}s of audio), {} send errors",
         stats.packets,
-        stats.frames as f64 / fmt.sample_rate as f64,
+        stats.frames as f64 / spec.sample_rate as f64,
         stats.send_errors
     );
     Ok(())
