@@ -1390,6 +1390,7 @@ dependencies = [
  "anyhow",
  "axum",
  "futures-util",
+ "hound",
  "jiff",
  "mcast-core",
  "mcast-server",

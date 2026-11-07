@@ -40,7 +40,7 @@ A page with a tab for each part:
 | **History** | Recent plays, and how each group fared |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
-| **Sounds** | The mcast server's sound files, in folders: upload (or drop files on it), listen, rename or move, hide from the lists, delete. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
+| **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, rename or move, hide from the lists, delete. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server |
 
@@ -95,6 +95,17 @@ On loopback with no startup token the panel is open, as before: requests
 without a token act as admin. A known access token still gets its own role.
 
 ### From other systems
+
+**Sounds.** A `media` token can upload sounds from a script, such as a
+message recorded fresh each day under the same name, which every
+announcement using that name then plays:
+
+```bash
+curl -X PUT -H "Authorization: Bearer mci_..." --data-binary @today.wav https://HOST:8651/api/intercom/v1/media/daily/message.wav
+```
+
+The mcast server checks it's audio it can play first; if it isn't, the
+upload is refused (`422`) and the old file stays.
 
 **Trigger API.** Other systems play announcements by id or name with a
 trigger token (or an operator or admin one):
@@ -355,8 +366,8 @@ only their runs.
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
-| `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by"}], "folders": [{"name", "hidden"}]}`; `used_by` names the announcements (and "the defaults") that use a file |
-| `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. `DELETE` is refused (`409`) while something uses it |
+| `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error"}], "folders": [{"name", "hidden"}]}`; `used_by` names the announcements (and "the defaults") that use a file; `audio` is `{"codec", "rate", "channels", "duration_s"}`, or `audio_error` says why the mcast server can't play it (`null` both with an mcast server before 0.5.5) |
+| `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. An upload must be audio the mcast server can play (`422` if not, and any old file stays); it replaces a file of that name, so announcements using it play the new one. Returns `{"name", "bytes", "audio"}` (`201`). `DELETE` is refused (`409`) while something uses it |
 | `POST /media-folders`, `DELETE /media-folders/{path}` | `{"name"}`: make a folder; delete an empty one |
 | `POST /media-move` | `{"from", "to"}`: rename or move a file or folder, then point what used it at the new name. Returns `{"from", "to", "folder", "updated"}` |
 | `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |

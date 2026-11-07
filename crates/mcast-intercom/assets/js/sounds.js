@@ -4,9 +4,10 @@
 // the announcement.
 
 import { api, mediaUrl, upload } from "./api.js";
-import { h, replace, toast, bytes, saved } from "./dom.js";
+import { h, replace, toast, bytes, saved, seconds } from "./dom.js";
 import { state, subscribe, refreshLibrary, can } from "./store.js";
 import { field, select } from "./editor.js";
+import { openRecorder } from "./record.js";
 
 let folder = saved.get("sounds.folder", ""); // the folder being shown; "" is the top
 let player = null;
@@ -127,7 +128,15 @@ function crumbs() {
         : h("button", { class: "link", onclick: () => open(parts.slice(0, i + 1).join("/")) }, p)]));
 }
 
-function row({ name, isFolder, hidden, size, used, count }) {
+// "1:05", or why the mcast server can't play it.
+function length(audio, error) {
+  if (audio) return h("span", { title: `${audio.codec}, ${audio.rate} Hz, ${audio.channels === 1 ? "mono" : `${audio.channels} channels`}` },
+    audio.duration_s < 0.1 ? "under 0.1 s" : audio.duration_s < 10 ? `${audio.duration_s.toFixed(1)} s` : seconds(audio.duration_s));
+  if (error) return h("span", { class: "badge failed", title: error }, "can't play");
+  return h("span", { class: "muted" }, "—");
+}
+
+function row({ name, isFolder, hidden, size, used, count, audio, audioError }) {
   const label = base(name);
   return h("tr", { class: hidden ? "off" : null },
     h("td", { class: "icon-cell" }, isFolder
@@ -136,6 +145,7 @@ function row({ name, isFolder, hidden, size, used, count }) {
     h("td", {},
       isFolder ? h("button", { class: "link name", onclick: () => open(name) }, label) : label,
       hidden && h("span", { class: "badge" }, "hidden")),
+    h("td", { class: "small" }, isFolder ? "" : length(audio, audioError)),
     h("td", { class: "wide muted small" }, isFolder ? `${count} item${count === 1 ? "" : "s"}` : bytes(size)),
     h("td", { class: "wide small" }, used?.length ? used.join(", ") : h("span", { class: "muted" }, "—")),
     h("td", { class: "actions" }, can.changeSounds() && h("div", { class: "buttons nowrap" },
@@ -167,18 +177,21 @@ function render() {
       crumbs(),
       h("span", { class: "spacer" }),
       can.changeSounds() && h("button", { class: "primary", onclick: () => fileInput.click() }, "Upload…"),
+      can.changeSounds() && h("button", {
+        onclick: () => openRecorder(folder, (n) => state.library.files.some((x) => x.name === n), refreshLibrary),
+      }, "Record…"),
       can.changeSounds() && h("button", { onclick: newFolder }, "New folder")),
     progress,
     state.libraryError && h("p", { class: "error" }, `Couldn't list the files: ${state.libraryError}`),
     subfolders.length || here.length
       ? h("div", { class: "scroll" }, h("table", { class: "items files" },
-          h("thead", {}, h("tr", {}, h("th"), h("th", {}, "Name"), h("th", { class: "wide" }, "Size"),
+          h("thead", {}, h("tr", {}, h("th"), h("th", {}, "Name"), h("th", {}, "Length"), h("th", { class: "wide" }, "Size"),
             h("th", { class: "wide" }, "Used by"), h("th"))),
           h("tbody", {},
             folder && h("tr", {}, h("td", { class: "icon-cell" }, "↰"),
-              h("td", { colspan: 4 }, h("button", { class: "link", onclick: () => open(parent(folder)) }, "Up a folder"))),
+              h("td", { colspan: 5 }, h("button", { class: "link", onclick: () => open(parent(folder)) }, "Up a folder"))),
             subfolders.map((f) => row({ name: f.name, isFolder: true, hidden: f.hidden, count: count(f.name) })),
-            here.map((f) => row({ name: f.name, hidden: f.hidden, size: f.bytes, used: f.used_by })))))
+            here.map((f) => row({ name: f.name, hidden: f.hidden, size: f.bytes, used: f.used_by, audio: f.audio, audioError: f.audio_error })))))
       : h("p", { class: "muted" }, folder ? "This folder is empty." : "No sound files yet: upload some."),
     !can.changeSounds() && h("p", { class: "muted small" }, "This token can listen to sounds but not change them."),
     h("p", { class: "muted small" },

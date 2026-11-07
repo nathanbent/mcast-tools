@@ -19,7 +19,7 @@ use events::events;
 use files::{start_file_receiver, start_file_sender};
 use media::{
     create_folder, delete_folder, delete_media, download_media, list_folders, list_media,
-    move_media, upload_media,
+    media_info, move_media, upload_media,
 };
 use phonebook::{delete_phonebook, list_phonebook, put_phonebook};
 use routes::*;
@@ -80,6 +80,8 @@ struct Inner {
     chimes: PathBuf,
     /// Held while changing the chimes file.
     chimes_lock: tokio::sync::Mutex<()>,
+    /// What each media file holds, as last probed (see `media::audio_info`).
+    audio_info: media::AudioCache,
     closing: watch::Receiver<bool>,
 }
 
@@ -131,6 +133,7 @@ impl AppState {
             phonebook_lock: tokio::sync::Mutex::new(()),
             chimes: cfg.chimes.clone(),
             chimes_lock: tokio::sync::Mutex::new(()),
+            audio_info: Default::default(),
             closing,
         })))
     }
@@ -216,6 +219,7 @@ pub fn router(state: AppState) -> Router {
             "/media/{*name}",
             get(download_media).put(upload_media).delete(delete_media),
         )
+        .route("/media-info/{*name}", get(media_info))
         .route("/media-folders", get(list_folders).post(create_folder))
         .route(
             "/media-folders/{*name}",

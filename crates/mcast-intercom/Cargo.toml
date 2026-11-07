@@ -23,6 +23,7 @@ rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"]
 ring = "0.17"
 
 [dev-dependencies]
+hound.workspace = true
 tower.workspace = true
 tokio-tungstenite = "0.29"
 mcast-core.workspace = true

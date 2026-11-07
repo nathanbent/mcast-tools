@@ -264,6 +264,47 @@ fn the_panel_api_plays_through_a_real_server() {
         .into_json()
         .unwrap();
     assert_eq!(b["connected"], true, "{b}");
+
+    // Sounds uploaded through the panel are checked by the real server.
+    // (status, body)
+    let put = |name: &str, data: &[u8]| -> (u16, serde_json::Value) {
+        match ureq::put(&format!("{panel}/media/{name}")).send_bytes(data) {
+            Ok(r) => (r.status(), r.into_json().unwrap()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_json().unwrap()),
+            Err(e) => panic!("{e}"),
+        }
+    };
+    let (status, v) = put("bells/notes.wav", b"not audio");
+    assert_eq!(status, 422, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("isn't audio"), "{v}");
+    let mut wav = Vec::new();
+    {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::new(std::io::Cursor::new(&mut wav), spec).unwrap();
+        for i in 0..8000 {
+            w.write_sample(((i % 40) as i16 - 20) * 500).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    let (_, v) = put("bells/half.wav", &wav);
+    assert_eq!(v["audio"]["duration_s"], 0.5, "{v}");
+    let lib: serde_json::Value = ureq::get(&format!("{panel}/library"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let f = lib["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "bells/half.wav")
+        .unwrap();
+    assert_eq!(f["audio"]["rate"], 16_000, "{lib}");
 }
 
 /// Push to talk, end to end: a WebSocket into the panel, live senders on a

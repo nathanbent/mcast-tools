@@ -51,9 +51,10 @@ Errors are JSON: `{"error": "message"}`.
 | GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
 | POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
 | POST | `/file-receivers` | Receive files into the media directory (body: file receive request). `201` with the job |
-| GET | `/media` | Every file, in every folder: `[{"name", "bytes", "modified_ms"}]`, `name` being its path (`bells/lunch.wav`) |
+| GET | `/media` | Every file, in every folder: `[{"name", "bytes", "modified_ms"}]`, `name` being its path (`bells/lunch.wav`). With `?audio=1`, each also has `audio` (`{"codec", "rate", "channels", "duration_s"}`) if it's audio mcast can play, else `audio_error` saying why not. Files are probed once and remembered until they change |
+| GET | `/media-info/{name}` | One file, as in `/media?audio=1` |
 | GET | `/media/{name}` | Download a file. Pictures and audio come with their type; anything else downloads as `application/octet-stream`, so nothing received can run in a browser |
-| PUT | `/media/{name}` | Upload a file (raw body), making any folders in its path. Replaces any file of that name |
+| PUT | `/media/{name}` | Upload a file (raw body), making any folders in its path. Replaces any file of that name. With `?audio=1`, it must be audio mcast can play: if not, `422` and any old file stays. Returns `{"name", "bytes"}`, and `audio` when checked |
 | DELETE | `/media/{name}` | Delete a file |
 | GET | `/media-folders` | Every folder, empty ones included: `["bells", "bells/old"]` |
 | POST | `/media-folders` | `{"name": "bells/old"}`: make a folder (and those above it) |

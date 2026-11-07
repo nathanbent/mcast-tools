@@ -36,7 +36,7 @@ pub(super) fn router(dir: Option<PathBuf>) -> Router {
 /// to the page's own host; some browsers don't count `ws:`/`wss:` as
 /// `'self'`, so the host is named too.
 fn policy(headers: &HeaderMap) -> HeaderValue {
-    let base = "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    let base = "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
     let host = headers
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())

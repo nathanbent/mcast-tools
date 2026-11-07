@@ -79,6 +79,13 @@ pub struct MediaFile {
     pub bytes: u64,
     #[serde(default)]
     pub modified_ms: Option<u64>,
+    /// What it holds, if it's audio the server can play: `codec`, `rate`,
+    /// `channels`, `duration_s`. (Servers before 0.5.5 don't say.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<Value>,
+    /// Why the server can't play it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_error: Option<String>,
 }
 
 /// Callback for [`Backend::follow`]; return false to stop following.
@@ -98,8 +105,10 @@ pub trait Backend: Send + Sync + 'static {
     }
     /// Its folders, empty ones included, by path.
     fn media_folders(&self) -> BackendResult<Vec<String>>;
-    /// Upload a file (replacing one of that name), making its folders.
-    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<()>;
+    /// Upload a sound (replacing one of that name), making its folders. The
+    /// server checks it's audio it can play (`422` if not, leaving any old
+    /// file), and says what it holds: `{"name", "bytes", "audio"}`.
+    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<Value>;
     fn delete_media(&self, name: &str) -> BackendResult<()>;
     fn create_folder(&self, name: &str) -> BackendResult<()>;
     /// Delete an empty folder.
@@ -239,17 +248,20 @@ impl Backend for HttpBackend {
     }
 
     fn media_files(&self) -> BackendResult<Vec<MediaFile>> {
-        self.get("/media")
+        self.get("/media?audio=1")
     }
 
     fn media_folders(&self) -> BackendResult<Vec<String>> {
         self.get("/media-folders")
     }
 
-    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<()> {
-        self.request(&self.agent, "PUT", &format!("/media/{}", encode(name)))
-            .send_bytes(data)?;
-        Ok(())
+    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<Value> {
+        let path = format!("/media/{}?audio=1", encode(name));
+        Ok(self
+            .request(&self.agent, "PUT", &path)
+            .send_bytes(data)?
+            .into_json()
+            .unwrap_or(Value::Null))
     }
 
     fn delete_media(&self, name: &str) -> BackendResult<()> {

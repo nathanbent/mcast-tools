@@ -1698,3 +1698,43 @@ async fn webhook_tests_say_how_it_went() {
     let (s, _) = p.call(Method::POST, "/webhooks/w_nope/test", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn sounds_are_checked_and_media_tokens_upload_them() {
+    let p = panel(Some("s3cret"));
+    let rec = p
+        .token(Some("s3cret"), json!({"name": "Recorder", "role": "media"}))
+        .await;
+    let put = |name: &str, data: &'static [u8]| {
+        let req = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("{API_PREFIX}/media/{name}"))
+            .header(header::AUTHORIZATION, format!("Bearer {rec}"))
+            .body(Body::from(data))
+            .unwrap();
+        p.app.clone().oneshot(req)
+    };
+    let r = put("daily/message.wav", b"RIFF and some audio")
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let v: Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap())
+            .unwrap();
+    assert_eq!(v["audio"]["rate"], 48000, "{v}");
+    let r = put("daily/message.wav", b"not audio, a mistake")
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (_, lib) = p.call_with(Method::GET, "/library", None, Some(&rec)).await;
+    let f = &lib["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "daily/message.wav")
+        .unwrap()
+        .clone();
+    assert_eq!(f["bytes"], 19, "the first upload stays");
+    assert!(f["audio"]["duration_s"].as_f64().is_some(), "{f}");
+}

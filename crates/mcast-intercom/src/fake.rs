@@ -142,6 +142,12 @@ impl Backend for Fake {
                 name: name.clone(),
                 bytes: *bytes,
                 modified_ms: Some(1),
+                // Pretend anything but .txt is a second of audio per KB.
+                audio: (!name.ends_with(".txt")).then(|| {
+                    serde_json::json!({"codec": "pcm_s16le", "rate": 48000, "channels": 1,
+                                       "duration_s": *bytes as f64 / 1000.0})
+                }),
+                audio_error: name.ends_with(".txt").then(|| "no audio track".into()),
             })
             .collect())
     }
@@ -151,14 +157,24 @@ impl Backend for Fake {
         Ok(self.st.lock().unwrap().folders.iter().cloned().collect())
     }
 
-    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<()> {
+    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<Value> {
         self.reachable()?;
+        // As the server checks: this isn't audio.
+        if data.starts_with(b"not audio") {
+            return Err(err(
+                422,
+                format!(
+                    "\"{name}\" isn't audio mcast can play: unsupported or unreadable audio file"
+                ),
+            ));
+        }
         let mut st = self.st.lock().unwrap();
         st.add_parents(name);
         st.files().insert(name.into(), data.len() as u64);
         drop(st);
         self.emit(Feed::MediaChanged);
-        Ok(())
+        Ok(serde_json::json!({"name": name, "bytes": data.len(),
+            "audio": {"codec": "pcm_s16le", "rate": 48000, "channels": 1, "duration_s": data.len() as f64 / 1000.0}}))
     }
 
     fn delete_media(&self, name: &str) -> BackendResult<()> {

@@ -4,14 +4,16 @@
 use crate::{ApiError, ApiResult, AppState};
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use futures_util::StreamExt;
 use mcast_control::Event;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::SystemTime;
 use tokio::io::AsyncWriteExt;
 
 /// Deepest folder nesting accepted.
@@ -73,6 +75,106 @@ pub(crate) struct MediaFile {
     name: String,
     bytes: u64,
     modified_ms: Option<u64>,
+    /// With `?audio=1`: what it holds, if it's audio mcast can play...
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio: Option<Value>,
+    /// ...or why not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_error: Option<String>,
+    #[serde(skip)]
+    modified: Option<SystemTime>,
+}
+
+/// Probed files: path → (modified, length, what it holds or why it can't be
+/// played). A file is probed again only when it changes.
+pub(crate) type AudioCache =
+    std::sync::Mutex<HashMap<PathBuf, (Option<SystemTime>, u64, Result<Value, String>)>>;
+
+fn audio_json(i: &mcast_audio::file::AudioInfo) -> Value {
+    json!({
+        "codec": i.codec,
+        "rate": i.rate,
+        "channels": i.channels,
+        "duration_s": (i.duration_s * 1000.0).round() / 1000.0,
+    })
+}
+
+/// Why a file can't be played, without the server's path in it.
+fn probe_error(e: &anyhow::Error, path: &std::path::Path) -> String {
+    let m = format!("{e:#}");
+    if m.contains("unsupported or unreadable audio file") {
+        return "unknown format (use WAV, MP3, FLAC, Ogg or AAC/M4A)".into();
+    }
+    let p = path.display().to_string();
+    m.strip_prefix(&format!("{p}: "))
+        .unwrap_or(&m)
+        .replace(&p, "the file")
+}
+
+/// Probe a file (blocking: it may decode the whole file).
+fn probe(path: &std::path::Path) -> Result<Value, String> {
+    mcast_audio::file::probe(path)
+        .map(|i| audio_json(&i))
+        .map_err(|e| probe_error(&e, path))
+}
+
+/// What each of `files` holds, from the cache or probed now.
+async fn audio_info(s: &AppState, files: &mut [MediaFile]) -> ApiResult<()> {
+    let root = s.0.media_dir.clone();
+    let wanted: Vec<(PathBuf, Option<SystemTime>, u64)> = files
+        .iter()
+        .map(|f| (root.join(&f.name), f.modified, f.bytes))
+        .collect();
+    let st = s.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::with_capacity(wanted.len());
+        for (path, modified, bytes) in wanted {
+            let cached = {
+                let cache = st.0.audio_info.lock().unwrap_or_else(|e| e.into_inner());
+                cache
+                    .get(&path)
+                    .filter(|(m, b, _)| *m == modified && *b == bytes)
+                    .map(|(_, _, r)| r.clone())
+            };
+            let r = match cached {
+                Some(r) => r,
+                None => {
+                    let r = probe(&path);
+                    st.0.audio_info
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(path, (modified, bytes, r.clone()));
+                    r
+                }
+            };
+            out.push(r);
+        }
+        out
+    })
+    .await
+    .map_err(ApiError::internal)?;
+    for (f, r) in files.iter_mut().zip(found) {
+        match r {
+            Ok(v) => f.audio = Some(v),
+            Err(e) => f.audio_error = Some(e),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct AudioQuery {
+    /// `1` (or anything but `0`/`false`): say what each file holds / check
+    /// that an upload is audio.
+    audio: Option<String>,
+}
+
+impl AudioQuery {
+    fn on(&self) -> bool {
+        self.audio
+            .as_deref()
+            .is_some_and(|v| !matches!(v, "0" | "false" | "no"))
+    }
 }
 
 /// Every file and folder under the media directory, by path; hidden
@@ -103,14 +205,16 @@ async fn walk(root: &std::path::Path) -> ApiResult<(Vec<MediaFile>, Vec<String>)
                 folders.push(name.clone());
                 todo.push((e.path(), format!("{name}/"), depth + 1));
             } else if meta.is_file() {
+                let modified = meta.modified().ok();
                 files.push(MediaFile {
                     name,
                     bytes: meta.len(),
-                    modified_ms: meta
-                        .modified()
-                        .ok()
+                    modified_ms: modified
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_millis() as u64),
+                    audio: None,
+                    audio_error: None,
+                    modified,
                 });
             }
         }
@@ -120,9 +224,46 @@ async fn walk(root: &std::path::Path) -> ApiResult<(Vec<MediaFile>, Vec<String>)
     Ok((files, folders))
 }
 
-/// Every file, in every folder: `name` is its path.
-pub(crate) async fn list_media(State(s): State<AppState>) -> ApiResult<Json<Vec<MediaFile>>> {
-    Ok(Json(walk(&s.0.media_dir).await?.0))
+/// Every file, in every folder: `name` is its path. With `?audio=1`, what
+/// each holds (`audio`), or why it can't be played (`audio_error`).
+pub(crate) async fn list_media(
+    State(s): State<AppState>,
+    Query(q): Query<AudioQuery>,
+) -> ApiResult<Json<Vec<MediaFile>>> {
+    let mut files = walk(&s.0.media_dir).await?.0;
+    if q.on() {
+        audio_info(&s, &mut files).await?;
+    }
+    Ok(Json(files))
+}
+
+/// One file, with what it holds.
+pub(crate) async fn media_info(
+    State(s): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<Json<MediaFile>> {
+    if !valid_name(&name) {
+        return Err(bad_name(&name));
+    }
+    let meta = tokio::fs::symlink_metadata(s.0.media_dir.join(&name))
+        .await
+        .ok()
+        .filter(|m| m.is_file())
+        .ok_or_else(|| not_found("media file", &name))?;
+    let modified = meta.modified().ok();
+    let mut files = [MediaFile {
+        name,
+        bytes: meta.len(),
+        modified_ms: modified
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64),
+        audio: None,
+        audio_error: None,
+        modified,
+    }];
+    audio_info(&s, &mut files).await?;
+    let [f] = files;
+    Ok(Json(f))
 }
 
 /// Every folder, empty ones included, by path.
@@ -239,9 +380,12 @@ pub(crate) async fn move_media(
     })))
 }
 
+/// Upload a file, replacing one of that name. With `?audio=1`, it must be
+/// audio mcast can play (else `422`, and any old file stays).
 pub(crate) async fn upload_media(
     State(s): State<AppState>,
     Path(name): Path<String>,
+    Query(q): Query<AudioQuery>,
     body: Body,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     if !valid_name(&name) {
@@ -289,19 +433,32 @@ pub(crate) async fn upload_media(
         }
         file.flush().await.map_err(ApiError::internal)?;
         file.sync_all().await.map_err(ApiError::internal)?;
+        // Checked before it replaces anything.
+        let audio = if q.on() {
+            let path = tmp.clone();
+            let r = tokio::task::spawn_blocking(move || probe(&path))
+                .await
+                .map_err(ApiError::internal)?;
+            Some(r.map_err(|e| {
+                ApiError::bad(format!("\"{name}\" isn't audio mcast can play: {e}"))
+            })?)
+        } else {
+            None
+        };
         tokio::fs::rename(&tmp, &dest)
             .await
             .map_err(ApiError::internal)?;
-        Ok::<_, ApiError>(total)
+        Ok::<_, ApiError>((total, audio))
     }
     .await;
     match result {
-        Ok(bytes) => {
+        Ok((bytes, audio)) => {
             s.media_changed();
-            Ok((
-                StatusCode::CREATED,
-                Json(json!({ "name": name, "bytes": bytes })),
-            ))
+            let mut v = json!({ "name": name, "bytes": bytes });
+            if let Some(a) = audio {
+                v["audio"] = a;
+            }
+            Ok((StatusCode::CREATED, Json(v)))
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;

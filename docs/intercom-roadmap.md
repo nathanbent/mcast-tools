@@ -78,6 +78,16 @@ covers `mcast serve`. The original sketch:
 
 ### 3. Remote sounds
 
+**Built.** `mcast serve` checks uploads with `?audio=1` before they replace
+anything (`422` if it can't play them) and reports each file's codec, rate,
+channels and length (`/media?audio=1`, `/media-info/{name}`, probed once
+per change). The panel always asks for both. The Sounds tab shows each
+file's length and has a **Record** button (48 kHz mono WAV from the
+browser's microphone, listen back, then save). Uploading with a `media`
+token is documented; replacing a file keeps its name so announcements play
+the new one. A WAV upload is stored as sent: nothing is converted. The
+original sketch:
+
 - Document `PUT /api/intercom/v1/media/{name}` for `media`-scope tokens.
 - Check on upload that the file decodes (format, duration), so a bad file
   fails at upload instead of at play time.

@@ -40,7 +40,7 @@ fn check_name(name: &str) -> ApiResult<String> {
     Ok(name.to_string())
 }
 
-/// `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by"}],
+/// `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error"}],
 ///   "folders": [{"name", "hidden"}]}`
 pub(super) async fn library(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     let (files, folders): (Vec<crate::backend::MediaFile>, Vec<String>) =
@@ -55,6 +55,8 @@ pub(super) async fn library(State(s): State<AppState>) -> ApiResult<Json<Value>>
                 "modified_ms": f.modified_ms,
                 "hidden": cfg.is_hidden(&f.name),
                 "used_by": cfg.media_users(&f.name),
+                "audio": f.audio,
+                "audio_error": f.audio_error,
             })
         })
         .collect();
@@ -65,12 +67,14 @@ pub(super) async fn library(State(s): State<AppState>) -> ApiResult<Json<Value>>
     Ok(Json(json!({ "files": files, "folders": folders })))
 }
 
-/// Upload a file (raw body), into its folders.
+/// Upload a sound (raw body), into its folders. The mcast server checks
+/// it's audio it can play (`422` if not, leaving any old file); returns
+/// `{"name", "bytes", "audio"}`.
 pub(super) async fn upload(
     State(s): State<AppState>,
     Path(name): Path<String>,
     body: Body,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<(StatusCode, Json<Value>)> {
     let name = check_name(&name)?;
     let data = axum::body::to_bytes(body, MAX_UPLOAD).await.map_err(|_| {
         ApiError::new(
@@ -81,8 +85,8 @@ pub(super) async fn upload(
             ),
         )
     })?;
-    on_server(&s, move |b| b.upload_media(&name, &data)).await?;
-    Ok(StatusCode::CREATED)
+    let v = on_server(&s, move |b| b.upload_media(&name, &data)).await?;
+    Ok((StatusCode::CREATED, Json(v)))
 }
 
 /// A file, to listen to.

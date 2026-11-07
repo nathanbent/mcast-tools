@@ -404,3 +404,9 @@ pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg)
 div.inline-form { display: flex; gap: 8px; margin-bottom: 10px; }
 .checks.column { flex-direction: column; gap: 6px; }
 section h3 { font-size: 14px; margin: 18px 0 6px; }
+
+/* Recording a sound */
+.recorder { display: flex; align-items: center; gap: 12px; }
+.recorder .meter { flex: 1; height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
+.recorder .meter > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width 80ms linear; }
+dialog audio { width: 100%; }
