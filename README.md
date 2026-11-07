@@ -3,7 +3,27 @@
 A collection of multicast tools, written in Rust. The first set is audio:
 uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
 
-## Build and install
+## Install
+
+### Prebuilt binaries
+
+Each [release](https://github.com/nathanbent/mcast-tools/releases) has
+binaries for Linux (x86_64 and ARM64, glibc 2.35 or newer, e.g. Ubuntu 22.04,
+Debian 12, Raspberry Pi OS bookworm), macOS 11 or newer (Apple silicon and Intel) and
+Windows (x86_64). Opus is built in; on Linux the only requirement is ALSA
+(`libasound2`, already present on systems with sound).
+
+```bash
+mkdir -p ~/.local/bin && curl -fsSL https://github.com/nathanbent/mcast-tools/releases/latest/download/mcast-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
+```
+
+Use `mcast-aarch64-unknown-linux-gnu.tar.gz` on ARM64 Linux,
+`mcast-aarch64-apple-darwin.tar.gz` or `mcast-x86_64-apple-darwin.tar.gz` on
+macOS, and `mcast-x86_64-pc-windows-msvc.zip` on Windows. Any directory on your
+`PATH` will do in place of `~/.local/bin`. Each release lists SHA-256 checksums
+in `SHA256SUMS`.
+
+### Build from source
 
 On Debian/Ubuntu install the build dependencies first (ALSA for audio devices, libopus for Opus):
 
@@ -22,6 +42,45 @@ If the shell then says `Command 'mcast' not found`, `~/.cargo/bin` is not on you
 
 To build without installing, use `cargo build --release` and run the binary as
 `./target/release/mcast`.
+
+### Updating
+
+`mcast` can update itself. A release binary downloads the latest release and
+replaces itself in place. A binary built with cargo asks cargo to rebuild and
+reinstall it from `main`, so it needs the build dependencies above.
+
+```bash
+mcast update --check              # is there anything newer?
+mcast update                      # install it
+mcast update --release            # switch a cargo build to the latest release
+mcast update --source             # switch a release binary to building from main
+mcast update --branch some-branch # build a branch (implies --source)
+mcast update --path ~/mcast-tools # git pull a local clone, then install from it
+```
+
+`mcast --version` shows the commit the binary was built from. `--check` (and
+`update` itself) compares it with what would be installed, through GitHub's
+API or with `--path` in the clone, so a development build that is ahead of
+`main` or of the latest release, or has commits they don't, isn't replaced
+unless you add `--force`. Downloading needs `curl` and `tar` (both included in
+macOS and Windows 10 and later), and permission to write to the binary's
+directory. A cargo build is installed into `~/.cargo/bin`; if you run a copy
+from somewhere else (such as `./target/release/mcast`), that copy is left as
+it is.
+
+### Making a release
+
+Set the version in the root `Cargo.toml` (`[workspace.package] version`),
+commit, and push a matching tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) builds every platform,
+checks the tag matches the version, and publishes the release with
+`SHA256SUMS`. It also runs as a build-only check on pull requests that change
+it, and can be started by hand from the Actions tab.
 
 ## Audio
 
@@ -181,6 +240,17 @@ scripts/mcast-play.sh page.wav -p -C default -o preview.wav       # render inste
 scripts/mcast-play.sh -h                                          # all options
 ```
 
+It has presets too, with the same commands as `mcast preset` and its own
+options (`~/.config/mcast/play-presets/`, one file per preset; `$MCAST_PLAY_PRESETS`
+overrides):
+
+```bash
+scripts/mcast-play.sh preset create page -p -C default -L 1000 -E 1000
+scripts/mcast-play.sh preset set page -c g722                       # add or change options
+scripts/mcast-play.sh @page page.wav                                # options given here win
+scripts/mcast-play.sh @page page.wav -g 239.192.2.2 -o preview.wav
+```
+
 It first renders the finished page (chime, processing, dead air) to a
 temporary WAV, then streams that with steady pacing: one 20 ms packet at a time,
 released in real time by ffmpeg's `arealtime` (`-re` alone sends packets in
@@ -192,6 +262,78 @@ To compare the two on the same input, render both and listen or measure:
 ```bash
 scripts/mcast-play.sh page.wav -p -C default -L 500 -o script.wav
 mcast audio send --file page.wav -e g711u -p -C -L 500 -o mcast.wav
+```
+
+### Presets
+
+Save the options you use often under a name, then run them with `mcast @NAME`:
+
+```bash
+mcast preset create page-1 -g 239.192.2.1:10000 -e g711u --tos 184 --no-sap
+mcast preset set page-1 -p -C -L 800 -E 1000    # add or change options
+mcast @page-1 --file page.wav                   # run it with a file
+mcast @page-1 --file page.wav -e g722 -v -3     # options typed here win
+```
+
+| Command | Does |
+|---|---|
+| `mcast preset create NAME [OPTIONS]` | New preset for `audio send` (`--recv`, `--discover`, `--monitor` or `--update`, before the options, for `audio recv`, `audio discover`, `monitor` or `update`) |
+| `mcast preset set NAME OPTIONS` | Add or change options (creates a send preset if there isn't one) |
+| `mcast preset unset NAME OPTION...` | Remove options, named `group`, `--group` or `-g` (`groups` for monitor's groups) |
+| `mcast preset list [NAME]` (`ls`, `show`) | Show presets as the commands they run |
+| `mcast preset copy FROM TO` (`cp`), `delete NAME` (`rm`) | |
+| `mcast @NAME [OPTIONS]`, `mcast preset run NAME [OPTIONS]` | Run a preset |
+| `mcast audio send -P NAME [OPTIONS]` (`--preset`) | The same, on the command itself (also `audio recv`, `audio discover`, `monitor`, `update`); repeatable, so presets can stack |
+
+Options are the ones `mcast audio send` / `recv` / `discover` / `monitor` / `update` take, and are checked when
+saved. A later option replaces the same option, or any it conflicts with:
+setting `--file` drops a saved `--tone`, `-m music` drops `-p`. Stacked
+presets apply left to right, and the command line comes last:
+
+```bash
+mcast preset set zone-2 -g 239.192.2.2:10000 -e g711u --tos 184 --no-sap
+mcast preset set voice-page -p -C -L 800 -E 1000
+mcast @zone-2 -P voice-page --file page.wav
+mcast preset create lobby --recv -s lobby -v -6
+mcast @lobby
+```
+
+A monitor preset saves the groups to watch along with its options. Groups
+given on the command line replace the saved ones:
+
+```bash
+mcast preset create zones --monitor 239.192.2.1:10000 239.192.2.2:10000 --sap
+mcast @zones                                    # watch both zones and SAP streams
+mcast @zones --log -d 3600 > night.log
+mcast @zones 239.192.2.3:10000                  # just this group (still with --sap)
+```
+
+A discover preset can save the SAP groups to listen on and whether to print SDP:
+
+```bash
+mcast preset create sap2 --discover --sap-group 239.195.255.255:9875 --sdp
+mcast @sap2 -d 10
+```
+
+An update preset remembers where you install from:
+
+```bash
+mcast preset create dev --update -b dev --path ~/src/mcast-tools
+mcast @dev --check                              # is there anything new?
+mcast @dev -b main                              # this time, from main
+```
+
+Presets live in `~/.config/mcast/presets.conf` (`$XDG_CONFIG_HOME`,
+`%APPDATA%` on Windows; `MCAST_PRESETS=FILE` overrides), one option per line,
+and can be edited by hand:
+
+```
+[page-1]
+audio send
+--group=239.192.2.1:10000
+--encoding=g711u
+--voice
+-L 800
 ```
 
 ### Discovery details
