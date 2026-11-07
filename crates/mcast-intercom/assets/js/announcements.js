@@ -4,7 +4,7 @@
 
 import { h } from "./dom.js";
 import { state, zoneName } from "./store.js";
-import { mountEditor, field, select, numberInput, num, mediaOptions } from "./editor.js";
+import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter } from "./editor.js";
 import { chimeField, chimeLabel, chooserLink, effectiveChime } from "./chimes.js";
 
 const PRIORITIES = [["normal", "Normal"], ["high", "High"], ["emergency", "Emergency"]];
@@ -85,7 +85,7 @@ function form(a, save, cancel) {
 
   return h("form", { onsubmit: submit },
     part("General",
-      h("div", { class: "row" }, field("Name", name), field("Audio", audio, "Upload files on the Sounds tab"))),
+      h("div", { class: "row" }, field("Name", name), h("div", { class: "field" }, field("Audio", audio, "Upload or record sounds on the Sounds tab"), mediaFilter(audio)))),
     part("Chimes",
       h("div", { class: "row" }, chime.el, endChime.el),
       h("p", { class: "small muted" },

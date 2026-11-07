@@ -31,7 +31,28 @@ export function mediaOptions(prefix, current) {
   // Hidden ones are left out, unless already chosen.
   const names = state.media.filter((n) => !isHidden(n) || n === current);
   if (current && !names.includes(current)) names.push(current);
-  return names.map((n) => [prefix + n, state.media.includes(n) ? n : `${n} (missing)`]);
+  const tags = state.config.media_tags ?? {};
+  return names.map((n) => [prefix + n,
+    (state.media.includes(n) ? n : `${n} (missing)`) + (tags[n]?.length ? `  (${tags[n].join(", ")})` : "")]);
+}
+
+// A box that narrows `sel`'s media file options to those whose name or
+// tags match what's typed (#tag for a tag exactly). The chosen one stays.
+export function mediaFilter(sel) {
+  const input = h("input", { type: "search", placeholder: "Filter sounds: name, tag or #tag", "aria-label": "Filter sounds" });
+  input.addEventListener("input", () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const tags = state.config.media_tags ?? {};
+    for (const o of sel.querySelectorAll("option")) {
+      const m = /^(media|file):(.*)$/.exec(o.value);
+      if (!m) continue;
+      const name = m[2].toLowerCase();
+      const t = (tags[m[2]] ?? []).map((x) => x.toLowerCase());
+      const ok = words.every((w) => w.startsWith("#") ? t.includes(w.slice(1)) : name.includes(w) || t.some((x) => x.includes(w)));
+      o.hidden = !ok && o.value !== sel.value;
+    }
+  });
+  return input;
 }
 
 // A number input's value, or null when empty.

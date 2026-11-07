@@ -98,6 +98,18 @@ original sketch:
 
 ### 4. File manager
 
+**Built.**
+- Tags are kept in `intercom.json` (`media_tags`). They follow moves and renames and go with deletes. `PUT /media-tags` tags or untags many files at once, case-insensitively.
+- The Sounds tab:
+  - A tag bar.
+  - A search box over names and tags in every folder (`#tag` for a tag exactly).
+  - Multi-select with move, add or remove tags, hide or unhide, and delete. Delete skips files in use and non-empty folders, and lists them.
+  - Dragging rows onto folders, the path, or "Up a folder" moves them. Dropping files from the computer still uploads.
+  - Sorting by name, length or size.
+- The Announcements editor's sound list shows tags and has the same filter.
+
+The original sketch:
+
 - **Tags**: kept in `intercom.json`, the panel's own data, so the core stays
   untouched. They follow renames and moves the way `used_by` does. Edited in
   the file's row or in bulk.
@@ -131,16 +143,32 @@ original sketch:
   targets in the last 24 h, and whether the mcast server is reachable.
 - Computed from the history log; kept small so the buttons stay the focus.
 
+### 8. Playlists (requested)
+
+Decided so far:
+- Playlists are their own named things, in a Playlists tab, and announcements use one in place of a single sound. Schedules and the trigger API follow from that.
+- A playlist plays its items **in sequence**: sounds now, text pages later (through `mcast text`), maybe pauses. It plays as one run, with the announcement's chime before and after.
+- **Several at once**: one run can send different audio to different zones, e.g. a message in two languages to two buildings.
+
+To design before building:
+- **Sequencing:** either the mcast server plays a list of files in one sender (a core change: no gap and no SAP churn between items), or the panel plays them one after another. The core change is recommended.
+- **Several at once:** how an announcement maps zones to playlists or sounds. One idea is "parts", each a set of zones and what plays there.
+- **Text pages:** which displays get them, and how they line up with the audio.
+
+### 9. Arrangeable layout (requested)
+
+Admins drag the sections of a tab into the order they want. The layout is kept in `intercom.json` and every screen shows it (good for wall tablets), with a way to reset it. Start with one tab (Settings, which has the most sections), then roll out to the Panel's buttons and the other tabs if it works well.
+
 ## v0.6.0: observe and harden
 
-### 8. Monitor page
+### 10. Monitor page
 
 - Plays per announcement and per zone over time.
 - Outcome rates per zone (played, busy, failed).
 - Schedule reliability: on time vs late vs missed.
 - Uptime of the connection to the mcast server.
 
-### 9. Delivery confirmation ("probes")
+### 11. Delivery confirmation ("probes")
 
 - Endpoints running `mcast receive` already send named RTCP receiver reports
   (loss, jitter, playout delay), which the core monitor collects.
@@ -152,12 +180,12 @@ original sketch:
 - Decided: "probes" means these `mcast receive` endpoints, not separate
   listening devices.
 
-### 10. Triggers from the room
+### 12. Triggers from the room
 
 - Pi GPIO / contact-closure inputs mapped to announcements (a panic button,
   a door contact), with debounce and per-input priority.
 
-### 11. Backup and restore
+### 13. Backup and restore
 
 - Export and import `intercom.json`, optionally as a zip with the sounds.
 - Import validates first and shows what would change.
@@ -172,7 +200,7 @@ original sketch:
 
 ## Decisions
 
-1. Probes are `mcast receive` endpoints and their RTCP reports (item 9).
+1. Probes are `mcast receive` endpoints and their RTCP reports (item 11).
 2. Webhooks go both ways in v0.5.5: the trigger API in, events out (item 2).
 3. Sound tags live in the panel's `intercom.json`, not the core (item 4).
 4. Tokens: fixed roles, an optional announcement list on trigger tokens,

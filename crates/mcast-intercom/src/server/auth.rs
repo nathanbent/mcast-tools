@@ -308,7 +308,11 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
                 MediaWrite
             }
         }
-        "/media-folders" | "/media-folders/{*name}" | "/media-move" | "/media-hidden" => MediaWrite,
+        "/media-folders"
+        | "/media-folders/{*name}"
+        | "/media-move"
+        | "/media-hidden"
+        | "/media-tags" => MediaWrite,
         "/tokens" | "/tokens/{id}" => Admin,
         // Any method: the handlers take GET and POST, and refuse the rest.
         "/trigger/{which}" | "/trigger/{which}/stop" | "/stop-all" => Play,

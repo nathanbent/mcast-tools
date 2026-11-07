@@ -1,9 +1,9 @@
 //! The panel's own data: zones and announcements.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// Longest id or name accepted.
 pub const MAX_NAME: usize = 64;
@@ -42,6 +42,22 @@ pub struct Config {
     /// Sets of schedules switched on and off together.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub schedule_groups: Vec<ScheduleGroup>,
+    /// Tags on sound files, for finding them: path → tags.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub media_tags: BTreeMap<String, Vec<String>>,
+}
+
+/// Longest tag, in characters.
+pub const MAX_TAG: usize = 32;
+
+/// A tag as stored: trimmed, inner spaces collapsed; `None` if it isn't one
+/// (empty, too long, a comma or a control character in it).
+pub fn clean_tag(tag: &str) -> Option<String> {
+    let t = tag.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ok = !t.is_empty()
+        && t.chars().count() <= MAX_TAG
+        && !t.chars().any(|c| c == ',' || c.is_control());
+    ok.then_some(t)
 }
 
 /// A place with its own zones and schedules, and its own time zone, days
@@ -584,6 +600,69 @@ impl Config {
                 *h = new;
             }
         }
+        let tagged: Vec<String> = self
+            .media_tags
+            .keys()
+            .filter(|n| within(n, from))
+            .cloned()
+            .collect();
+        for n in tagged {
+            if let (Some(tags), Some(new)) = (self.media_tags.remove(&n), moved(&n)) {
+                self.media_tags.insert(new, tags);
+            }
+        }
+    }
+
+    /// Forget a deleted file or folder: its hidden mark and tags.
+    pub fn media_deleted(&mut self, name: &str) {
+        self.hidden_media.retain(|h| h != name);
+        self.media_tags.retain(|n, _| !within(n, name));
+    }
+
+    /// A file's tags.
+    pub fn tags_of(&self, name: &str) -> &[String] {
+        self.media_tags.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    /// Add and remove tags on files; a file left with none is dropped.
+    /// Tags match without regard to case.
+    pub fn retag(&mut self, names: &[String], add: &[String], remove: &[String]) -> Result<()> {
+        let clean = |list: &[String]| -> Result<Vec<String>> {
+            list.iter()
+                .map(|t| {
+                    clean_tag(t).with_context(|| {
+                        format!("\"{t}\" isn't a tag: up to {MAX_TAG} characters, no commas")
+                    })
+                })
+                .collect()
+        };
+        let (add, remove) = (clean(add)?, clean(remove)?);
+        // Spell a new tag as it's already spelled elsewhere.
+        let known: Vec<String> = self.media_tags.values().flatten().cloned().collect();
+        let spelled = |t: &String| {
+            known
+                .iter()
+                .find(|k| k.eq_ignore_ascii_case(t))
+                .cloned()
+                .unwrap_or_else(|| t.clone())
+        };
+        for n in names {
+            if !valid_media_name(n) {
+                bail!("\"{n}\" isn't a media file name");
+            }
+            let tags = self.media_tags.entry(n.clone()).or_default();
+            tags.retain(|t| !remove.iter().any(|r| r.eq_ignore_ascii_case(t)));
+            for t in &add {
+                if !tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    tags.push(spelled(t));
+                }
+            }
+            tags.sort_by_key(|t| t.to_lowercase());
+            if tags.is_empty() {
+                self.media_tags.remove(n);
+            }
+        }
+        Ok(())
     }
 
     /// Whether schedules at `site` are off on this date.
@@ -712,6 +791,16 @@ impl Config {
         for h in &self.hidden_media {
             if !valid_media_name(h) {
                 bail!("hidden_media: \"{h}\" isn't a media file or folder name");
+            }
+        }
+        for (n, tags) in &self.media_tags {
+            if !valid_media_name(n) {
+                bail!("media_tags: \"{n}\" isn't a media file name");
+            }
+            for t in tags {
+                if clean_tag(t).as_deref() != Some(t.as_str()) {
+                    bail!("media_tags: \"{t}\" on {n} isn't a tag");
+                }
             }
         }
         check_days_off(&self.days_off)?;

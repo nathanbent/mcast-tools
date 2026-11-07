@@ -91,7 +91,7 @@ admin, as before), so a stale token left in a browser doesn't lock anyone out.
 - It lives beside `intercom.json`, at `<dir of --config>/tokens.json`, or
   `--tokens PATH` / `MCAST_INTERCOM_TOKENS`.
 - Written atomically with mode `0600`. It's kept out of `intercom.json` so a
-  config backup or export (roadmap item 11) never carries the hashes.
+  config backup or export (roadmap item 13) never carries the hashes.
 - The server re-reads it when its modification time changes, so the CLI can
   add or revoke tokens while the panel runs. Revocation takes effect on the
   next request.

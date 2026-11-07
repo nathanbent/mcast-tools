@@ -876,6 +876,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/media-folders/{*name}"),
     ("POST", "/media-move"),
     ("PUT", "/media-hidden"),
+    ("PUT", "/media-tags"),
     ("GET", "/phonebook"),
     ("GET", "/chimes"),
     ("PUT", "/chimes"),
@@ -1737,4 +1738,83 @@ async fn sounds_are_checked_and_media_tokens_upload_them() {
         .clone();
     assert_eq!(f["bytes"], 19, "the first upload stays");
     assert!(f["audio"]["duration_s"].as_f64().is_some(), "{f}");
+}
+
+#[tokio::test]
+async fn tags_follow_files_and_are_set_many_at_once() {
+    let p = panel(None);
+    for name in ["bells/lunch.wav", "bells/end.wav", "voice/fire.wav"] {
+        p.fake.upload_media(name, b"RIFF").unwrap();
+    }
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/media-tags",
+            Some(json!({"names": ["bells/lunch.wav", "bells/end.wav"], "add": ["School", " bell  times "]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["bells/lunch.wav"], json!(["bell times", "School"]));
+    // Same tag, other case: spelled as it already is, and not twice.
+    let (_, v) = p
+        .call(
+            Method::PUT,
+            "/media-tags",
+            Some(json!({"names": ["voice/fire.wav", "bells/end.wav"], "add": ["school"]})),
+        )
+        .await;
+    assert_eq!(v["voice/fire.wav"], json!(["School"]));
+    assert_eq!(v["bells/end.wav"], json!(["bell times", "School"]));
+    for bad in [
+        json!({"names": [], "add": ["x"]}),
+        json!({"names": ["a.wav"], "add": ["a,b"]}),
+        json!({"names": ["../x"], "add": ["x"]}),
+        json!({"names": ["a.wav"], "add": ["x".repeat(33)]}),
+    ] {
+        let (s, _) = p.call(Method::PUT, "/media-tags", Some(bad.clone())).await;
+        assert!(s.is_client_error(), "{bad}");
+    }
+
+    let (_, lib) = p.call(Method::GET, "/library", None).await;
+    assert_eq!(
+        lib["tags"],
+        json!([{"tag": "bell times", "files": 2}, {"tag": "School", "files": 3}])
+    );
+
+    // Moving the folder takes the tags along; deleting a file drops them.
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/media-move",
+            Some(json!({"from": "bells", "to": "old/bells"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert_eq!(
+        cfg["media_tags"]["old/bells/lunch.wav"],
+        json!(["bell times", "School"])
+    );
+    assert!(cfg["media_tags"].get("bells/lunch.wav").is_none());
+    let (s, _) = p
+        .call(Method::DELETE, "/media/old/bells/end.wav", None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert!(
+        cfg["media_tags"].get("old/bells/end.wav").is_none(),
+        "{cfg}"
+    );
+
+    // Untagging the last tag drops the file.
+    let (_, v) = p
+        .call(
+            Method::PUT,
+            "/media-tags",
+            Some(json!({"names": ["voice/fire.wav"], "remove": ["SCHOOL"]})),
+        )
+        .await;
+    assert_eq!(v["voice/fire.wav"], json!([]));
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert!(cfg["media_tags"].get("voice/fire.wav").is_none());
 }
