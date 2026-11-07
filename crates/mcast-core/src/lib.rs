@@ -5,7 +5,10 @@ pub mod rtp;
 pub mod sap;
 pub mod sdp;
 
-pub use net::{open_receiver, open_receiver_groups, open_sender, Interface, MulticastOptions};
+pub use net::{
+    enable_packet_info, open_receiver, open_receiver_groups, open_sender, recv_with_info,
+    Interface, MulticastOptions, Received,
+};
 
 /// Non-cryptographic random value (SSRCs, session IDs, initial sequence numbers).
 pub fn random_u32() -> u32 {

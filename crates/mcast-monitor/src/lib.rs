@@ -1,0 +1,371 @@
+//! Watch multicast streams.
+//!
+//! Joins the given groups (and, optionally, every stream announced with SAP)
+//! and reports, per source: packet and bit rate, RTP loss and reordering,
+//! interarrival jitter (RFC 3550), packet time, received TTL and DSCP, and
+//! for audio codecs we can decode, the audio level. Non-RTP traffic is
+//! counted too.
+
+mod stats;
+
+pub use stats::{dscp_name, StreamReport};
+
+use mcast_audio::{StreamInfo, StreamSpec};
+use mcast_core::net::{
+    enable_packet_info, open_receiver, recv_with_info, Interface, MulticastOptions,
+};
+use mcast_core::sap::{Directory, DirectoryEvent};
+use stats::{StreamKey, StreamState};
+use std::collections::BTreeMap;
+use std::io::{self, ErrorKind};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// A group to watch.
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub group: SocketAddr,
+    /// Session name (from SAP).
+    pub name: Option<String>,
+    /// How to decode the audio, for level metering.
+    pub spec: Option<StreamSpec>,
+    /// RTP clock rate, if known (otherwise estimated from the stream).
+    pub clock_rate: Option<u32>,
+}
+
+impl Target {
+    pub fn new(group: SocketAddr) -> Self {
+        Self {
+            group,
+            name: None,
+            spec: None,
+            clock_rate: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MonitorConfig {
+    pub targets: Vec<Target>,
+    /// Also watch every stream announced on these SAP groups.
+    pub sap: Option<Vec<SocketAddr>>,
+    pub interface: Interface,
+    /// Codec to assume for dynamic payload types with no SDP.
+    pub default_spec: Option<StreamSpec>,
+}
+
+/// State of a watched group.
+#[derive(Debug, Clone)]
+pub struct GroupStatus {
+    pub group: SocketAddr,
+    pub name: Option<String>,
+    pub from_sap: bool,
+    /// Announcement withdrawn (SAP deletion or timeout).
+    pub ended: bool,
+    pub error: Option<String>,
+}
+
+enum Event {
+    Packet {
+        group: usize,
+        data: Vec<u8>,
+        from: SocketAddr,
+        ttl: Option<u8>,
+        tos: Option<u8>,
+        at: Instant,
+    },
+    Sap(Box<DirectoryEvent>),
+    JoinError {
+        group: usize,
+        error: String,
+    },
+}
+
+struct Group {
+    target: Target,
+    from_sap: bool,
+    ended: bool,
+    error: Option<String>,
+    stop: Arc<AtomicBool>,
+}
+
+pub struct Monitor {
+    tx: Sender<Event>,
+    rx: Receiver<Event>,
+    interface: Interface,
+    default_spec: Option<StreamSpec>,
+    groups: Vec<Group>,
+    streams: BTreeMap<StreamKey, StreamState>,
+    started: Instant,
+    last_report: Instant,
+    sap_stop: Arc<AtomicBool>,
+}
+
+impl Monitor {
+    pub fn start(cfg: MonitorConfig) -> io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        let now = Instant::now();
+        let mut m = Self {
+            tx,
+            rx,
+            interface: cfg.interface,
+            default_spec: cfg.default_spec,
+            groups: Vec::new(),
+            streams: BTreeMap::new(),
+            started: now,
+            last_report: now,
+            sap_stop: Arc::new(AtomicBool::new(false)),
+        };
+        for t in cfg.targets {
+            m.add_group(t, false)?;
+        }
+        if let Some(sap_groups) = cfg.sap {
+            let mut dir = Directory::open(&sap_groups, cfg.interface, Duration::from_secs(300))?;
+            let (tx, stop) = (m.tx.clone(), m.sap_stop.clone());
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    match dir.poll(Duration::from_millis(500)) {
+                        Ok(events) => {
+                            for e in events {
+                                if tx.send(Event::Sap(Box::new(e))).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(500)),
+                    }
+                }
+            });
+        }
+        Ok(m)
+    }
+
+    fn add_group(&mut self, target: Target, from_sap: bool) -> io::Result<()> {
+        let index = self.groups.len();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut opts = MulticastOptions::new(target.group)?;
+        opts.interface = self.interface;
+        let (tx, thread_stop) = (self.tx.clone(), stop.clone());
+        thread::spawn(move || {
+            let socket = match open_receiver(&opts).and_then(|s| {
+                enable_packet_info(&s)?;
+                s.set_read_timeout(Some(Duration::from_millis(200)))?;
+                Ok(s)
+            }) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = tx.send(Event::JoinError {
+                        group: index,
+                        error: e.to_string(),
+                    });
+                    return;
+                }
+            };
+            let mut buf = vec![0u8; 65_536];
+            while !thread_stop.load(Ordering::Relaxed) {
+                match recv_with_info(&socket, &mut buf) {
+                    Ok(r) => {
+                        let event = Event::Packet {
+                            group: index,
+                            data: buf[..r.len].to_vec(),
+                            from: r.from,
+                            ttl: r.ttl,
+                            tos: r.tos,
+                            at: Instant::now(),
+                        };
+                        if tx.send(event).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => {
+                        let _ = tx.send(Event::JoinError {
+                            group: index,
+                            error: e.to_string(),
+                        });
+                        return;
+                    }
+                }
+            }
+        });
+        self.groups.push(Group {
+            target,
+            from_sap,
+            ended: false,
+            error: None,
+            stop,
+        });
+        Ok(())
+    }
+
+    /// Process incoming packets and announcements until `until`.
+    pub fn poll(&mut self, until: Instant) {
+        loop {
+            let wait = until.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(wait) {
+                Ok(e) => self.handle(e),
+                Err(_) => return, // timeout (or all senders gone)
+            }
+            if Instant::now() >= until {
+                // Drain what's already queued without waiting.
+                while let Ok(e) = self.rx.try_recv() {
+                    self.handle(e);
+                }
+                return;
+            }
+        }
+    }
+
+    fn handle(&mut self, event: Event) {
+        match event {
+            Event::Packet {
+                group,
+                data,
+                from,
+                ttl,
+                tos,
+                at,
+            } => {
+                let g = &self.groups[group];
+                let key = StreamKey {
+                    group,
+                    source: from,
+                };
+                let (announced, fallback) = (g.target.spec, self.default_spec);
+                let clock = g.target.clock_rate;
+                let started = self.started;
+                self.streams
+                    .entry(key)
+                    .or_insert_with(|| StreamState::new(at, announced, fallback, clock))
+                    .packet(&data, ttl, tos, at, started);
+            }
+            Event::JoinError { group, error } => self.groups[group].error = Some(error),
+            Event::Sap(e) => self.handle_sap(*e),
+        }
+    }
+
+    fn handle_sap(&mut self, event: DirectoryEvent) {
+        match event {
+            DirectoryEvent::Added(s) | DirectoryEvent::Changed(s) => {
+                let Some(info) = StreamInfo::from_sdp(&s.sdp) else {
+                    return;
+                };
+                let name = (!info.name.is_empty()).then(|| info.name.clone());
+                if let Some(g) = self
+                    .groups
+                    .iter_mut()
+                    .find(|g| g.target.group == info.group)
+                {
+                    // Known group: fill in what the announcement tells us.
+                    g.target.name = g.target.name.take().or(name);
+                    g.target.spec = g.target.spec.or(info.spec());
+                    g.target.clock_rate = g.target.clock_rate.or(Some(info.sample_rate));
+                    g.ended = false;
+                    return;
+                }
+                let target = Target {
+                    group: info.group,
+                    name,
+                    spec: info.spec(),
+                    clock_rate: Some(info.sample_rate),
+                };
+                if let Err(e) = self.add_group(target, true) {
+                    if let Some(g) = self.groups.last_mut() {
+                        g.error = Some(e.to_string());
+                    }
+                }
+            }
+            DirectoryEvent::Deleted(s) | DirectoryEvent::Expired(s) => {
+                let Some(info) = StreamInfo::from_sdp(&s.sdp) else {
+                    return;
+                };
+                if let Some(g) = self
+                    .groups
+                    .iter_mut()
+                    .find(|g| g.target.group == info.group && g.from_sap)
+                {
+                    g.ended = true;
+                    g.stop.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    pub fn groups(&self) -> Vec<GroupStatus> {
+        self.groups
+            .iter()
+            .map(|g| GroupStatus {
+                group: g.target.group,
+                name: g.target.name.clone(),
+                from_sap: g.from_sap,
+                ended: g.ended,
+                error: g.error.clone(),
+            })
+            .collect()
+    }
+
+    /// Statistics since the previous report, one row per source.
+    pub fn report(&mut self) -> Vec<StreamReport> {
+        let now = Instant::now();
+        let interval = now.duration_since(self.last_report);
+        self.last_report = now;
+        let rows = self.rows(|s, base| s.take_interval(base, interval, now));
+        // Forget sources of withdrawn groups once reported.
+        let ended: Vec<usize> = self
+            .groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.ended)
+            .map(|(i, _)| i)
+            .collect();
+        self.streams.retain(|k, s| {
+            !ended.contains(&k.group) || now.duration_since(s.last_seen) < Duration::from_secs(5)
+        });
+        rows
+    }
+
+    /// Statistics since the monitor started.
+    pub fn totals(&self) -> Vec<StreamReport> {
+        let elapsed = self.started.elapsed();
+        let now = Instant::now();
+        self.streams
+            .iter()
+            .map(|(k, s)| s.totals(self.base(k), elapsed, now))
+            .collect()
+    }
+
+    fn base(&self, k: &StreamKey) -> StreamReport {
+        let g = &self.groups[k.group];
+        StreamReport::new(g.target.group, g.target.name.clone(), k.source)
+    }
+
+    fn rows(
+        &mut self,
+        mut f: impl FnMut(&mut StreamState, StreamReport) -> StreamReport,
+    ) -> Vec<StreamReport> {
+        let keys: Vec<StreamKey> = self.streams.keys().cloned().collect();
+        keys.into_iter()
+            .map(|k| {
+                let base = self.base(&k);
+                f(self.streams.get_mut(&k).unwrap(), base)
+            })
+            .collect()
+    }
+}
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        self.sap_stop.store(true, Ordering::Relaxed);
+        for g in &self.groups {
+            g.stop.store(true, Ordering::Relaxed);
+        }
+    }
+}

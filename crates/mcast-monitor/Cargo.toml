@@ -1,0 +1,10 @@
+[package]
+name = "mcast-monitor"
+description = "Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mcast-core.workspace = true
+mcast-audio.workspace = true

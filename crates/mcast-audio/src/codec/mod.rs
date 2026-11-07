@@ -8,6 +8,11 @@ use std::fmt;
 use std::str::FromStr;
 
 pub use g722::{G722Decoder, G722Encoder};
+
+/// G.711 mu-law encoding of one sample (exposed for tests and tools).
+pub fn g711_encode_ulaw(sample: i16) -> u8 {
+    g711::linear_to_ulaw(sample)
+}
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -7,3 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 socket2.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

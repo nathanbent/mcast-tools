@@ -20,11 +20,15 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once at startup; variant size doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
-    /// Uncompressed PCM audio over RTP multicast
+    /// Audio over RTP multicast: send, receive, discover
     #[command(subcommand)]
     Audio(AudioCommand),
+    /// Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio level
+    Monitor(MonitorArgs),
 }
 
 #[derive(Subcommand)]
@@ -154,11 +158,17 @@ struct SendArgs {
     /// Tone level in dBFS
     #[arg(long, default_value_t = -12.0, allow_negative_numbers = true)]
     level: f32,
-    /// Send a WAV file (resampled to the codec's rate; L16/L24 keep the
-    /// file's rate and channels unless --rate/--channels are given)
-    #[arg(long, group = "source")]
+    /// Send an audio file: WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ALAC
+    /// (resampled to the codec's rate; L16/L24 keep the file's rate and
+    /// channels unless --rate/--channels are given)
+    #[arg(
+        long = "file",
+        visible_alias = "wav",
+        group = "source",
+        value_name = "FILE"
+    )]
     wav: Option<PathBuf>,
-    /// Loop the WAV file
+    /// Loop the file
     #[arg(long = "loop", requires = "wav")]
     looped: bool,
     /// Capture from an input device (substring of its name, or "default")
@@ -176,7 +186,7 @@ struct SendArgs {
     /// Lead-in silence in ms, so the first word isn't clipped
     #[arg(short = 'L', long, default_value_t = 0.0)]
     lead_in: f64,
-    /// Start this many seconds into the WAV file (adds a short fade-in)
+    /// Start this many seconds into the file (adds a short fade-in)
     #[arg(short, long, requires = "wav")]
     start: Option<f64>,
     /// Send this many seconds of the source (adds a short fade-out), then stop
@@ -238,6 +248,33 @@ struct RecvArgs {
 }
 
 #[derive(Args)]
+struct MonitorArgs {
+    /// Groups to watch (ADDR:PORT). With none, watches every stream announced via SAP
+    #[arg(value_name = "GROUP")]
+    groups: Vec<SocketAddr>,
+    /// Also watch SAP-announced streams when groups are given
+    #[arg(long)]
+    sap: bool,
+    #[command(flatten)]
+    sap_listen: SapListenArgs,
+    /// Interface: IPv4 address (IPv4 groups) or interface index (IPv6 groups)
+    #[arg(short, long, default_value = "any")]
+    iface: Interface,
+    /// Codec for level metering when the payload type is dynamic and not announced
+    #[arg(short, long)]
+    encoding: Option<Codec>,
+    /// Seconds between updates
+    #[arg(long, default_value_t = 1.0)]
+    interval: f64,
+    /// Stop after this many seconds (default: run until Ctrl-C)
+    #[arg(short, long)]
+    duration: Option<f64>,
+    /// Print a line per stream per interval instead of a live table
+    #[arg(long)]
+    log: bool,
+}
+
+#[derive(Args)]
 struct DiscoverArgs {
     #[command(flatten)]
     sap: SapListenArgs,
@@ -263,6 +300,7 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Send(a)) => audio_send(a, &stop),
         Command::Audio(AudioCommand::Recv(a)) => audio_recv(a, &stop),
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
+        Command::Monitor(a) => monitor(a, &stop),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");
@@ -286,10 +324,10 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
     let mode = if a.voice { Mode::Voice } else { a.mode };
     let endless = (a.wav.is_none() || a.looped) && a.duration.is_none();
     if a.render.is_some() && endless {
-        bail!("--render needs an end: a WAV file without --loop, or --duration");
+        bail!("--render needs an end: a file without --loop, or --duration");
     }
     let source = if let Some(path) = a.wav {
-        sender::Source::Wav {
+        sender::Source::File {
             path,
             looped: a.looped,
         }
@@ -325,7 +363,7 @@ fn audio_send(a: SendArgs, stop: &AtomicBool) -> Result<()> {
     let s = sender::Sender::new(sender::SenderConfig {
         net,
         stream: a.format.spec(),
-        match_wav_format: a.format.rate.is_none() && a.format.channels.is_none(),
+        match_file_format: a.format.rate.is_none() && a.format.channels.is_none(),
         ptime: a.ptime.map(|ms| Duration::from_secs_f64(ms / 1000.0)),
         payload_type: a.pt,
         opus: OpusOptions {
@@ -578,4 +616,183 @@ fn format_stats(s: &receiver::ReceiverStats) -> String {
         s.underruns,
         s.overflows
     )
+}
+
+fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
+    use mcast_monitor::{Monitor, MonitorConfig, Target};
+    use std::io::{IsTerminal, Write};
+
+    let watch_sap = a.groups.is_empty() || a.sap;
+    let sap_groups = if a.sap_listen.sap_groups.is_empty() {
+        sap::default_listen_groups()
+    } else {
+        a.sap_listen.sap_groups.clone()
+    };
+    let mut m = Monitor::start(MonitorConfig {
+        targets: a.groups.iter().map(|&g| Target::new(g)).collect(),
+        sap: watch_sap.then_some(sap_groups),
+        interface: a.iface,
+        default_spec: a.encoding.map(|c| StreamSpec::new(c, 48_000, 1)),
+    })?;
+    let live = !a.log && std::io::stdout().is_terminal();
+    let interval = Duration::from_secs_f64(a.interval.max(0.1));
+    let start = Instant::now();
+    let limit = a.duration.map(Duration::from_secs_f64);
+    if !live {
+        eprintln!(
+            "watching {}{}. Ctrl-C to stop.",
+            if a.groups.is_empty() {
+                String::new()
+            } else {
+                format!("{} group(s)", a.groups.len())
+            },
+            match (watch_sap, a.groups.is_empty()) {
+                (true, true) => "SAP-announced streams",
+                (true, false) => " and SAP-announced streams",
+                _ => "",
+            }
+        );
+    }
+    let mut next = Instant::now() + interval;
+    while !stop.load(Ordering::Relaxed) && limit.map_or(true, |l| start.elapsed() < l) {
+        m.poll(next);
+        next += interval;
+        let rows = m.report();
+        let groups = m.groups();
+        let mut out = std::io::stdout().lock();
+        if live {
+            write!(out, "\x1b[H\x1b[2J")?;
+            writeln!(
+                out,
+                "mcast monitor | {} | {} stream(s) | Ctrl-C to stop\n",
+                fmt_elapsed(start.elapsed()),
+                rows.len()
+            )?;
+            write!(out, "{}", monitor_table(&groups, &rows, true))?;
+        } else {
+            let t = fmt_elapsed(start.elapsed());
+            for line in monitor_table(&groups, &rows, false).lines().skip(1) {
+                writeln!(out, "{t}  {line}")?;
+            }
+        }
+        out.flush()?;
+    }
+    let totals = m.totals();
+    println!(
+        "\nsummary after {} (jitter is the maximum seen):",
+        fmt_elapsed(start.elapsed())
+    );
+    print!("{}", monitor_table(&m.groups(), &totals, false));
+    Ok(())
+}
+
+fn fmt_elapsed(d: Duration) -> String {
+    let s = d.as_secs();
+    format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+}
+
+fn level_meter(dbfs: f64) -> String {
+    // 10 cells from -60 to 0 dBFS.
+    let filled = (((dbfs + 60.0) / 6.0).round() as i64).clamp(0, 10) as usize;
+    format!("{}{}", "█".repeat(filled), "·".repeat(10 - filled))
+}
+
+fn monitor_table(
+    groups: &[mcast_monitor::GroupStatus],
+    rows: &[mcast_monitor::StreamReport],
+    meters: bool,
+) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "{:<30} {:<21} {:<13} {:>7} {:>8} {:>6} {:>5} {:>7} {:>6} {:>4} {:<5} LEVEL / STATUS",
+        "STREAM",
+        "SOURCE",
+        "CODEC",
+        "PKT/S",
+        "KBIT/S",
+        "LOSS",
+        "LATE",
+        "JITTER",
+        "PTIME",
+        "TTL",
+        "DSCP",
+    );
+    for g in groups {
+        let label = match &g.name {
+            Some(n) => format!(
+                "{} {}",
+                truncate(n, 29 - g.group.to_string().len().min(28)),
+                g.group
+            ),
+            None => g.group.to_string(),
+        };
+        let mine: Vec<_> = rows.iter().filter(|r| r.group == g.group).collect();
+        if mine.is_empty() {
+            let status = if let Some(e) = &g.error {
+                format!("error: {e}")
+            } else if g.ended {
+                "ended".into()
+            } else {
+                "waiting for packets".into()
+            };
+            let _ = writeln!(s, "{label:<30} {:<21} {status}", "-");
+            continue;
+        }
+        for (i, r) in mine.iter().enumerate() {
+            let name = if i == 0 { label.clone() } else { String::new() };
+            let opt =
+                |v: Option<f64>, unit: &str| v.map_or("-".to_string(), |v| format!("{v:.1}{unit}"));
+            let codec = match (&r.codec, r.payload_type, r.is_rtp()) {
+                (_, _, false) => "not RTP".to_string(),
+                (Some(c), _, _) => c.clone(),
+                (None, Some(pt), _) => format!("pt {pt}"),
+                (None, None, _) => "-".into(),
+            };
+            let dscp = r.dscp().map_or("-".into(), mcast_monitor::dscp_name);
+            let status = if r.idle > Duration::from_secs(2) {
+                format!("no packets for {}s", r.idle.as_secs())
+            } else if g.ended {
+                "ended".into()
+            } else {
+                match r.peak_dbfs {
+                    Some(p) if p < -60.0 => "silent".into(),
+                    Some(p) if meters => format!("{} {p:>5.1} dBFS", level_meter(p)),
+                    Some(p) => format!(
+                        "peak {p:.1} dBFS, rms {:.1}",
+                        r.rms_dbfs.unwrap_or(f64::NAN)
+                    ),
+                    None => String::new(),
+                }
+            };
+            let _ = writeln!(
+                s,
+                "{:<30} {:<21} {:<13} {:>7.1} {:>8.1} {:>5.1}% {:>5} {:>7} {:>6} {:>4} {:<5} {}",
+                truncate(&name, 30),
+                r.source.to_string(),
+                truncate(&codec, 13),
+                r.packets_per_sec,
+                r.kbit_per_sec,
+                r.loss_percent,
+                r.late,
+                opt(r.jitter_ms, "ms"),
+                opt(r.ptime_ms, "ms"),
+                r.ttl.map_or("-".into(), |t| t.to_string()),
+                dscp,
+                status
+            );
+        }
+    }
+    s
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
+        t.push('…');
+        t
+    }
 }

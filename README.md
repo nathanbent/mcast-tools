@@ -17,11 +17,11 @@ sudo apt-get install build-essential pkg-config libasound2-dev libopus-dev
 
 ## Audio
 
-Send a test tone, a WAV file, or live input:
+Send a test tone, an audio file (WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ALAC), or live input:
 
 ```bash
 mcast audio send --tone 440                    # 440 Hz at -12 dBFS
-mcast audio send --wav music.wav --loop        # L16 at the file's own rate/channels
+mcast audio send --file music.mp3 --loop       # MP3, FLAC, Ogg, M4A/AAC, WAV...
 mcast audio send --capture                     # default input device
 mcast audio send --capture "USB" -g 239.69.0.5:5004 -e l24
 ```
@@ -58,11 +58,11 @@ All of them can be sent and received. The G.711 and G.722 encoders and decoders
 produce byte-for-byte the same output as ffmpeg's.
 
 Sending converts the source to the codec's rate and channels (high-quality
-windowed-sinc resampling, stereo averaged to mono), so any WAV file or input
+windowed-sinc resampling, stereo averaged to mono), so any audio file or input
 device works with any codec:
 
 ```bash
-mcast audio send -e g711u --wav page.wav -g 239.192.2.1:10000 --tos 184     # paging, DSCP EF
+mcast audio send -e g711u --file page.mp3 -g 239.192.2.1:10000 --tos 184     # paging, DSCP EF
 mcast audio send -e g722 --wav page.wav -g 239.192.2.1:10000
 mcast audio send -e opus --opus-mode voice --bitrate 32 --opus-bandwidth wb --capture
 ```
@@ -88,7 +88,7 @@ Lost Opus packets are rebuilt from the next packet's FEC data, or concealed by l
 the codec (a port of the `mcast-play.sh` paging script):
 
 ```bash
-mcast audio send --wav announcement.wav -e g711u -m voice -L 500 -g 239.192.2.1:10000 --no-sap --tos 184
+mcast audio send --file announcement.mp3 -e g711u -m voice -L 500 -g 239.192.2.1:10000 --no-sap --tos 184
 mcast audio send --wav song.wav -e g722 -m music -v -6
 mcast audio send --wav song.wav -e g711u -m music -o preview.wav   # hear what the phone will decode
 ```
@@ -106,6 +106,7 @@ true peak is held at -2 dBTP. Opus tuning follows the mode.
 | `mcast-play.sh` | `mcast audio send` |
 |---|---|
 | `-c g711u / g711a / g722 / opus` | `-e g711u / g711a / g722 / opus` |
+| `FILE` (anything ffmpeg reads) | `--file FILE` (WAV, MP3, FLAC, Ogg, AAC/M4A, ALAC) |
 | `-c opuswb` | `-e opus --opus-bandwidth wb --bitrate 32` |
 | `-m voice` / `-p` / `-m music` | `-m voice` / `-p` / `-m music` |
 | `-v DB`, `-L MS`, `-s SECS`, `-t SECS` | same |
@@ -149,12 +150,47 @@ Network options:
 | `--ttl` | TTL / hop limit |
 | `--no-loopback` | Don't deliver to receivers on the same host |
 
+## Monitor
+
+`mcast monitor` watches multicast streams and shows, per source, every second:
+
+```bash
+mcast monitor                                   # every stream announced via SAP
+mcast monitor 239.192.2.1:10000 239.69.0.1:5004 # specific groups (any UDP traffic)
+mcast monitor 239.192.2.1:10000 --sap           # both
+mcast monitor 239.192.2.1:10000 -e opus         # meter a dynamic payload type with no SDP
+mcast monitor --log -d 3600 > night.log         # one line per stream per interval
+```
+
+```
+STREAM                         SOURCE                CODEC           PKT/S   KBIT/S   LOSS  LATE  JITTER  PTIME  TTL DSCP  LEVEL / STATUS
+239.192.2.1:10000              10.0.0.5:49215        PCMU/8000/1      50.0     68.8   0.0%     0   0.4ms 20.0ms   63 EF    ██████████  -2.4 dBFS
+239.69.0.42:5004               10.0.0.7:52098        opus/48000/1     45.0     59.6  10.0%     0   0.0ms 20.0ms   61 BE    ██████···· -21.7 dBFS
+239.77.0.9:6000                10.0.0.9:58517        not RTP          10.0     24.0   0.0%     0       -      -    4 BE
+239.69.0.50:5004               10.0.0.5:42332        G722/16000/1     50.0     68.8   0.0%     0   0.0ms 20.0ms   63 EF    silent
+Lobby music 239.69.0.31:5004   10.0.0.5:37605        L16/48000/2    1000.0   1632.0   0.0%     0   0.0ms  1.0ms   16 BE    ███████··· -20.7 dBFS
+```
+
+- **LOSS / LATE**: from RTP sequence numbers (late = reordered or duplicated).
+- **JITTER**: RFC 3550 interarrival jitter. High values mean bursty or
+  unevenly delayed delivery, which phones' small jitter buffers handle badly.
+- **TTL**: as received. The sender's TTL minus this is the number of router hops.
+- **DSCP**: the QoS marking as it arrived (EF = 46, i.e. TOS 184). Shows
+  whether the sender set it and whether the network kept it.
+- **LEVEL**: decoded audio peak for L16/L24, G.711, G.722 and Opus, so a
+  stream that's flowing but silent is obvious.
+- Streams announced via SAP are joined and left automatically and named.
+  Traffic that isn't RTP is still counted. A summary prints on exit.
+
+TTL and DSCP are reported on Linux.
+
 ## Layout
 
 | Crate | Purpose |
 |---|---|
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
+| `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
 | `crates/mcast` | The `mcast` CLI |
 
 New tool families go in their own crate (e.g. `crates/mcast-<thing>`) and get a
@@ -163,5 +199,4 @@ subcommand in the CLI.
 ## Roadmap ideas
 
 - Audio: PTP-aligned timestamps (AES67), resampling on playback
-- Monitor: join groups and show rate, loss, jitter
 - Other: file transfer, chat, ping/latency, relay/bridge between interfaces

@@ -8,6 +8,7 @@
 use crate::codec::{Codec, Decoder, OpusOptions, StreamSpec};
 use crate::convert::{map_channels, Converter};
 use crate::device;
+use crate::file::AudioFile;
 use crate::packetizer::Packetizer;
 use crate::process::{Band, Loudness, Mode, ProcessOptions, Processor};
 use anyhow::{anyhow, bail, Context, Result};
@@ -17,7 +18,7 @@ use mcast_core::rtp;
 use mcast_core::sap::{self, Announcer};
 use mcast_core::sdp::SessionDescription;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::io::BufWriter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,8 +34,9 @@ const FADE_OUT: Duration = Duration::from_millis(300);
 pub enum Source {
     /// Sine test tone.
     Tone { frequency: f32, amplitude: f32 },
-    /// WAV file, converted to the stream's rate and channels.
-    Wav { path: PathBuf, looped: bool },
+    /// Audio file (WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ...), converted to
+    /// the stream's rate and channels.
+    File { path: PathBuf, looped: bool },
     /// Live capture from an input device (default device if `None`).
     Capture { device: Option<String> },
 }
@@ -43,9 +45,9 @@ pub enum Source {
 pub struct SenderConfig {
     pub net: MulticastOptions,
     pub stream: StreamSpec,
-    /// For L16/L24 with a WAV source, send at the file's own rate and channel
+    /// For L16/L24 with a file source, send at the file's own rate and channel
     /// count instead of `stream`'s.
-    pub match_wav_format: bool,
+    pub match_file_format: bool,
     /// Audio per packet; `None` uses the codec's default (1 ms PCM, 20 ms others).
     pub ptime: Option<Duration>,
     /// RTP payload type; `None` uses the codec's static type, or 96 / 107.
@@ -53,7 +55,7 @@ pub struct SenderConfig {
     pub opus: OpusOptions,
     pub process: ProcessOptions,
     pub source: Source,
-    /// Start this far into a WAV file (with a short fade-in).
+    /// Start this far into a file (with a short fade-in).
     pub start: Option<Duration>,
     /// Send this much of the source (with a short fade-out), then stop.
     pub duration: Option<Duration>,
@@ -97,13 +99,13 @@ enum Input {
         phase: f32,
         amplitude: f32,
     },
-    Wav {
-        reader: hound::WavReader<BufReader<File>>,
+    File {
+        file: AudioFile,
         looped: bool,
     },
 }
 
-/// A paced source (tone or WAV) with start offset, length limit and fades.
+/// A paced source (tone or file) with start offset, length limit and fades.
 struct Reader {
     input: Input,
     channels: usize,
@@ -131,22 +133,19 @@ impl Reader {
                 phase: 0.0,
                 amplitude: *amplitude,
             },
-            Source::Wav { path, looped } => {
-                let mut reader = hound::WavReader::open(path)
-                    .with_context(|| format!("opening {}", path.display()))?;
+            Source::File { path, looped } => {
+                let mut file = AudioFile::open(path)?;
                 if let Some(s) = start {
-                    let frame = (s.as_secs_f64() * rate as f64) as u32;
-                    if frame >= reader.duration() {
+                    if !file.skip((s.as_secs_f64() * rate as f64) as u64)? {
                         bail!(
                             "--start {:.1}s is past the end of {}",
                             s.as_secs_f64(),
                             path.display()
                         );
                     }
-                    reader.seek(frame)?;
                 }
-                Input::Wav {
-                    reader,
+                Input::File {
+                    file,
                     looped: *looped,
                 }
             }
@@ -186,17 +185,19 @@ impl Reader {
                 }
                 out.len()
             }
-            Input::Wav { reader, looped } => {
-                let spec = reader.spec();
+            Input::File { file, looped } => {
                 let mut written = 0;
+                let mut rewound = false;
                 while written < out.len() {
-                    let got = read_wav(reader, spec, &mut out[written..])?;
+                    let got = file.read(&mut out[written..])?;
                     written += got;
-                    if got == 0 {
-                        if !*looped || reader.duration() == 0 {
-                            break;
-                        }
-                        reader.seek(0)?;
+                    if got > 0 {
+                        rewound = false;
+                    } else if *looped && !rewound {
+                        file.rewind()?;
+                        rewound = true; // stop on an empty file rather than spinning
+                    } else {
+                        break;
                     }
                 }
                 written
@@ -260,14 +261,13 @@ impl Sender {
         let mut spec = cfg.stream;
         let source_format = match &cfg.source {
             Source::Tone { .. } => (spec.sample_rate, spec.channels),
-            Source::Wav { path, .. } => {
-                let ws = hound::WavReader::open(path)
-                    .with_context(|| format!("opening {}", path.display()))?
-                    .spec();
-                if cfg.match_wav_format && spec.codec.pcm_encoding().is_some() {
-                    spec = StreamSpec::new(spec.codec, ws.sample_rate, ws.channels);
+            Source::File { path, .. } => {
+                let f = AudioFile::open(path)?;
+                let (file_rate, file_channels) = (f.sample_rate(), f.channels());
+                if cfg.match_file_format && spec.codec.pcm_encoding().is_some() {
+                    spec = StreamSpec::new(spec.codec, file_rate, file_channels);
                 }
-                (ws.sample_rate, ws.channels)
+                (file_rate, file_channels)
             }
             Source::Capture { device } => {
                 device::input_format(&device::input_device(device.as_deref())?)?
@@ -285,8 +285,8 @@ impl Sender {
             Source::Tone { .. } => (spec.sample_rate, spec.channels),
             _ => source_format,
         };
-        if cfg.start.is_some() && !matches!(cfg.source, Source::Wav { .. }) {
-            bail!("--start only applies to WAV files");
+        if cfg.start.is_some() && !matches!(cfg.source, Source::File { .. }) {
+            bail!("--start only applies to file sources");
         }
 
         let ptime = cfg.ptime.unwrap_or_else(|| spec.default_ptime());
@@ -318,7 +318,7 @@ impl Sender {
         let mut loudness_info = None;
         let loudness = match (&cfg.source, cfg.process.mode.loudness_target()) {
             (_, None) => Loudness::Dynamic, // unused
-            (Source::Wav { .. }, Some(target)) => {
+            (Source::File { .. }, Some(target)) => {
                 let measured = measure(&cfg, rate, source_format.1, channels, band)?;
                 let gain_db = measured.map_or(0.0, |m| (target - m).clamp(-30.0, 30.0));
                 loudness_info = Some(LoudnessInfo {
@@ -572,7 +572,7 @@ fn measure(
 ) -> Result<Option<f64>> {
     let mut reader = Reader::open(&cfg.source, rate, src_channels, cfg.start, cfg.duration)?;
     // With looping and no duration, one pass of the file is representative.
-    if let Input::Wav { looped, .. } = &mut reader.input {
+    if let Input::File { looped, .. } = &mut reader.input {
         if cfg.duration.is_none() {
             *looped = false;
         }
@@ -681,30 +681,6 @@ impl Output {
             None => Ok(()),
         }
     }
-}
-
-fn read_wav(
-    reader: &mut hound::WavReader<BufReader<File>>,
-    spec: hound::WavSpec,
-    out: &mut [f32],
-) -> Result<usize> {
-    let mut n = 0;
-    match spec.sample_format {
-        hound::SampleFormat::Float => {
-            for (dst, s) in out.iter_mut().zip(reader.samples::<f32>()) {
-                *dst = s?;
-                n += 1;
-            }
-        }
-        hound::SampleFormat::Int => {
-            let scale = (1u64 << (spec.bits_per_sample - 1)) as f32;
-            for (dst, s) in out.iter_mut().zip(reader.samples::<i32>()) {
-                *dst = s? as f32 / scale;
-                n += 1;
-            }
-        }
-    }
-    Ok(n)
 }
 
 impl Mode {

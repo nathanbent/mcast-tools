@@ -228,6 +228,118 @@ pub fn open_receiver_groups(
     Ok(socket.into())
 }
 
+/// A received datagram with the IP header details a monitor cares about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Received {
+    pub len: usize,
+    pub from: SocketAddr,
+    /// TTL / hop limit as received (the sender's value minus hops taken).
+    pub ttl: Option<u8>,
+    /// IPv4 TOS / IPv6 traffic class byte (DSCP is the top six bits).
+    pub tos: Option<u8>,
+}
+
+/// Ask the kernel to report TTL and TOS with each datagram (Linux only;
+/// elsewhere [`recv_with_info`] reports `None` for both).
+pub fn enable_packet_info(socket: &UdpSocket) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = socket.as_raw_fd();
+        let on: libc::c_int = 1;
+        let set = |level, name| {
+            // SAFETY: fd is a valid socket; the option value is a c_int.
+            let r = unsafe {
+                libc::setsockopt(
+                    fd,
+                    level,
+                    name,
+                    &on as *const libc::c_int as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if r == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        };
+        if socket.local_addr()?.is_ipv4() {
+            set(libc::IPPROTO_IP, libc::IP_RECVTTL)?;
+            set(libc::IPPROTO_IP, libc::IP_RECVTOS)?;
+        } else {
+            set(libc::IPPROTO_IPV6, libc::IPV6_RECVHOPLIMIT)?;
+            set(libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS)?;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = socket;
+    Ok(())
+}
+
+/// Receive a datagram along with its TTL and TOS (see [`enable_packet_info`]).
+pub fn recv_with_info(socket: &UdpSocket, buf: &mut [u8]) -> io::Result<Received> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: all pointers handed to recvmsg point at live, correctly
+        // sized buffers; control messages are read within msg_controllen.
+        unsafe {
+            let mut storage: libc::sockaddr_storage = std::mem::zeroed();
+            let mut iov = libc::iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            };
+            let mut control = [0u64; 16];
+            let mut msg: libc::msghdr = std::mem::zeroed();
+            msg.msg_name = &mut storage as *mut _ as *mut libc::c_void;
+            msg.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+            msg.msg_controllen = std::mem::size_of_val(&control) as _;
+            let n = libc::recvmsg(socket.as_raw_fd(), &mut msg, 0);
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let (mut ttl, mut tos) = (None, None);
+            let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+            while !cmsg.is_null() {
+                let c = &*cmsg;
+                let data = libc::CMSG_DATA(cmsg);
+                let int = || std::ptr::read_unaligned(data as *const libc::c_int);
+                match (c.cmsg_level, c.cmsg_type) {
+                    (libc::IPPROTO_IP, libc::IP_TTL) => ttl = Some(int() as u8),
+                    (libc::IPPROTO_IP, libc::IP_TOS) => tos = Some(*data),
+                    (libc::IPPROTO_IPV6, libc::IPV6_HOPLIMIT) => ttl = Some(int() as u8),
+                    (libc::IPPROTO_IPV6, libc::IPV6_TCLASS) => tos = Some(int() as u8),
+                    _ => {}
+                }
+                cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+            }
+            let from = socket2::SockAddr::new(storage, msg.msg_namelen)
+                .as_socket()
+                .ok_or_else(|| io::Error::other("unexpected source address family"))?;
+            Ok(Received {
+                len: n as usize,
+                from,
+                ttl,
+                tos,
+            })
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let (len, from) = socket.recv_from(buf)?;
+        Ok(Received {
+            len,
+            from,
+            ttl: None,
+            tos: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +353,24 @@ mod tests {
         );
         assert_eq!("3".parse::<Interface>().unwrap(), Interface::Index(3));
         assert!("eth0".parse::<Interface>().is_err());
+    }
+
+    #[test]
+    fn reports_ttl_and_tos() {
+        let mut opts = MulticastOptions::new("239.255.77.1:5999".parse().unwrap()).unwrap();
+        opts.ttl = 7;
+        opts.tos = Some(184);
+        let rx = open_receiver(&opts).unwrap();
+        enable_packet_info(&rx).unwrap();
+        rx.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        open_sender(&opts).unwrap().send(b"hello").unwrap();
+        let mut buf = [0u8; 64];
+        let r = recv_with_info(&rx, &mut buf).unwrap();
+        assert_eq!(&buf[..r.len], b"hello");
+        if cfg!(target_os = "linux") {
+            assert_eq!((r.ttl, r.tos), (Some(7), Some(184)));
+        }
     }
 
     #[test]

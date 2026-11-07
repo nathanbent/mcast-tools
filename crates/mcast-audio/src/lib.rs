@@ -7,6 +7,7 @@ pub mod codec;
 pub mod convert;
 pub mod device;
 pub mod dsp;
+pub mod file;
 pub mod format;
 pub mod jitter;
 pub mod packetizer;
