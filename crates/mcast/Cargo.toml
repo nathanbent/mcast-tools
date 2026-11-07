@@ -4,6 +4,8 @@ description = "Command-line multicast tools"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "mcast"
@@ -20,7 +22,8 @@ mcast-monitor.workspace = true
 [package.metadata.deb]
 name = "mcast"
 maintainer = "nathanbent <nathanbent@users.noreply.github.com>"
-copyright = "nathanbent"
+copyright = "2026, nathanbent"
+license-file = ["../../LICENSE", "0"]
 section = "sound"
 priority = "optional"
 depends = "$auto"

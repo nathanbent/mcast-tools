@@ -101,7 +101,7 @@ VERSION=$(cargo metadata --no-deps --format-version 1 |
 NAME="mcast-$VERSION-$TARGET"
 STAGE="target/dist/$NAME"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
-cp "target/$TARGET/release/mcast" README.md packaging/systemd/mcast@.service \
+cp "target/$TARGET/release/mcast" README.md LICENSE packaging/systemd/mcast@.service \
     packaging/mcast.conf.example "$STAGE/"
 tar -C target/dist -czf "dist/$NAME.tar.gz" "$NAME"
 

@@ -290,3 +290,7 @@ subcommand in the CLI.
 
 - Audio: PTP-aligned timestamps (AES67)
 - Other: file transfer, chat, ping/latency, relay/bridge between interfaces
+
+## License
+
+MIT; see [LICENSE](LICENSE).
