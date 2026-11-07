@@ -14,11 +14,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod presets;
+mod update;
 
 const DEFAULT_GROUP: &str = "239.69.0.1:5004";
 
 #[derive(Parser)]
-#[command(name = "mcast", version, about = "Multicast tools")]
+#[command(name = "mcast", version = env!("MCAST_VERSION"), about = "Multicast tools")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -36,6 +37,8 @@ enum Command {
     /// Save options for `audio send` / `audio recv` under a name; run with `mcast @NAME`
     #[command(subcommand)]
     Preset(PresetCommand),
+    /// Update mcast to the latest version (rebuilds it with cargo)
+    Update(update::UpdateArgs),
 }
 
 #[derive(Subcommand)]
@@ -394,6 +397,7 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
         Command::Monitor(a) => monitor(a, &stop),
         Command::Preset(c) => preset(c),
+        Command::Update(a) => update::run(a),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");
