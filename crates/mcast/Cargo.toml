@@ -20,4 +20,5 @@ mcast-monitor.workspace = true
 mcast-control.workspace = true
 mcast-server.workspace = true
 mcast-web.workspace = true
+mcast-tui.workspace = true
 tokio.workspace = true

@@ -287,6 +287,17 @@ shows the monitor with level meters. It asks for the token if one is set.
 `--no-web` serves the API alone; `--web-dir crates/mcast-web/assets` serves
 the GUI's files from disk, so edits show up on reload without rebuilding.
 
+`mcast tui` does the same from a terminal, so it works over SSH:
+
+```bash
+ssh pager mcast tui                                  # the server on that box
+MCAST_TOKEN=change-me mcast tui --url http://pager:8650
+```
+
+Tabs for what's playing, announced streams, the monitor and media; `p` opens
+the page form, `?` lists the keys. Like the web GUI, it's a client of the
+API: it needs `mcast serve` running, and every client sees the same jobs.
+
 ## Layout
 
 | Crate | Purpose |
@@ -296,6 +307,7 @@ the GUI's files from disk, so edits show up on reload without rebuilding.
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level |
 | `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
+| `crates/mcast-tui` | Terminal front end (`mcast tui`), an API client built on ratatui |
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
 | `crates/mcast` | The `mcast` CLI |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |

@@ -31,6 +31,8 @@ enum Command {
     Monitor(MonitorArgs),
     /// Run the web GUI and HTTP/JSON API for sending, receiving, discovery and monitoring
     Serve(ServeArgs),
+    /// Terminal front end for a running `mcast serve` (works over SSH)
+    Tui(TuiArgs),
 }
 
 #[derive(Subcommand)]
@@ -305,6 +307,21 @@ struct ServeArgs {
     web_dir: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct TuiArgs {
+    /// The server to control
+    #[arg(
+        short,
+        long,
+        default_value = "http://127.0.0.1:8650",
+        env = "MCAST_URL"
+    )]
+    url: String,
+    /// Its API token
+    #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
+    token: Option<String>,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let stop = Arc::new(AtomicBool::new(false));
@@ -318,6 +335,7 @@ fn main() -> Result<()> {
         Command::Audio(AudioCommand::Discover(a)) => audio_discover(a, &stop),
         Command::Monitor(a) => monitor(a, &stop),
         Command::Serve(a) => serve(a, stop),
+        Command::Tui(a) => mcast_tui::run(&a.url, a.token),
         Command::Audio(AudioCommand::Devices) => {
             for line in mcast_audio::device::list()? {
                 println!("{line}");

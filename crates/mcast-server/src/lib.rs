@@ -553,7 +553,10 @@ async fn events(
         Some((Ok(e), rx))
     })
     .take_until(async move {
-        let _ = closing.wait_for(|c| *c).await;
+        // End on shutdown only: a dropped sender (no shutdown wired up) isn't one.
+        if closing.wait_for(|c| *c).await.is_err() {
+            std::future::pending::<()>().await;
+        }
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

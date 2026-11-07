@@ -31,6 +31,7 @@ mcast-monitor = { path = "crates/mcast-monitor" }
 mcast-control = { path = "crates/mcast-control" }
 mcast-server = { path = "crates/mcast-server" }
 mcast-web = { path = "crates/mcast-web" }
+mcast-tui = { path = "crates/mcast-tui" }
 
 [profile.release]
 # Whole-program optimisation: slower builds, faster and smaller binaries.
