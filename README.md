@@ -198,6 +198,17 @@ scripts/mcast-play.sh page.wav -p -C default -o preview.wav       # render inste
 scripts/mcast-play.sh -h                                          # all options
 ```
 
+It has presets too, with the same commands as `mcast preset` and its own
+options (`~/.config/mcast/play-presets/`, one file per preset; `$MCAST_PLAY_PRESETS`
+overrides):
+
+```bash
+scripts/mcast-play.sh preset create page -p -C default -L 1000 -E 1000
+scripts/mcast-play.sh preset set page -c g722                       # add or change options
+scripts/mcast-play.sh @page page.wav                                # options given here win
+scripts/mcast-play.sh @page page.wav -g 239.192.2.2 -o preview.wav
+```
+
 It first renders the finished page (chime, processing, dead air) to a
 temporary WAV, then streams that with steady pacing: one 20 ms packet at a time,
 released in real time by ffmpeg's `arealtime` (`-re` alone sends packets in

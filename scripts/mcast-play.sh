@@ -30,12 +30,24 @@
 #   ./mcast-play.sh rasp1.wav -p -C tones/bell.wav -G 600     # your own tone, 0.6 s gap after it
 #   ./mcast-play.sh song.flac -c g722 -m music -v -6   # music-tuned G.722, 6 dB quieter
 #   ./mcast-play.sh rasp1.wav -p -C default -o preview.wav    # hear it on your desktop first
+#
+# Presets: save options under a name, then use them with @NAME (before or after the file).
+# Options given on the command line win; several presets apply left to right.
+#   ./mcast-play.sh preset create NAME [options]   new preset
+#   ./mcast-play.sh preset set NAME options        add or change options (creates it if needed)
+#   ./mcast-play.sh preset unset NAME OPT...       remove options, by letter: C or -C
+#   ./mcast-play.sh preset list [NAME]             show presets (also: ls, show)
+#   ./mcast-play.sh preset copy FROM TO            (also: cp)
+#   ./mcast-play.sh preset delete NAME             (also: rm)
+#   ./mcast-play.sh preset create page -p -C default -L 1000 -E 1000
+#   ./mcast-play.sh @page rasp1.wav                # same as: rasp1.wav -p -C default -L 1000 -E 1000
+#   ./mcast-play.sh @page rasp1.wav -c g722 -g 239.192.2.2
+# Presets are files in ~/.config/mcast/play-presets/ ($MCAST_PLAY_PRESETS overrides), one
+# option per line, so they can be edited by hand.
 
-VERSION="1.8"
+VERSION="1.9"
 DEFAULT_TONE=""   # set to an audio file path to make it the "-C default" tone; empty = built-in chime
 
-CODEC="g711u"; MODE="none"; GROUP="239.192.2.1"; PORT="10000"; DUR=""; START=""
-LOOP=""; OPUS_PT="107"; DRY=""; VOL=""; LEAD="0"; TAIL="300"; OUT=""; TONE=""; GAP="400"
 
 usage() {  # print the comment header only, however long it gets
   awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
@@ -45,31 +57,158 @@ die()   { echo "$*" >&2; exit 1; }
 isnum() { [[ "$1" =~ ^[+-]?[0-9]+(\.[0-9]+)?$ ]]; }
 
 # --- Parse options (before or after the filename) ---
-POSITIONAL=()
-while [[ $# -gt 0 ]]; do
-  OPTIND=1
-  while getopts "c:m:pv:C:G:L:E:g:P:t:s:lT:o:nh" opt; do
-    case "$opt" in
-      c) CODEC="$OPTARG" ;;  m) MODE="$OPTARG" ;;   p) MODE="voice" ;;
-      v) VOL="$OPTARG" ;;    C) TONE="$OPTARG" ;;   G) GAP="$OPTARG" ;;
-      L) LEAD="$OPTARG" ;;   E) TAIL="$OPTARG" ;;   g) GROUP="$OPTARG" ;;
-      P) PORT="$OPTARG" ;;   t) DUR="$OPTARG" ;;    s) START="$OPTARG" ;;
-      l) LOOP=1 ;;           T) OPUS_PT="$OPTARG" ;; o) OUT="$OPTARG" ;;
-      n) DRY=1 ;;            *) usage ;;
-    esac
+# Sets the option variables, POSITIONAL (non-options), and SEEN: each option given, as
+# "-X" or "-X value", for saving presets.
+OPTSTRING="c:m:pv:C:G:L:E:g:P:t:s:lT:o:nh"
+parse_opts() {
+  CODEC="g711u"; MODE="none"; GROUP="239.192.2.1"; PORT="10000"; DUR=""; START=""
+  LOOP=""; OPUS_PT="107"; DRY=""; VOL=""; LEAD="0"; TAIL="300"; OUT=""; TONE=""; GAP="400"
+  POSITIONAL=(); SEEN=()
+  local opt
+  while [[ $# -gt 0 ]]; do
+    OPTIND=1
+    while getopts "$OPTSTRING" opt; do
+      case "$opt" in
+        c) CODEC="$OPTARG" ;;  m) MODE="$OPTARG" ;;   p) MODE="voice" ;;
+        v) VOL="$OPTARG" ;;    C) TONE="$OPTARG" ;;   G) GAP="$OPTARG" ;;
+        L) LEAD="$OPTARG" ;;   E) TAIL="$OPTARG" ;;   g) GROUP="$OPTARG" ;;
+        P) PORT="$OPTARG" ;;   t) DUR="$OPTARG" ;;    s) START="$OPTARG" ;;
+        l) LOOP=1 ;;           T) OPUS_PT="$OPTARG" ;; o) OUT="$OPTARG" ;;
+        n) DRY=1 ;;            *) usage ;;
+      esac
+      SEEN+=("-${opt}${OPTARG+ $OPTARG}")
+      unset OPTARG
+    done
+    shift $((OPTIND - 1))
+    [[ $# -gt 0 ]] && { POSITIONAL+=("$1"); shift; }
   done
-  shift $((OPTIND - 1))
-  [[ $# -gt 0 ]] && { POSITIONAL+=("$1"); shift; }
+}
+
+# Check option values (everything but the audio file)
+check_opts() {
+  [[ -n "$VOL" ]] && ! isnum "$VOL" && die "Volume must be a number of dB, e.g. -6 or 3: $VOL"
+  for pair in "L:$LEAD" "E:$TAIL" "G:$GAP"; do isnum "${pair#*:}" || die "-${pair%%:*} must be a number of ms: ${pair#*:}"; done
+  [[ -n "$DUR" ]]   && ! isnum "$DUR"   && die "-t must be a number of seconds: $DUR"
+  [[ -n "$START" ]] && ! isnum "$START" && die "-s must be a number of seconds: $START"
+  [[ -n "$OUT" && -n "$LOOP" ]] && die "-o and -l can't be combined (the render would never end)"
+  case "$MODE" in voice|music|none) ;; *) die "Unknown mode: $MODE (use voice, music, none)" ;; esac
+  case "$CODEC" in g711u|g711a|g722|opus|opuswb) ;; *) die "Unknown codec: $CODEC (use g711u, g711a, g722, opus, opuswb)" ;; esac
+}
+
+# --- Presets: one file per preset, one option per line ("-c g722", "-p") ---
+PRESET_DIR="${MCAST_PLAY_PRESETS:-${XDG_CONFIG_HOME:-$HOME/.config}/mcast/play-presets}"
+# Call preset_name directly, not in $(...), so that die exits the script
+preset_name() {
+  [[ "$1" =~ ^[A-Za-z0-9_.][A-Za-z0-9_.-]*$ ]] || die "Invalid preset name: \"$1\" (use letters, digits, '-', '_', '.')"
+}
+preset_path() { echo "$PRESET_DIR/$1"; }
+preset_need() { preset_name "$1"; [[ -f "$(preset_path "$1")" ]] || die "No preset named \"$1\" (see: $0 preset list)"; }
+# Print a preset's options as arguments, one per line
+preset_args() {
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == *" "* ]]; then printf '%s\n' "${line%% *}" "${line#* }"; else printf '%s\n' "$line"; fi
+  done < "$(preset_path "$1")"
+}
+# The setting an option line changes: -p and -m both set the mode
+preset_key() { local k="${1:1:1}"; [[ "$k" == p ]] && k=m; echo "$k"; }
+# Parse and check options, refusing files; leaves the normalised lines in SEEN
+preset_check() {
+  parse_opts "$@"
+  [[ ${#POSITIONAL[@]} -eq 0 ]] || die "Presets hold options, not files: ${POSITIONAL[*]}"
+  check_opts
+}
+preset_show() {
+  local name="$1" args=()
+  mapfile -t args < <(preset_args "$name")
+  printf '%s: %s' "$name" "$(basename "$0")"
+  [[ ${#args[@]} -gt 0 ]] && printf ' %q' "${args[@]}"
+  echo
+}
+preset_cmd() {
+  local cmd="${1:-list}"; shift || true
+  local name="${1:-}" path line key new keep=() args=()
+  [[ -n "$name" ]] && preset_name "$name"
+  case "$cmd" in
+    create|set)
+      [[ -n "$name" ]] || die "Usage: $0 preset $cmd NAME options"; shift
+      path=$(preset_path "$name")
+      if [[ "$cmd" == create ]]; then
+        [[ -e "$path" ]] && die "Preset \"$name\" already exists; change it with: $0 preset set $name ..."
+      elif [[ $# -eq 0 ]]; then die "Usage: $0 preset set NAME options"
+      fi
+      [[ "$cmd" == set && ! -e "$path" ]] && echo "creating preset \"$name\""
+      # Existing options first (checked too, in case of hand edits), then the new ones
+      [[ -e "$path" ]] && mapfile -t args < <(preset_args "$name")
+      ( preset_check "${args[@]}" ) || die "Preset \"$name\" has invalid options; fix or delete $path"
+      preset_check "$@"; new=("${SEEN[@]}")
+      if [[ ${#args[@]} -gt 0 ]]; then parse_opts "${args[@]}"; else SEEN=(); fi
+      # A new option replaces the same setting (-p replaces -m and vice versa)
+      for line in "${SEEN[@]}"; do
+        key=$(preset_key "$line")
+        for n in "${new[@]}"; do [[ $(preset_key "$n") == "$key" ]] && continue 2; done
+        keep+=("$line")
+      done
+      mkdir -p "$PRESET_DIR" || die "Can't create $PRESET_DIR"
+      printf '%s\n' "${keep[@]}" "${new[@]}" | grep -v '^$' > "$path.tmp" || true
+      mv "$path.tmp" "$path"
+      preset_show "$name" ;;
+    unset)
+      [[ -n "$name" && $# -ge 2 ]] || die "Usage: $0 preset unset NAME OPT... (e.g. C or -C)"; shift
+      preset_need "$name"; path=$(preset_path "$name")
+      mapfile -t args < <(preset_args "$name"); parse_opts "${args[@]}"
+      for line in "${SEEN[@]}"; do
+        key=$(preset_key "$line")
+        for n in "$@"; do n="${n#-}"; [[ "$n" == p ]] && n=m
+          [[ ${#n} -eq 1 && "$OPTSTRING" == *"$n"* && "$n" != : ]] || die "Not an option: $n"
+          [[ "$n" == "$key" ]] && continue 2
+        done
+        keep+=("$line")
+      done
+      printf '%s\n' "${keep[@]}" | grep -v '^$' > "$path.tmp" || true
+      mv "$path.tmp" "$path"
+      preset_show "$name" ;;
+    list|ls|show)
+      if [[ -n "$name" ]]; then preset_need "$name"; preset_show "$name"; exit 0; fi
+      shopt -s nullglob; local files=("$PRESET_DIR"/*)
+      [[ ${#files[@]} -eq 0 ]] && echo "No presets in $PRESET_DIR; create one with: $0 preset create NAME options" >&2
+      for path in "${files[@]}"; do [[ "$path" == *.tmp ]] || preset_show "$(basename "$path")"; done ;;
+    copy|cp)
+      [[ -n "$name" && -n "${2:-}" ]] || die "Usage: $0 preset copy FROM TO"
+      preset_need "$name"; preset_name "$2"; path=$(preset_path "$2")
+      [[ -e "$path" ]] && die "Preset \"$2\" already exists"
+      cp "$(preset_path "$name")" "$path" && preset_show "$2" ;;
+    delete|rm)
+      [[ -n "$name" ]] || die "Usage: $0 preset delete NAME"
+      preset_need "$name"; rm "$(preset_path "$name")" && echo "deleted $name" ;;
+    *) die "Unknown preset command: $cmd (create, set, unset, list, copy, delete)" ;;
+  esac
+  exit 0
+}
+[[ "${1:-}" == preset ]] && { shift; preset_cmd "$@"; }
+
+# @NAME arguments (where a file could go) expand to the preset's options. They go first, so
+# options given on the command line win; then parse again.
+parse_opts "$@"
+PRESET_ARGS=(); REST=()
+for p in "${POSITIONAL[@]}"; do
+  if [[ "$p" == @* ]]; then
+    preset_need "${p#@}"
+    mapfile -t args < <(preset_args "${p#@}")
+    PRESET_ARGS+=("${args[@]}")
+  else REST+=("$p"); fi
 done
+if [[ ${#REST[@]} -ne ${#POSITIONAL[@]} ]]; then
+  # The original arguments again, minus the @NAME ones (which only appear as positionals)
+  ARGS=(); for a in "$@"; do [[ "$a" == @* && " ${POSITIONAL[*]} " == *" $a "* ]] || ARGS+=("$a"); done
+  parse_opts "${PRESET_ARGS[@]}" "${ARGS[@]}"
+fi
 [[ ${#POSITIONAL[@]} -ne 1 ]] && { echo "Expected exactly one audio file, got: ${POSITIONAL[*]:-none}" >&2; usage; }
 FILE="${POSITIONAL[0]}"
 [[ -f "$FILE" ]] || die "File not found: $FILE"
-[[ -n "$VOL" ]] && ! isnum "$VOL" && die "Volume must be a number of dB, e.g. -6 or 3: $VOL"
-for pair in "L:$LEAD" "E:$TAIL" "G:$GAP"; do isnum "${pair#*:}" || die "-${pair%%:*} must be a number of ms: ${pair#*:}"; done
-[[ -n "$DUR" ]]   && ! isnum "$DUR"   && die "-t must be a number of seconds: $DUR"
-[[ -n "$START" ]] && ! isnum "$START" && die "-s must be a number of seconds: $START"
-[[ -n "$OUT" && -n "$LOOP" ]] && die "-o and -l can't be combined (the render would never end)"
-case "$MODE" in voice|music|none) ;; *) die "Unknown mode: $MODE (use voice, music, none)" ;; esac
+check_opts
 
 # --- Pre-tone source ---
 TONE_FILE=""; TONE_DESC=""
