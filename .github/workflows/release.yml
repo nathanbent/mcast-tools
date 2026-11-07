@@ -25,9 +25,9 @@ jobs:
             os: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
-          # Apple silicon runner; the Intel build is cross-compiled. Rust's
-          # deployment targets (macOS 11 / 10.12) keep the binaries portable,
-          # so following macos-latest is safe and survives image retirements.
+          # Apple silicon runner; the Intel build is cross-compiled.
+          # MACOSX_DEPLOYMENT_TARGET (below) keeps the binaries running on
+          # macOS 11+, whichever macOS the runner has.
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-apple-darwin
@@ -43,6 +43,9 @@ jobs:
       # libopus's bundled CMakeLists asks for CMake 3.1, which CMake 4 (on the
       # Windows and macOS runners) refuses without this.
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      # Oldest macOS the binaries support, for Rust and the C code alike
+      # (otherwise C is built for the runner's own macOS version).
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
       # Tells the binary it's a release build, so `mcast update` downloads
       # releases instead of building from source.
       MCAST_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}

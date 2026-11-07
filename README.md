@@ -9,7 +9,7 @@ uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
 
 Each [release](https://github.com/nathanbent/mcast-tools/releases) has
 binaries for Linux (x86_64 and ARM64, glibc 2.35 or newer, e.g. Ubuntu 22.04,
-Debian 12, Raspberry Pi OS bookworm), macOS (Apple silicon and Intel) and
+Debian 12, Raspberry Pi OS bookworm), macOS 11 or newer (Apple silicon and Intel) and
 Windows (x86_64). Opus is built in; on Linux the only requirement is ALSA
 (`libasound2`, already present on systems with sound).
 
