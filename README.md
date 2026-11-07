@@ -20,6 +20,23 @@ cargo install --path crates/mcast
 If the shell then says `Command 'mcast' not found`, `~/.cargo/bin` is not on your
 `PATH` (rustup normally adds it; open a new shell, or run `source "$HOME/.cargo/env"`).
 
+### Updating
+
+Once installed, `mcast` can update itself. It asks cargo to rebuild and
+reinstall it from this repository's `main` branch (so it needs the same build
+dependencies as the first install):
+
+```bash
+mcast update --check              # is a newer commit available?
+mcast update                      # rebuild and install the latest main
+mcast update --branch some-branch # try a branch
+mcast update --path ~/mcast-tools # git pull a local clone, then install from it
+```
+
+`mcast --version` shows the commit the binary was built from. The new binary
+goes into `~/.cargo/bin`; if you run a copy from somewhere else (such as
+`./target/release/mcast`), that copy is left as it is.
+
 To build without installing, use `cargo build --release` and run the binary as
 `./target/release/mcast`.
 
