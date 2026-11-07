@@ -1,0 +1,97 @@
+name: Release
+
+# Pushing a tag like v0.2.0 builds mcast for each platform and publishes a
+# GitHub release with the binaries. On pull requests that touch this file
+# (and on manual runs) it only builds, so the builds can be checked first.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 so the binaries run on glibc 2.35 and newer.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      # Build libopus from the bundled source and link it in, so the binaries
+      # don't need libopus installed. (ALSA stays a shared library on Linux.)
+      LIBOPUS_STATIC: "1"
+      LIBOPUS_NO_PKG: "1"
+      # Tells the binary it's a release build, so `mcast update` downloads
+      # releases instead of building from source.
+      MCAST_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ALSA headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config cmake
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Check the tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version=$(cargo pkgid -p mcast | sed 's/.*[#@]//')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --release --locked -p mcast --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          dir=target/${{ matrix.target }}/release
+          if [ "${{ runner.os }}" = Windows ]; then
+            7z a "dist/mcast-${{ matrix.target }}.zip" "./$dir/mcast.exe"
+          else
+            tar -czf "dist/mcast-${{ matrix.target }}.tar.gz" -C "$dir" mcast
+          fi
+      - name: Smoke test
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: target/${{ matrix.target }}/release/mcast --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcast-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

@@ -3,7 +3,27 @@
 A collection of multicast tools, written in Rust. The first set is audio:
 uncompressed PCM over RTP multicast, using the same L16/L24 payloads as AES67.
 
-## Build and install
+## Install
+
+### Prebuilt binaries
+
+Each [release](https://github.com/nathanbent/mcast-tools/releases) has
+binaries for Linux (x86_64 and ARM64, glibc 2.35 or newer, e.g. Ubuntu 22.04,
+Debian 12, Raspberry Pi OS bookworm), macOS (Apple silicon and Intel) and
+Windows (x86_64). Opus is built in; on Linux the only requirement is ALSA
+(`libasound2`, already present on systems with sound).
+
+```bash
+mkdir -p ~/.local/bin && curl -fsSL https://github.com/nathanbent/mcast-tools/releases/latest/download/mcast-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.local/bin
+```
+
+Use `mcast-aarch64-unknown-linux-gnu.tar.gz` on ARM64 Linux,
+`mcast-aarch64-apple-darwin.tar.gz` or `mcast-x86_64-apple-darwin.tar.gz` on
+macOS, and `mcast-x86_64-pc-windows-msvc.zip` on Windows. Any directory on your
+`PATH` will do in place of `~/.local/bin`. Each release lists SHA-256 checksums
+in `SHA256SUMS`.
+
+### Build from source
 
 On Debian/Ubuntu install the build dependencies first (ALSA for audio devices, libopus for Opus):
 
@@ -20,28 +40,47 @@ cargo install --path crates/mcast
 If the shell then says `Command 'mcast' not found`, `~/.cargo/bin` is not on your
 `PATH` (rustup normally adds it; open a new shell, or run `source "$HOME/.cargo/env"`).
 
+To build without installing, use `cargo build --release` and run the binary as
+`./target/release/mcast`.
+
 ### Updating
 
-Once installed, `mcast` can update itself. It asks cargo to rebuild and
-reinstall it from this repository's `main` branch (so it needs the same build
-dependencies as the first install):
+`mcast` can update itself. A release binary downloads the latest release and
+replaces itself in place. A binary built with cargo asks cargo to rebuild and
+reinstall it from `main`, so it needs the build dependencies above.
 
 ```bash
-mcast update --check              # is a newer commit available?
-mcast update                      # rebuild and install the latest main
-mcast update --branch some-branch # try a branch
+mcast update --check              # is there anything newer?
+mcast update                      # install it
+mcast update --release            # switch a cargo build to the latest release
+mcast update --source             # switch a release binary to building from main
+mcast update --branch some-branch # build a branch (implies --source)
 mcast update --path ~/mcast-tools # git pull a local clone, then install from it
 ```
 
 `mcast --version` shows the commit the binary was built from. `--check` (and
-`update` itself) compares it with the branch, through GitHub's API or with
-`--path` in the clone, so a development build that is ahead of `main`, or has
-commits `main` doesn't, isn't replaced unless you add `--force`. The new binary
-goes into `~/.cargo/bin`; if you run a copy from somewhere else (such as
-`./target/release/mcast`), that copy is left as it is.
+`update` itself) compares it with what would be installed, through GitHub's
+API or with `--path` in the clone, so a development build that is ahead of
+`main` or of the latest release, or has commits they don't, isn't replaced
+unless you add `--force`. Downloading needs `curl` and `tar` (both included in
+macOS and Windows 10 and later), and permission to write to the binary's
+directory. A cargo build is installed into `~/.cargo/bin`; if you run a copy
+from somewhere else (such as `./target/release/mcast`), that copy is left as
+it is.
 
-To build without installing, use `cargo build --release` and run the binary as
-`./target/release/mcast`.
+### Making a release
+
+Set the version in the root `Cargo.toml` (`[workspace.package] version`),
+commit, and push a matching tag:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) builds every platform,
+checks the tag matches the version, and publishes the release with
+`SHA256SUMS`. It also runs as a build-only check on pull requests that change
+it, and can be started by hand from the Actions tab.
 
 ## Audio
 

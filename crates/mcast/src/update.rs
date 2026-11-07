@@ -1,5 +1,6 @@
-//! `mcast update`: rebuild and reinstall this binary with cargo, either from
-//! the GitHub repository or from a local clone.
+//! `mcast update`: replace this binary with a newer one, either by
+//! downloading the latest GitHub release (the default for release builds) or
+//! by rebuilding it with cargo from the repository or a local clone.
 
 use anyhow::{bail, Context, Result};
 use clap::Args;
@@ -10,6 +11,10 @@ pub const DEFAULT_REPO: &str = "https://github.com/nathanbent/mcast-tools";
 
 /// Commit this binary was built from, when it was built from a git checkout.
 pub const BUILD_SHA: Option<&str> = option_env!("MCAST_GIT_SHA");
+/// Release tag, for binaries built by the release workflow.
+const RELEASE_TAG: Option<&str> = option_env!("MCAST_RELEASE");
+/// Platform triple, which names the release download for this binary.
+const TARGET: &str = env!("MCAST_TARGET");
 
 #[derive(Args)]
 pub struct UpdateArgs {
@@ -17,13 +22,19 @@ pub struct UpdateArgs {
     /// is ahead of the branch); don't install
     #[arg(long)]
     check: bool,
-    /// Branch to install from
-    #[arg(short, long, default_value = "main")]
-    branch: String,
-    /// Git repository to install from
+    /// Download the latest GitHub release (the default for release builds)
+    #[arg(long, conflicts_with_all = ["source", "branch", "path"])]
+    release: bool,
+    /// Build from source with cargo (the default for builds made with cargo)
+    #[arg(long)]
+    source: bool,
+    /// Branch to build from [default: main]; implies --source
+    #[arg(short, long)]
+    branch: Option<String>,
+    /// Git repository to update from
     #[arg(long, default_value = DEFAULT_REPO)]
     repo: String,
-    /// Update from a local clone instead: `git pull` it, then install from it
+    /// Build from a local clone: `git pull` it, then install from it; implies --source
     #[arg(long, value_name = "DIR", conflicts_with = "repo")]
     path: Option<PathBuf>,
     /// Install even if this build is already the latest, or ahead of the branch
@@ -49,21 +60,45 @@ enum Relation {
 }
 
 pub fn run(a: UpdateArgs) -> Result<()> {
-    let latest = match &a.path {
-        Some(dir) => local_head(dir, &a.branch, a.check)?,
-        None => remote_head(&a.repo, &a.branch),
+    let from_release =
+        a.release || (!a.source && a.branch.is_none() && a.path.is_none() && RELEASE_TAG.is_some());
+    let branch_name = a.branch.clone().unwrap_or_else(|| "main".into());
+
+    let installed = match (RELEASE_TAG, BUILD_SHA) {
+        (Some(tag), Some(sha)) => format!("{tag} ({})", short(sha)),
+        (Some(tag), None) => tag.to_string(),
+        (None, Some(sha)) => short(sha).to_string(),
+        (None, None) => "unknown commit".into(),
+    };
+    println!("Installed: {installed}");
+
+    // `latest` is what would be installed: a release tag, or a branch's head
+    // commit. Both work as a ref for the comparisons below.
+    let latest = if from_release {
+        let tag = latest_release(&a.repo)?;
+        println!("Latest:    {tag} (release)");
+        Some(tag)
+    } else {
+        let head = match &a.path {
+            Some(dir) => local_head(dir, &branch_name, a.check)?,
+            None => remote_head(&a.repo, &branch_name),
+        };
+        match &head {
+            Some(sha) => println!("Latest:    {} ({branch_name})", short(sha)),
+            None => println!("Latest:    unknown (couldn't ask git)"),
+        }
+        head
+    };
+    // How messages name what would be installed.
+    let branch = match (&latest, from_release) {
+        (Some(tag), true) => tag.clone(),
+        _ => branch_name.clone(),
     };
 
-    println!(
-        "Installed: {}",
-        BUILD_SHA.map_or("unknown commit".into(), |s| short(s).to_string())
-    );
-    match &latest {
-        Some(sha) => println!("Latest:    {} ({})", short(sha), a.branch),
-        None => println!("Latest:    unknown (couldn't ask git)"),
-    }
-
     let relation = match (BUILD_SHA, &latest) {
+        _ if from_release && RELEASE_TAG.is_some() && RELEASE_TAG == latest.as_deref() => {
+            Relation::Same
+        }
         (Some(b), Some(l)) if b == l => Relation::Same,
         (Some(b), Some(l)) => match &a.path {
             Some(dir) => compare_local(dir, b, l),
@@ -71,7 +106,6 @@ pub fn run(a: UpdateArgs) -> Result<()> {
         },
         _ => Relation::Unknown,
     };
-    let branch = &a.branch;
     // Whether installing would be an update rather than a downgrade.
     let wanted = match relation {
         Relation::Same => {
@@ -79,7 +113,7 @@ pub fn run(a: UpdateArgs) -> Result<()> {
             false
         }
         Relation::Counts { ahead: 0, behind } => {
-            println!("{behind} new commit{} on {branch}.", plural(behind));
+            println!("{branch} has {behind} new commit{}.", plural(behind));
             true
         }
         Relation::Counts { ahead, behind: 0 } => {
@@ -119,7 +153,7 @@ pub fn run(a: UpdateArgs) -> Result<()> {
     if a.check {
         match (wanted, &relation) {
             (true, Relation::Counts { .. }) => println!("Run `mcast update` to install them."),
-            (true, _) => println!("Run `mcast update` to rebuild from {branch} anyway."),
+            (true, _) => println!("Run `mcast update` to install {branch} anyway."),
             (false, Relation::Same) => {}
             (false, _) => println!("`mcast update --force` would install {branch} anyway."),
         }
@@ -127,9 +161,16 @@ pub fn run(a: UpdateArgs) -> Result<()> {
     }
     if !wanted && !a.force {
         match relation {
-            Relation::Same => println!("Use --force to rebuild anyway."),
+            Relation::Same => println!("Use --force to reinstall anyway."),
             _ => println!("Not updating; use --force to install {branch} anyway."),
         }
+        return Ok(());
+    }
+
+    if from_release {
+        let tag = latest.expect("release mode always knows the tag");
+        install_release(&a.repo, &tag)?;
+        println!("Updated to {tag}.");
         return Ok(());
     }
 
@@ -141,7 +182,7 @@ pub fn run(a: UpdateArgs) -> Result<()> {
             cmd.arg("--path").arg(dir.join("crates/mcast"));
         }
         None => {
-            cmd.args(["--git", &a.repo, "--branch", &a.branch, "mcast"]);
+            cmd.args(["--git", &a.repo, "--branch", &branch_name, "mcast"]);
         }
     }
     // We've already decided an update is wanted. --force also lets a git
@@ -226,16 +267,11 @@ fn compare_github(repo: &str, installed: &str, latest: &str) -> Relation {
     let Some(path) = github_path(repo) else {
         return Relation::Unknown;
     };
-    let url = format!("https://api.github.com/repos/{path}/compare/{latest}...{installed}");
-    let out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "15"])
-        .args(["-H", "Accept: application/vnd.github+json"])
-        .args(["-H", "User-Agent: mcast-update"])
-        .arg(&url)
-        .output();
-    match out {
-        Ok(o) if o.status.success() => parse_compare(&String::from_utf8_lossy(&o.stdout)),
-        _ => Relation::Unknown,
+    match curl(&format!(
+        "https://api.github.com/repos/{path}/compare/{latest}...{installed}"
+    )) {
+        Ok(json) => parse_compare(&json),
+        Err(_) => Relation::Unknown,
     }
 }
 
@@ -273,6 +309,112 @@ fn json_u32(json: &str, key: &str) -> Option<u32> {
         .find(|c: char| !c.is_ascii_digit())
         .unwrap_or(rest.len());
     rest[..end].parse().ok()
+}
+
+/// Fetch a URL with curl into memory; errors carry curl's message.
+fn curl(url: &str) -> Result<String> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "30"])
+        .args(["-H", "Accept: application/vnd.github+json"])
+        .args(["-H", "User-Agent: mcast-update"])
+        .arg(url)
+        .output()
+        .context("couldn't run curl, which downloading releases needs")?;
+    if !out.status.success() {
+        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Tag of the repository's latest GitHub release.
+fn latest_release(repo: &str) -> Result<String> {
+    let path = github_path(repo).context("releases can only be downloaded from github.com")?;
+    let json = curl(&format!(
+        "https://api.github.com/repos/{path}/releases/latest"
+    ))
+    .with_context(|| format!("couldn't find a release of {repo}; use --source to build it"))?;
+    json_str(&json, "tag_name").context("unexpected reply from GitHub's releases API")
+}
+
+/// Name of this platform's download in a release.
+fn asset_name() -> String {
+    let ext = if cfg!(windows) { "zip" } else { "tar.gz" };
+    format!("mcast-{TARGET}.{ext}")
+}
+
+/// Download the release for this platform and put it in place of the
+/// running binary, after checking that the new one runs.
+fn install_release(repo: &str, tag: &str) -> Result<()> {
+    let exe = std::env::current_exe().context("couldn't find this program's path")?;
+    let dir = exe.parent().context("program has no directory")?;
+    // Unpack next to the binary, so the final rename stays on one filesystem
+    // and a directory we can't write to fails before anything is downloaded.
+    let work = dir.join(format!(".mcast-update-{}", std::process::id()));
+    std::fs::create_dir_all(&work).with_context(|| {
+        format!(
+            "can't write to {}; run the update with permission to change {}",
+            dir.display(),
+            exe.display()
+        )
+    })?;
+    let result = download_and_swap(repo, tag, &exe, &work);
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+fn download_and_swap(repo: &str, tag: &str, exe: &Path, work: &Path) -> Result<()> {
+    let asset = asset_name();
+    let url = format!(
+        "{}/releases/download/{tag}/{asset}",
+        repo.trim_end_matches('/')
+    );
+    let archive = work.join(&asset);
+    println!("Downloading {url}");
+    let status = Command::new("curl")
+        .args(["-fL", "--retry", "2", "--progress-bar", "-o"])
+        .arg(&archive)
+        .arg(&url)
+        .status()
+        .context("couldn't run curl, which downloading releases needs")?;
+    if !status.success() {
+        bail!("download failed; {tag} may have no build for {TARGET}");
+    }
+    // tar unpacks .zip as well on Windows 10 and later.
+    let status = Command::new("tar")
+        .arg("-xf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(work)
+        .status()
+        .context("couldn't run tar")?;
+    if !status.success() {
+        bail!("couldn't unpack {asset}");
+    }
+    let new = work.join(format!("mcast{}", std::env::consts::EXE_SUFFIX));
+    let out = Command::new(&new)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("the downloaded mcast doesn't run on this system ({TARGET})"))?;
+    if !out.status.success() {
+        bail!("the downloaded mcast doesn't run on this system ({TARGET})");
+    }
+    println!("Got {}", String::from_utf8_lossy(&out.stdout).trim());
+
+    let guard = MoveAside::new(true)?;
+    if let Err(e) = std::fs::rename(&new, exe) {
+        guard.restore();
+        return Err(e).with_context(|| format!("couldn't replace {}", exe.display()));
+    }
+    Ok(())
+}
+
+/// The first `"key": "<string>"` in a JSON text (no escapes expected).
+fn json_str(json: &str, key: &str) -> Option<String> {
+    let pat = format!("\"{key}\"");
+    let rest = &json[json.find(&pat)? + pat.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    Some(rest[..rest.find('"')?].to_string())
 }
 
 /// Pull the local clone (fetch only for --check) and return the commit that
@@ -463,6 +605,17 @@ mod tests {
             parse_compare(r#"{"message":"Not Found"}"#),
             Relation::Unknown
         );
+    }
+
+    #[test]
+    fn json_strings() {
+        let j = r#"{"url": "x", "tag_name": "v0.2.0", "name": "v0.2.0"}"#;
+        assert_eq!(json_str(j, "tag_name").as_deref(), Some("v0.2.0"));
+        assert_eq!(
+            json_str(r#"{"tag_name":"v1"}"#, "tag_name").as_deref(),
+            Some("v1")
+        );
+        assert_eq!(json_str(r#"{"message":"Not Found"}"#, "tag_name"), None);
     }
 
     #[test]

@@ -16,6 +16,18 @@ fn git(args: &[&str]) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=MCAST_GIT_SHA");
+    println!("cargo:rerun-if-env-changed=MCAST_RELEASE");
+
+    // Platform, to pick the matching release download.
+    let target = std::env::var("TARGET").unwrap_or_default();
+    println!("cargo:rustc-env=MCAST_TARGET={target}");
+    // Set by the release workflow to the tag (e.g. v0.2.0).
+    if let Some(tag) = std::env::var("MCAST_RELEASE")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
+        println!("cargo:rustc-env=MCAST_RELEASE={tag}");
+    }
 
     let sha = std::env::var("MCAST_GIT_SHA")
         .ok()
