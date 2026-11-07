@@ -215,7 +215,7 @@ impl Jobs {
             name: announced,
             summary: Some(format!(
                 "receiving files from {group} (up to {} MB each)",
-                req.max_size_mb
+                req.max_size_mb()
             )),
             notes: Vec::new(),
             created_ms: now_ms(),

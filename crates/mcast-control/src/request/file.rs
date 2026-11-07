@@ -128,8 +128,8 @@ pub struct FileRecvRequest {
     #[serde(with = "opt_str")]
     pub interface: Option<Interface>,
     pub payload_type: u8,
-    /// Refuse files larger than this.
-    pub max_size_mb: u64,
+    /// Refuse files larger than this; `None` is 100 MB.
+    pub max_size_mb: Option<u64>,
     /// Our name in RTCP receiver reports; `None` is the host name.
     pub name: Option<String>,
     pub rtcp: bool,
@@ -146,7 +146,7 @@ impl Default for FileRecvRequest {
             stream: None,
             interface: None,
             payload_type: DEFAULT_PT,
-            max_size_mb: 100,
+            max_size_mb: None,
             name: None,
             rtcp: true,
             rtcp_interval_s: 5.0,
@@ -156,6 +156,12 @@ impl Default for FileRecvRequest {
 }
 
 impl FileRecvRequest {
+    pub const DEFAULT_MAX_SIZE_MB: u64 = 100;
+
+    pub fn max_size_mb(&self) -> u64 {
+        self.max_size_mb.unwrap_or(Self::DEFAULT_MAX_SIZE_MB)
+    }
+
     /// The group and payload type, and the announcement's name if any.
     pub fn target(&self, known: &[FileInfo]) -> Result<(SocketAddr, u8, Option<String>)> {
         if let Some(g) = self.group {
@@ -177,7 +183,8 @@ impl FileRecvRequest {
         payload_type: u8,
         iface: Interface,
     ) -> Result<FileReceiverConfig> {
-        if self.max_size_mb == 0 {
+        let max_size_mb = self.max_size_mb();
+        if max_size_mb == 0 {
             bail!("max_size_mb must be above 0");
         }
         Ok(FileReceiverConfig {
@@ -188,7 +195,7 @@ impl FileRecvRequest {
             }
             .options(group, iface)?,
             payload_type: Some(payload_type),
-            max_size: self.max_size_mb.saturating_mul(1 << 20),
+            max_size: max_size_mb.saturating_mul(1 << 20),
             rtcp: rtcp(
                 self.rtcp,
                 self.rtcp_interval_s,
