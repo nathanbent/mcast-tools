@@ -695,3 +695,144 @@ async fn phonebook_names_stand_in_for_groups() {
     let (status, _) = call(&h, "DELETE", "/api/v1/phonebook/zone-1", None, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn media_folders_moves_and_pages_by_path() {
+    let h = harness(None);
+    let mut events = h.state.0.events.subscribe();
+    // Uploading into a folder makes it.
+    assert_eq!(
+        put_media(&h, "bells/lunch.wav", wav()).await,
+        StatusCode::CREATED
+    );
+    assert!(matches!(events.try_recv(), Ok(Event::MediaChanged)));
+    assert_eq!(put_media(&h, "top.wav", wav()).await, StatusCode::CREATED);
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/media-folders",
+        Some(json!({"name": "empty/inner"})),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, folders) = call(&h, "GET", "/api/v1/media-folders", None, None).await;
+    assert_eq!(folders, json!(["bells", "empty", "empty/inner"]));
+    let (_, media) = call(&h, "GET", "/api/v1/media", None, None).await;
+    let names: Vec<_> = media
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["bells/lunch.wav", "top.wav"]);
+
+    // Paths work where media names go, encoded or not.
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(
+            json!({"group": "239.255.77.23:5004", "sap": false, "duration_s": 0.2,
+                    "source": {"type": "file", "path": "bells/lunch.wav"}}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    call(
+        &h,
+        "DELETE",
+        &format!("/api/v1/jobs/{}", v["id"]),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        get_raw(&h, "/api/v1/media/bells%2Flunch.wav")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+
+    // Move a file, then a folder with what's in it; nothing is replaced.
+    let mv = |from: &str, to: &str| json!({"from": from, "to": to});
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/media-move",
+        Some(mv("top.wav", "bells/top.wav")),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, _) = call(
+        &h,
+        "POST",
+        "/api/v1/media-move",
+        Some(mv("bells/top.wav", "bells/lunch.wav")),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/media-move",
+        Some(mv("bells", "old/bells")),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["folder"], true);
+    let (s, _) = call(
+        &h,
+        "POST",
+        "/api/v1/media-move",
+        Some(mv("old", "old/x")),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, media) = call(&h, "GET", "/api/v1/media", None, None).await;
+    assert_eq!(media[0]["name"], "old/bells/lunch.wav");
+    assert_eq!(media[1]["name"], "old/bells/top.wav");
+
+    // Bad names, and folders that aren't empty, are refused.
+    for bad in ["../x.wav", "a/.hidden", "a//b.wav", "a/../b"] {
+        let (s, _) = call(&h, "POST", "/api/v1/media-move", Some(mv("old", bad)), None).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+    }
+    assert_eq!(
+        call(&h, "DELETE", "/api/v1/media-folders/old", None, None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    for f in ["old/bells/lunch.wav", "old/bells/top.wav"] {
+        assert_eq!(
+            call(&h, "DELETE", &format!("/api/v1/media/{f}"), None, None)
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    for d in ["old/bells", "old", "empty/inner", "empty"] {
+        assert_eq!(
+            call(
+                &h,
+                "DELETE",
+                &format!("/api/v1/media-folders/{d}"),
+                None,
+                None
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT,
+            "{d}"
+        );
+    }
+    let (_, folders) = call(&h, "GET", "/api/v1/media-folders", None, None).await;
+    assert_eq!(folders, json!([]));
+    let _ = std::fs::remove_dir_all(&h.dir);
+}

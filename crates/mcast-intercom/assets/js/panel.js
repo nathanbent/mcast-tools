@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
-import { state, subscribe, isOver, zoneName, activeRun, fireTime, fromNow } from "./store.js";
+import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow } from "./store.js";
 import { runCard, runState, stopRun } from "./runs.js";
 
 async function play(a) {
@@ -46,6 +46,7 @@ export function mount(el) {
     replace(el,
       next && h("p", { class: "next" },
         h("span", { class: "muted" }, "Next: "), h("strong", {}, next.name),
+        next.site && ` at ${siteName(next.site)}`,
         ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
       anns.length
         ? h("div", { class: "tiles" }, anns.map(tile))

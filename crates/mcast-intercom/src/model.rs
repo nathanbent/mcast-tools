@@ -32,6 +32,44 @@ pub struct Config {
     /// Dates schedules don't play on: holidays, breaks.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub days_off: Vec<DayOff>,
+    /// Media files and folders (paths) left out of the panel's lists.
+    /// Announcements that use one still play it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_media: Vec<String>,
+    /// Places with their own zones and schedules: buildings, campuses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<Site>,
+    /// Sets of schedules switched on and off together.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub schedule_groups: Vec<ScheduleGroup>,
+}
+
+/// A place with its own zones and schedules, and its own time zone, days
+/// off and pause switch. A site's schedule plays only to its zones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Site {
+    pub id: String,
+    pub name: String,
+    /// IANA time zone for its schedules; unset uses the panel's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+    /// Dates its schedules don't play on, besides the panel's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub days_off: Vec<DayOff>,
+    /// While true, none of its schedules plays.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
+}
+
+/// Schedules switched on and off together: "Normal bells", "Exam week".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduleGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "yes")]
+    pub enabled: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -143,6 +181,13 @@ pub struct Schedule {
     #[serde(default = "yes")]
     pub enabled: bool,
     pub when: When,
+    /// Site id: it plays to the announcement's zones there, in the site's
+    /// time zone. Unset: to all the announcement's zones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    /// Schedule group id; the group must be on for it to play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 fn yes() -> bool {
@@ -204,15 +249,76 @@ pub fn parse_datetime(s: &str) -> Result<jiff::civil::DateTime> {
     }
 }
 
+fn get_tz(name: &str) -> Result<jiff::tz::TimeZone> {
+    jiff::tz::TimeZone::get(name).map_err(|_| {
+        anyhow::anyhow!("unknown time zone \"{name}\" (use a name like Europe/London)")
+    })
+}
+
 impl Config {
-    /// The time zone schedules are in.
+    /// The panel's time zone: schedules without a site of their own use it.
     pub fn tz(&self) -> Result<jiff::tz::TimeZone> {
         match &self.time_zone {
-            Some(name) => jiff::tz::TimeZone::get(name).map_err(|_| {
-                anyhow::anyhow!("unknown time zone \"{name}\" (use a name like Europe/London)")
-            }),
+            Some(name) => get_tz(name),
             None => Ok(jiff::tz::TimeZone::system()),
         }
+    }
+
+    pub fn site(&self, id: &str) -> Option<&Site> {
+        self.sites.iter().find(|s| s.id == id)
+    }
+
+    /// A site's time zone (its own, else the panel's); `None` for no site.
+    pub fn site_tz(&self, site: Option<&str>) -> Result<jiff::tz::TimeZone> {
+        match site
+            .and_then(|id| self.site(id))
+            .and_then(|s| s.time_zone.as_deref())
+        {
+            Some(name) => get_tz(name),
+            None => self.tz(),
+        }
+    }
+
+    /// Its time zone's name, for people.
+    pub fn site_tz_name(&self, site: Option<&str>) -> String {
+        match site
+            .and_then(|id| self.site(id))
+            .and_then(|s| s.time_zone.clone())
+        {
+            Some(n) => n,
+            None => self.tz_name(),
+        }
+    }
+
+    /// The time zone a schedule's times are in.
+    pub fn schedule_tz(&self, s: &Schedule) -> jiff::tz::TimeZone {
+        self.site_tz(s.site.as_deref())
+            .unwrap_or_else(|_| jiff::tz::TimeZone::system())
+    }
+
+    /// Whether a schedule may play at all: it, its group and its site are
+    /// on, and schedules aren't all paused (days off aside).
+    pub fn schedule_on(&self, s: &Schedule) -> bool {
+        let group_on = s.group.as_deref().map_or(true, |g| {
+            self.schedule_groups.iter().any(|x| x.id == g && x.enabled)
+        });
+        let site_on = s
+            .site
+            .as_deref()
+            .map_or(true, |id| self.site(id).map_or(true, |x| !x.paused));
+        s.enabled && group_on && site_on && !self.schedules_paused
+    }
+
+    /// The days off that apply at a site: the panel's, and its own.
+    fn days_off_at(&self, site: Option<&str>) -> Vec<(jiff::civil::Date, jiff::civil::Date)> {
+        let own = site
+            .and_then(|id| self.site(id))
+            .map(|s| s.days_off.as_slice());
+        self.days_off
+            .iter()
+            .chain(own.unwrap_or_default())
+            .filter_map(|d| d.range().ok())
+            .collect()
     }
 
     /// The time zone's name, for people.
@@ -233,6 +339,9 @@ pub struct Zone {
     pub id: String,
     pub name: String,
     pub targets: Vec<Target>,
+    /// Site id, for zones that belong to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 /// One multicast group, with the send options its speakers need.
@@ -406,23 +515,85 @@ impl Announcement {
     }
 }
 
+/// `name`, or something inside it when it's a folder.
+fn within(name: &str, path: &str) -> bool {
+    name == path
+        || name
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 impl Config {
-    /// Whether schedules are off on this date.
-    pub fn is_day_off(&self, date: jiff::civil::Date) -> bool {
-        self.days_off
-            .iter()
-            .filter_map(|d| d.range().ok())
-            .any(|(from, to)| from <= date && date <= to)
+    /// Whether a media file is hidden from lists (it, or a folder it's in).
+    pub fn is_hidden(&self, name: &str) -> bool {
+        self.hidden_media.iter().any(|h| within(name, h))
     }
 
-    /// The last day of the days off `date` is in, if it's in any (runs that
-    /// touch or overlap are followed through).
-    pub fn days_off_until(&self, date: jiff::civil::Date) -> Option<jiff::civil::Date> {
-        let ranges: Vec<_> = self
-            .days_off
+    /// Who uses media file `name` (or, for a folder, anything in it):
+    /// "announcement Lunch bell", "the defaults".
+    pub fn media_users(&self, name: &str) -> Vec<String> {
+        let file_of = |c: &Option<Value>| {
+            c.as_ref()
+                .and_then(|c| c["file"].as_str())
+                .is_some_and(|f| within(f, name))
+        };
+        let mut users = Vec::new();
+        if file_of(&self.defaults.chime) || file_of(&self.defaults.end_chime) {
+            users.push("the defaults".to_string());
+        }
+        for a in &self.announcements {
+            let audio = matches!(&a.audio, Audio::Media(m) if within(m, name));
+            if audio || file_of(&a.chime) || file_of(&a.end_chime) {
+                users.push(format!("announcement {}", a.name));
+            }
+        }
+        users
+    }
+
+    /// Point everything that used `from` (a file, or a folder and what's in
+    /// it) at `to`, after it was renamed or moved.
+    pub fn media_moved(&mut self, from: &str, to: &str) {
+        let moved = |n: &str| -> Option<String> {
+            within(n, from).then(|| format!("{to}{}", &n[from.len()..]))
+        };
+        let chime = |c: &mut Option<Value>| {
+            if let Some(new) = c.as_ref().and_then(|c| c["file"].as_str()).and_then(moved) {
+                *c = Some(json!({ "file": new }));
+            }
+        };
+        chime(&mut self.defaults.chime);
+        chime(&mut self.defaults.end_chime);
+        for a in &mut self.announcements {
+            if let Audio::Media(m) = &mut a.audio {
+                if let Some(new) = moved(m) {
+                    *m = new;
+                }
+            }
+            chime(&mut a.chime);
+            chime(&mut a.end_chime);
+        }
+        for h in &mut self.hidden_media {
+            if let Some(new) = moved(h) {
+                *h = new;
+            }
+        }
+    }
+
+    /// Whether schedules at `site` are off on this date.
+    pub fn is_day_off(&self, site: Option<&str>, date: jiff::civil::Date) -> bool {
+        self.days_off_at(site)
             .iter()
-            .filter_map(|d| d.range().ok())
-            .collect();
+            .any(|(from, to)| *from <= date && date <= *to)
+    }
+
+    /// The last day of the days off at `site` that `date` is in, if it's in
+    /// any (runs that touch or overlap are followed through).
+    pub fn days_off_until(
+        &self,
+        site: Option<&str>,
+        date: jiff::civil::Date,
+    ) -> Option<jiff::civil::Date> {
+        let ranges = self.days_off_at(site);
         let covering = |day| {
             ranges
                 .iter()
@@ -439,6 +610,15 @@ impl Config {
 
     pub fn zone(&self, id: &str) -> Option<&Zone> {
         self.zones.iter().find(|z| z.id == id)
+    }
+
+    /// An announcement's zones, or (with a site) those of them at that site.
+    pub fn zones_at<'a>(&'a self, a: &Announcement, site: Option<&str>) -> Vec<&'a Zone> {
+        a.zones
+            .iter()
+            .filter_map(|z| self.zone(z))
+            .filter(|z| site.map_or(true, |s| z.site.as_deref() == Some(s)))
+            .collect()
     }
 
     /// An announcement by id, or else by name (ignoring case).
@@ -519,17 +699,42 @@ impl Config {
         check_chime("defaults: chime", &d.chime)?;
         check_chime("defaults: end_chime", &d.end_chime)?;
         check_encoding("defaults", &d.encoding)?;
-        for off in &self.days_off {
-            let what = match off.name.as_str() {
-                "" => format!("day off {}", off.from),
-                n => format!("day off \"{n}\""),
-            };
-            if !off.name.is_empty() {
-                check_name("day off", &off.name)?;
+        for h in &self.hidden_media {
+            if !valid_media_name(h) {
+                bail!("hidden_media: \"{h}\" isn't a media file or folder name");
             }
-            let (from, to) = off.range().map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
-            if to < from {
-                bail!("{what} ends before it starts");
+        }
+        check_days_off(&self.days_off)?;
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for site in &self.sites {
+            check_id("site", &site.id)?;
+            check_name("site", &site.name)?;
+            if !ids.insert(site.id.as_str()) {
+                bail!("two sites have the id \"{}\"", site.id);
+            }
+            if !names.insert(site.name.to_lowercase()) {
+                bail!("two sites are called \"{}\"", site.name);
+            }
+            if let Some(tz) = &site.time_zone {
+                get_tz(tz).map_err(|e| anyhow::anyhow!("site \"{}\": {e}", site.id))?;
+            }
+            check_days_off(&site.days_off)
+                .map_err(|e| anyhow::anyhow!("site \"{}\": {e}", site.id))?;
+        }
+        let mut ids = HashSet::new();
+        for g in &self.schedule_groups {
+            check_id("schedule group", &g.id)?;
+            check_name("schedule group", &g.name)?;
+            if !ids.insert(g.id.as_str()) {
+                bail!("two schedule groups have the id \"{}\"", g.id);
+            }
+        }
+        for z in &self.zones {
+            if let Some(site) = &z.site {
+                if self.site(site).is_none() {
+                    bail!("zone \"{}\": no site \"{site}\"", z.id);
+                }
             }
         }
         let mut ids = HashSet::new();
@@ -542,8 +747,25 @@ impl Config {
             if !ids.insert(sch.id.as_str()) {
                 bail!("two schedules have the id \"{}\"", sch.id);
             }
-            if !self.announcements.iter().any(|a| a.id == sch.announcement) {
+            let Some(a) = self.announcements.iter().find(|a| a.id == sch.announcement) else {
                 bail!("{what}: no announcement \"{}\"", sch.announcement);
+            };
+            if let Some(g) = &sch.group {
+                if !self.schedule_groups.iter().any(|x| x.id == *g) {
+                    bail!("{what}: no schedule group \"{g}\"");
+                }
+            }
+            if let Some(site) = &sch.site {
+                let Some(site) = self.site(site) else {
+                    bail!("{what}: no site \"{site}\"");
+                };
+                if self.zones_at(a, Some(&site.id)).is_empty() {
+                    bail!(
+                        "{what}: \"{}\" has no zones at {}, so it would play nowhere",
+                        a.name,
+                        site.name
+                    );
+                }
             }
             match &sch.when {
                 When::Weekly { days, times } => {
@@ -610,6 +832,23 @@ fn check_chime(what: &str, v: &Option<Value>) -> Result<()> {
     }
 }
 
+fn check_days_off(days: &[DayOff]) -> Result<()> {
+    for off in days {
+        let what = match off.name.as_str() {
+            "" => format!("day off {}", off.from),
+            n => format!("day off \"{n}\""),
+        };
+        if !off.name.is_empty() {
+            check_name("day off", &off.name)?;
+        }
+        let (from, to) = off.range().map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
+        if to < from {
+            bail!("{what} ends before it starts");
+        }
+    }
+    Ok(())
+}
+
 fn check_number(what: &str, v: Option<f64>) -> Result<()> {
     if v.is_some_and(|v| !v.is_finite()) {
         bail!("{what} must be a number");
@@ -617,12 +856,16 @@ fn check_number(what: &str, v: Option<f64>) -> Result<()> {
     Ok(())
 }
 
-/// The server's rule for media names: a plain file name.
+/// The server's rule for media names: file and folder names joined by
+/// `/`, none empty or starting with `.`.
 pub(crate) fn valid_media_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 255
-        && !name.starts_with('.')
-        && !name
-            .chars()
-            .any(|c| c == '/' || c == '\\' || c.is_control())
+    let parts: Vec<&str> = name.split('/').collect();
+    name.len() <= 1024
+        && parts.len() <= 8
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= 255
+                && !p.starts_with('.')
+                && !p.chars().any(|c| c == '\\' || c.is_control())
+        })
 }

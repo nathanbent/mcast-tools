@@ -146,6 +146,8 @@ pub struct BackendStatus {
 pub enum Change<'a> {
     Run(&'a Run),
     Backend(&'a BackendStatus),
+    /// Media files or folders changed on the mcast server.
+    Media,
 }
 
 /// Why an announcement couldn't be played at all.
@@ -215,6 +217,7 @@ impl Runner {
                 }
                 Feed::JobEnded(job) => inner.job_ended(job),
                 Feed::Disconnected(e) => inner.set_status(false, Some(e)),
+                Feed::MediaChanged => (inner.on_change)(Change::Media),
             }
             true
         }));
@@ -224,11 +227,23 @@ impl Runner {
     /// Play an announcement (by id or name). Returns once every group has
     /// been started (or found busy); follow the rest through `on_change`.
     pub fn play(&self, cfg: &Config, which: &str, trigger: Trigger) -> Result<Run, PlayError> {
+        self.play_at(cfg, which, trigger, None)
+    }
+
+    /// Play an announcement to its zones at `site` only (all of them for
+    /// `None`), as a site's schedule does.
+    pub fn play_at(
+        &self,
+        cfg: &Config,
+        which: &str,
+        trigger: Trigger,
+        site: Option<&str>,
+    ) -> Result<Run, PlayError> {
         let a = &cfg
             .announcement(which)
             .ok_or_else(|| PlayError::NoAnnouncement(which.to_string()))?
             .with_defaults(&cfg.defaults);
-        let targets = self.0.targets(cfg, a)?;
+        let targets = self.0.targets(cfg, a, site)?;
         let id = {
             let mut st = self.0.lock();
             st.next_id += 1;
@@ -375,11 +390,15 @@ impl Inner {
     }
 
     /// The groups an announcement goes to, resolved and without repeats.
-    fn targets(&self, cfg: &Config, a: &Announcement) -> Result<Vec<TargetRun>, PlayError> {
-        let wanted: Vec<_> = a
-            .zones
-            .iter()
-            .filter_map(|z| cfg.zone(z))
+    fn targets(
+        &self,
+        cfg: &Config,
+        a: &Announcement,
+        site: Option<&str>,
+    ) -> Result<Vec<TargetRun>, PlayError> {
+        let wanted: Vec<_> = cfg
+            .zones_at(a, site)
+            .into_iter()
             .flat_map(|z| &z.targets)
             .collect();
         let book = if wanted

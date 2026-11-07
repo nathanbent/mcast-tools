@@ -6,7 +6,7 @@
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, subscribe } from "./store.js";
-import { field, select, numberInput, num } from "./editor.js";
+import { field, select, numberInput, num, mountEditor } from "./editor.js";
 import { chimeField, chooserLink, openChooser } from "./chimes.js";
 import { MODES } from "./announcements.js";
 import { ENCODINGS, encodingValue } from "./zones.js";
@@ -112,6 +112,43 @@ function timeZone() {
   return el;
 }
 
+// Sites: places with their own zones and schedules. Their days off and
+// pause switches are on the Schedules tab.
+function sitesEditor() {
+  const el = h("div");
+  const count = (list, id) => String((list ?? []).filter((x) => x.site === id).length);
+  mountEditor(el, {
+    kind: "site",
+    path: "/sites",
+    items: () => state.config.sites ?? [],
+    before: () => h("p", { class: "muted" },
+      "Sites are places with their own zones and schedules, like buildings or campuses. A site's schedules play only to its zones, in its time zone, and it has its own days off and pause switch (on the Schedules tab). Without sites, everything is one place."),
+    columns: [
+      ["Name", (s) => s.name],
+      ["Time zone", (s) => s.time_zone ?? h("span", { class: "muted" }, "the panel's"), true],
+      ["Zones", (s) => count(state.config.zones, s.id), true],
+      ["Schedules", (s) => count(state.config.schedules, s.id), true],
+    ],
+    form: (site, save, cancel) => {
+      const name = h("input", { value: site?.name ?? "", required: true, maxLength: 64, placeholder: "e.g. North campus" });
+      const tz = h("input", { value: site?.time_zone ?? "", list: "time-zones", placeholder: "Empty: the panel's" });
+      return h("form", {
+        onsubmit: (e) => {
+          e.preventDefault();
+          // Keep its days off and pause switch, which are edited elsewhere.
+          save({ ...(site ?? {}), id: undefined, name: name.value.trim(), time_zone: tz.value.trim() || null });
+        },
+      },
+        h("div", { class: "row" }, field("Name", name), field("Time zone", tz, "An IANA name, e.g. America/New_York")),
+        h("p", { class: "small muted" }, "Then put zones at the site (Zones tab) and give it schedules (Schedules tab)."),
+        h("div", { class: "buttons" },
+          h("button", { type: "submit", class: "primary" }, "Save"),
+          h("button", { type: "button", onclick: cancel }, "Cancel")));
+    },
+  });
+  return el;
+}
+
 function chimes() {
   const el = h("div");
   const show = () => {
@@ -161,6 +198,7 @@ export function mount(el) {
   el.replaceChildren(
     card("Announcement defaults", defaults()),
     card("Time zone", timeZone()),
+    card("Sites", sitesEditor()),
     card("Chime lists", chimes()),
     card("Connection", connection()));
 }

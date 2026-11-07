@@ -42,7 +42,35 @@ export async function api(method, path, body) {
   return parse(res);
 }
 
-const EVENT_TYPES = ["run", "config_changed", "backend", "lagged"];
+// A media path for a URL: each part encoded, `/` kept.
+const mediaPath = (name) => name.split("/").map(encodeURIComponent).join("/");
+
+// URL of a media file, for <audio> (which can't send headers).
+export function mediaUrl(name) {
+  const t = token();
+  return `${PREFIX}/media/${mediaPath(name)}${t ? `?access_token=${encodeURIComponent(t)}` : ""}`;
+}
+
+// PUT a file to the mcast server's media, reporting progress (0..1).
+export function upload(name, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", `${PREFIX}/media/${mediaPath(name)}`);
+    const t = token();
+    if (t) xhr.setRequestHeader("Authorization", `Bearer ${t}`);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status < 300) return resolve();
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch {}
+      reject(new ApiError(xhr.status, body));
+    };
+    xhr.onerror = () => reject(new ApiError(0, { error: "can't reach the panel" }));
+    xhr.send(file);
+  });
+}
+
+const EVENT_TYPES = ["run", "config_changed", "backend", "media_changed", "lagged"];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch then: events may
 // have been missed) or "offline". Reconnects on its own.

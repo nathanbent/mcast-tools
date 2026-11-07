@@ -41,6 +41,7 @@ fn config() -> Config {
     Config {
         zones: vec![
             Zone {
+                site: None,
                 id: "up".into(),
                 name: "Upstairs".into(),
                 targets: vec![
@@ -54,11 +55,13 @@ fn config() -> Config {
                 ],
             },
             Zone {
+                site: None,
                 id: "down".into(),
                 name: "Downstairs".into(),
                 targets: vec![target("239.1.1.1:5000"), target("nobody")],
             },
             Zone {
+                site: None,
                 id: "two".into(),
                 name: "Just two".into(),
                 targets: vec![target("239.1.1.2:5000")],
@@ -66,9 +69,6 @@ fn config() -> Config {
         ],
         schedules: Vec::new(),
         time_zone: None,
-        defaults: Default::default(),
-        schedules_paused: false,
-        days_off: Vec::new(),
         announcements: vec![
             Announcement {
                 volume_db: Some(2.0),
@@ -77,6 +77,7 @@ fn config() -> Config {
             },
             announcement("two", &["two"]),
         ],
+        ..Default::default()
     }
 }
 

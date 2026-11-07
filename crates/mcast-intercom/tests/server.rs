@@ -86,6 +86,7 @@ fn config() -> Config {
     Config {
         zones: vec![
             Zone {
+                site: None,
                 id: "both".into(),
                 name: "Both".into(),
                 // The same group by name and by address plays once.
@@ -96,6 +97,7 @@ fn config() -> Config {
                 ],
             },
             Zone {
+                site: None,
                 id: "busy".into(),
                 name: "Busy".into(),
                 targets: vec![target("239.255.77.73:5004")],
@@ -103,14 +105,12 @@ fn config() -> Config {
         ],
         schedules: Vec::new(),
         time_zone: None,
-        defaults: Default::default(),
-        schedules_paused: false,
-        days_off: Vec::new(),
         announcements: vec![
             chime("ding", "both", Priority::Normal),
             chime("polite", "busy", Priority::Normal),
             chime("urgent", "busy", Priority::Emergency),
         ],
+        ..Default::default()
     }
 }
 

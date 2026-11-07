@@ -4,7 +4,7 @@
 
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
-import { state, subscribe } from "./store.js";
+import { state, subscribe, isHidden } from "./store.js";
 
 // Form helpers.
 
@@ -28,7 +28,8 @@ export function numberInput(value, props = {}) {
 // Media file names as [prefix + name, label] options, with `current` even if
 // the server no longer has it.
 export function mediaOptions(prefix, current) {
-  const names = [...state.media];
+  // Hidden ones are left out, unless already chosen.
+  const names = state.media.filter((n) => !isHidden(n) || n === current);
   if (current && !names.includes(current)) names.push(current);
   return names.map((n) => [prefix + n, state.media.includes(n) ? n : `${n} (missing)`]);
 }
@@ -37,9 +38,12 @@ export function mediaOptions(prefix, current) {
 export const num = (input) => (input.value.trim() === "" ? null : Number(input.value));
 
 export function mountEditor(el, spec) {
-  // spec: { kind, path, items(), columns: [[header, item => text or node, wideOnly]],
+  // spec: { kind, path, items(), columns: [[header, item => text or node, wideOnly]]
+  //           (or a function returning them, for views that change),
   //         form(item, save, cancel), label?(item) for messages (default: its name),
-  //         before?() for anything to show above the list }
+  //         before?() for anything to show above the list,
+  //         sections?(items) => [{ head: node or null, items }] to show the rows
+  //           under headings (a head is put in a full-width row) }
   const list = h("div");
   const formArea = h("div");
   let editing; // undefined: no form open; null: a new one; otherwise the id
@@ -81,17 +85,20 @@ export function mountEditor(el, spec) {
 
   const render = () => {
     const items = spec.items();
+    const columns = typeof spec.columns === "function" ? spec.columns() : spec.columns;
     replace(list,
       spec.before?.(),
       state.configError && h("p", { class: "error" }, `The intercom config has a problem: ${state.configError}`),
       items.length
         ? h("div", { class: "scroll" }, h("table", { class: "items" },
-            h("thead", {}, h("tr", {}, spec.columns.map(([head, , wide]) => h("th", { class: wide && "wide" }, head)), h("th"))),
-            h("tbody", {}, items.map((item) => h("tr", { class: spec.rowClass?.(item) || null },
-              spec.columns.map(([, cell, wide]) => h("td", { class: wide && "wide" }, cell(item))),
-              h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
-                h("button", { onclick: () => open(item) }, "Edit"),
-                h("button", { class: "danger", onclick: () => remove(item) }, "Delete"))))))))
+            h("thead", {}, h("tr", {}, columns.map(([head, , wide]) => h("th", { class: wide && "wide" }, head)), h("th"))),
+            (spec.sections?.(items) ?? [{ head: null, items }]).map((sec) => h("tbody", {},
+              sec.head && h("tr", { class: "section" }, h("td", { colspan: columns.length + 1 }, sec.head)),
+              sec.items.map((item) => h("tr", { class: spec.rowClass?.(item) || null },
+                columns.map(([, cell, wide]) => h("td", { class: wide && "wide" }, cell(item))),
+                h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
+                  h("button", { onclick: () => open(item) }, "Edit"),
+                  h("button", { class: "danger", onclick: () => remove(item) }, "Delete")))))))))
         : h("p", { class: "muted" }, `No ${spec.kind}s yet.`),
       h("div", { class: "buttons", style: { marginTop: "12px" } },
         h("button", { class: "primary", onclick: () => open(null) }, `Add ${spec.kind}`)));
@@ -100,4 +107,6 @@ export function mountEditor(el, spec) {
   subscribe(["config", "server", ...(spec.parts ?? [])], render);
   render();
   el.replaceChildren(list, formArea);
+  // For views that change what's listed.
+  return { render };
 }

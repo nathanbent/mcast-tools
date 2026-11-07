@@ -66,18 +66,16 @@ pub fn next_after(s: &Schedule, tz: &TimeZone, after: Timestamp) -> Option<Times
 }
 
 /// The next time a schedule plays, strictly after `after`: as
-/// [`next_after`], but passing over the config's days off.
-pub fn next_playing(
-    cfg: &Config,
-    s: &Schedule,
-    tz: &TimeZone,
-    after: Timestamp,
-) -> Option<Timestamp> {
+/// [`next_after`] in its site's time zone, passing over its site's days
+/// off (whether or not it's on).
+pub fn next_playing(cfg: &Config, s: &Schedule, after: Timestamp) -> Option<Timestamp> {
+    let tz = &cfg.schedule_tz(s);
+    let site = s.site.as_deref();
     let mut after = after;
     // Each turn passes a whole run of days off, so this is plenty.
     for _ in 0..MAX_DUE {
         let t = next_after(s, tz, after)?;
-        let Some(last) = cfg.days_off_until(t.to_zoned(tz.clone()).date()) else {
+        let Some(last) = cfg.days_off_until(site, t.to_zoned(tz.clone()).date()) else {
             return Some(t);
         };
         // Look again from just before the first day back starts.
@@ -93,26 +91,20 @@ pub fn next_playing(
     None
 }
 
-/// The schedules that play: none while they're paused, else the enabled ones.
+/// The schedules that play: those that are on, in groups and sites that
+/// are on, unless everything is paused.
 fn playing(cfg: &Config) -> impl Iterator<Item = &Schedule> {
-    cfg.schedules
-        .iter()
-        .filter(move |s| s.enabled && !cfg.schedules_paused)
+    cfg.schedules.iter().filter(move |s| cfg.schedule_on(s))
 }
 
-/// Enabled schedules' times in `(from, to]`, earliest first, leaving out
-/// days off (and everything while schedules are paused).
-pub fn due<'a>(
-    cfg: &'a Config,
-    tz: &TimeZone,
-    from: Timestamp,
-    to: Timestamp,
-) -> Vec<(&'a Schedule, Timestamp)> {
+/// Playing schedules' times in `(from, to]`, earliest first, leaving out
+/// days off.
+pub fn due(cfg: &Config, from: Timestamp, to: Timestamp) -> Vec<(&Schedule, Timestamp)> {
     let mut out = Vec::new();
     for s in playing(cfg) {
         let mut t = from;
         for _ in 0..MAX_DUE {
-            match next_playing(cfg, s, tz, t) {
+            match next_playing(cfg, s, t) {
                 Some(next) if next <= to => {
                     out.push((s, next));
                     t = next;
@@ -137,11 +129,14 @@ pub struct Fire {
     pub announcement: String,
     /// The announcement's name.
     pub name: String,
+    /// The schedule's site, if it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
 }
 
 impl Fire {
-    fn new(cfg: &Config, tz: &TimeZone, s: &Schedule, at: Timestamp) -> Fire {
-        let z = at.to_zoned(tz.clone());
+    fn new(cfg: &Config, s: &Schedule, at: Timestamp) -> Fire {
+        let z = at.to_zoned(cfg.schedule_tz(s));
         Fire {
             at_ms: at.as_millisecond().max(0) as u64,
             local: z.datetime().to_string(),
@@ -151,6 +146,7 @@ impl Fire {
             name: cfg
                 .announcement(&s.announcement)
                 .map_or_else(|| s.announcement.clone(), |a| a.name.clone()),
+            site: s.site.clone(),
         }
     }
 
@@ -166,13 +162,13 @@ impl Fire {
 }
 
 /// The next `n` times anything is scheduled to play, after `after`
-/// (leaving out days off; none while schedules are paused).
-pub fn upcoming(cfg: &Config, tz: &TimeZone, after: Timestamp, n: usize) -> Vec<Fire> {
+/// (leaving out days off, and schedules that are off or paused).
+pub fn upcoming(cfg: &Config, after: Timestamp, n: usize) -> Vec<Fire> {
     let mut all = Vec::new();
     for s in playing(cfg) {
         let mut t = after;
         for _ in 0..n {
-            match next_playing(cfg, s, tz, t) {
+            match next_playing(cfg, s, t) {
                 Some(next) => {
                     all.push((s, next));
                     t = next;
@@ -183,9 +179,7 @@ pub fn upcoming(cfg: &Config, tz: &TimeZone, after: Timestamp, n: usize) -> Vec<
     }
     all.sort_by_key(|(_, t)| *t);
     all.truncate(n);
-    all.into_iter()
-        .map(|(s, t)| Fire::new(cfg, tz, s, t))
-        .collect()
+    all.into_iter().map(|(s, t)| Fire::new(cfg, s, t)).collect()
 }
 
 /// Plays schedules as they come due, in a thread of its own, reading the
@@ -246,7 +240,7 @@ impl Shared {
                 mark = now;
             }
             let mut sleep = MAX_SLEEP;
-            match store::load(&self.path).and_then(|c| c.tz().map(|tz| (c, tz))) {
+            match store::load(&self.path).and_then(|c| c.tz().map(|_| c)) {
                 Err(e) => {
                     let e = format!("{e:#}");
                     if problem.as_ref() != Some(&e) {
@@ -256,14 +250,14 @@ impl Shared {
                     // While it can't be read, times pass unplayed and are
                     // recorded as missed once it can.
                 }
-                Ok((cfg, tz)) => {
+                Ok(cfg) => {
                     if problem.take().is_some() {
                         eprintln!("schedules running again");
                     }
-                    self.play_due(&cfg, &tz, mark, now, grace_ms);
+                    self.play_due(&cfg, mark, now, grace_ms);
                     mark = now;
                     let next = playing(&cfg)
-                        .filter_map(|s| next_playing(&cfg, s, &tz, now))
+                        .filter_map(|s| next_playing(&cfg, s, now))
                         .min();
                     if let Some(next) = next {
                         let ms = (next.as_millisecond() - now.as_millisecond()).max(0) as u64;
@@ -283,19 +277,12 @@ impl Shared {
         }
     }
 
-    fn play_due(
-        &self,
-        cfg: &Config,
-        tz: &TimeZone,
-        from: Timestamp,
-        now: Timestamp,
-        grace_ms: i64,
-    ) {
+    fn play_due(&self, cfg: &Config, from: Timestamp, now: Timestamp, grace_ms: i64) {
         // Only the latest missed time of each schedule is worth recording.
         let mut missed: HashMap<&str, (&Schedule, Timestamp)> = HashMap::new();
-        for (s, at) in due(cfg, tz, from, now) {
+        for (s, at) in due(cfg, from, now) {
             if now.as_millisecond() - at.as_millisecond() <= grace_ms {
-                self.play(cfg, tz, s, at);
+                self.play(cfg, s, at);
             } else {
                 missed.insert(s.id.as_str(), (s, at));
             }
@@ -304,7 +291,7 @@ impl Shared {
             let Some(a) = cfg.announcement(&s.announcement) else {
                 continue;
             };
-            let f = Fire::new(cfg, tz, s, at);
+            let f = Fire::new(cfg, s, at);
             self.runner.record(
                 a,
                 Trigger::Schedule {
@@ -320,15 +307,16 @@ impl Shared {
         }
     }
 
-    fn play(&self, cfg: &Config, tz: &TimeZone, s: &Schedule, at: Timestamp) {
+    fn play(&self, cfg: &Config, s: &Schedule, at: Timestamp) {
         let trigger = Trigger::Schedule {
             id: s.id.clone(),
-            at_ms: Fire::new(cfg, tz, s, at).at_ms,
+            at_ms: Fire::new(cfg, s, at).at_ms,
         };
         let (runner, cfg, id) = (self.runner.clone(), cfg.clone(), s.announcement.clone());
+        let site = s.site.clone();
         // Starting can take a moment; other schedules due now shouldn't wait.
         std::thread::spawn(move || {
-            if let Err(e) = runner.play(&cfg, &id, trigger.clone()) {
+            if let Err(e) = runner.play_at(&cfg, &id, trigger.clone(), site.as_deref()) {
                 if let Some(a) = cfg.announcement(&id) {
                     runner.record(a, trigger, RunState::Failed, e.to_string());
                 }
@@ -367,6 +355,8 @@ mod tests {
             name: String::new(),
             announcement: "a".into(),
             enabled: true,
+            site: None,
+            group: None,
             when: When::Weekly {
                 days: days.to_vec(),
                 times: times.iter().map(|t| t.to_string()).collect(),
@@ -437,6 +427,7 @@ mod tests {
                     group: "239.1.1.1:5000".into(),
                     ..Default::default()
                 }],
+                site: None,
             }],
             announcements: ["a", "b", "c", "d"]
                 .iter()
@@ -484,17 +475,11 @@ mod tests {
         off.enabled = false;
         let cfg = config(vec![every_day, xmas, off]);
         cfg.validate().unwrap();
-        let tz = cfg.tz().unwrap();
 
-        let got: Vec<_> = due(
-            &cfg,
-            &tz,
-            local("2026-11-09T09:00"),
-            local("2026-11-10T12:00"),
-        )
-        .into_iter()
-        .map(|(s, t)| (s.id.as_str(), t))
-        .collect();
+        let got: Vec<_> = due(&cfg, local("2026-11-09T09:00"), local("2026-11-10T12:00"))
+            .into_iter()
+            .map(|(s, t)| (s.id.as_str(), t))
+            .collect();
         assert_eq!(
             got,
             [
@@ -506,7 +491,7 @@ mod tests {
             ]
         );
 
-        let next = upcoming(&cfg, &tz, local("2026-11-10T09:30"), 3);
+        let next = upcoming(&cfg, local("2026-11-10T09:30"), 3);
         let when: Vec<_> = next.iter().map(Fire::when).collect();
         assert_eq!(
             when,
@@ -544,16 +529,10 @@ mod tests {
             off("2026-11-14", None),
         ];
         cfg.validate().unwrap();
-        let tz = cfg.tz().unwrap();
-        let got: Vec<_> = due(
-            &cfg,
-            &tz,
-            local("2026-11-09T08:00"),
-            local("2026-11-16T10:00"),
-        )
-        .into_iter()
-        .map(|(_, t)| t)
-        .collect();
+        let got: Vec<_> = due(&cfg, local("2026-11-09T08:00"), local("2026-11-16T10:00"))
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
         assert_eq!(
             got,
             [
@@ -565,17 +544,17 @@ mod tests {
         );
         let s = &cfg.schedules[0];
         assert_eq!(
-            next_playing(&cfg, s, &tz, local("2026-11-11T10:00")),
+            next_playing(&cfg, s, local("2026-11-11T10:00")),
             Some(local("2026-11-15T09:00"))
         );
 
         // Paused: nothing is due or coming up, but each still knows its next time.
         cfg.schedules_paused = true;
         let (from, to) = (local("2026-11-09T08:00"), local("2026-11-16T10:00"));
-        assert!(due(&cfg, &tz, from, to).is_empty());
-        assert!(upcoming(&cfg, &tz, from, 5).is_empty());
+        assert!(due(&cfg, from, to).is_empty());
+        assert!(upcoming(&cfg, from, 5).is_empty());
         assert_eq!(
-            next_playing(&cfg, &cfg.schedules[0], &tz, from),
+            next_playing(&cfg, &cfg.schedules[0], from),
             Some(local("2026-11-09T09:00"))
         );
 
@@ -586,6 +565,111 @@ mod tests {
         cfg.days_off = vec![off("14/11/2026", None)];
         let e = cfg.validate().unwrap_err().to_string();
         assert!(e.contains("isn't a date"), "{e}");
+    }
+
+    #[test]
+    fn sites_have_their_own_time_zones_days_off_and_switches() {
+        use crate::model::{DayOff, ScheduleGroup, Site};
+        let mut cfg = config(Vec::new());
+        // Zone z is at London; zone ny at New York. Announcement "a" goes to both.
+        cfg.zones[0].site = Some("ldn".into());
+        cfg.zones.push(Zone {
+            id: "ny".into(),
+            name: "NY".into(),
+            targets: vec![Target {
+                group: "239.1.1.2:5000".into(),
+                ..Default::default()
+            }],
+            site: Some("nyc".into()),
+        });
+        cfg.announcements[0].zones.push("ny".into());
+        cfg.sites = vec![
+            Site {
+                id: "ldn".into(),
+                name: "London".into(),
+                time_zone: None,
+                days_off: Vec::new(),
+                paused: false,
+            },
+            Site {
+                id: "nyc".into(),
+                name: "New York".into(),
+                time_zone: Some("America/New_York".into()),
+                days_off: vec![DayOff {
+                    name: "Thanksgiving".into(),
+                    from: "2026-11-26".into(),
+                    to: None,
+                }],
+                paused: false,
+            },
+        ];
+        cfg.schedule_groups = vec![ScheduleGroup {
+            id: "exams".into(),
+            name: "Exam week".into(),
+            enabled: false,
+        }];
+        let at = |id: &str, site: &str, group: Option<&str>| Schedule {
+            id: id.into(),
+            site: Some(site.into()),
+            group: group.map(Into::into),
+            ..weekly(&[Day::Wed, Day::Thu], &["09:00"])
+        };
+        cfg.schedules = vec![
+            at("ldn-bell", "ldn", None),
+            at("nyc-bell", "nyc", None),
+            at("exam-bell", "ldn", Some("exams")),
+        ];
+        cfg.validate().unwrap();
+        let ny = TimeZone::get("America/New_York").unwrap();
+        let ny_local = |s: &str| {
+            ny.to_ambiguous_zoned(s.parse().unwrap())
+                .compatible()
+                .unwrap()
+                .timestamp()
+        };
+        let due_ids = |cfg: &Config| -> Vec<(String, Timestamp)> {
+            due(cfg, ts("2026-11-25T00:00:00Z"), ts("2026-11-27T00:00:00Z"))
+                .into_iter()
+                .map(|(s, t)| (s.id.clone(), t))
+                .collect()
+        };
+        // 09:00 at each site in its own time zone; New York's day off is its
+        // own; the exam group is off.
+        assert_eq!(
+            due_ids(&cfg),
+            [
+                ("ldn-bell".to_string(), local("2026-11-25T09:00")),
+                ("nyc-bell".to_string(), ny_local("2026-11-25T09:00")),
+                ("ldn-bell".to_string(), local("2026-11-26T09:00")),
+            ]
+        );
+        let fires = upcoming(&cfg, ts("2026-11-25T00:00:00Z"), 2);
+        assert_eq!(fires[1].site.as_deref(), Some("nyc"));
+        assert_eq!(fires[1].local, "2026-11-25T09:00:00");
+
+        // The group on: exam bells too. A paused site: none of its own.
+        cfg.schedule_groups[0].enabled = true;
+        cfg.sites[1].paused = true;
+        let ids: Vec<String> = due_ids(&cfg).into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, ["ldn-bell", "exam-bell", "ldn-bell", "exam-bell"]);
+
+        // A site's schedule plays only to that site's zones.
+        let fake = std::sync::Arc::new(Fake::default());
+        let r = Runner::new(fake.clone(), |_| {});
+        r.play_at(&cfg, "a", Trigger::Manual, Some("nyc")).unwrap();
+        let groups: Vec<_> = fake.requests().iter().map(|q| q["group"].clone()).collect();
+        assert_eq!(groups, [serde_json::json!("239.1.1.2:5000")]);
+        fake.finish_all();
+
+        // A site's schedule must have somewhere to play there.
+        let mut bad = cfg.clone();
+        bad.schedules[1].announcement = "b".into();
+        let e = bad.validate().unwrap_err().to_string();
+        assert!(e.contains("has no zones at New York"), "{e}");
+        let mut bad = cfg.clone();
+        bad.schedules[0].group = Some("nope".into());
+        let e = bad.validate().unwrap_err().to_string();
+        assert!(e.contains("no schedule group \"nope\""), "{e}");
     }
 
     #[test]
@@ -662,6 +746,7 @@ mod tests {
             let z = format!("z{i}");
             a.zones = vec![z.clone()];
             cfg.zones.push(Zone {
+                site: None,
                 id: z.clone(),
                 name: z,
                 targets: vec![Target {

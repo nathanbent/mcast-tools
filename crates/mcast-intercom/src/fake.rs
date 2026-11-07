@@ -1,9 +1,9 @@
 //! A fake mcast server for tests: jobs that run until told to end, one
 //! sender per group, and events delivered synchronously.
 
-use crate::backend::{Backend, BackendError, BackendResult, Entry, Feed, FeedFn, Job};
+use crate::backend::{Backend, BackendError, BackendResult, Entry, Feed, FeedFn, Job, MediaFile};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -19,6 +19,34 @@ pub(crate) struct FakeState {
     pub(crate) down: bool,
     /// Hidden built-in chimes.
     pub(crate) hidden_chimes: Vec<String>,
+    /// Media files (by path) and their sizes, once anything has touched
+    /// them; until then, just `lunch.wav`.
+    files: Option<BTreeMap<String, u64>>,
+    folders: BTreeSet<String>,
+}
+
+impl FakeState {
+    /// Folders stay until deleted, like directories: note those `name` is in.
+    fn add_parents(&mut self, name: &str) {
+        let mut at = 0;
+        while let Some(i) = name[at..].find('/') {
+            self.folders.insert(name[..at + i].to_string());
+            at += i + 1;
+        }
+    }
+
+    fn files(&mut self) -> &mut BTreeMap<String, u64> {
+        self.files
+            .get_or_insert_with(|| BTreeMap::from([("lunch.wav".to_string(), 1000)]))
+    }
+}
+
+fn err(status: u16, message: String) -> BackendError {
+    BackendError {
+        status,
+        message,
+        job: None,
+    }
 }
 
 /// The fake's built-in chimes.
@@ -102,9 +130,121 @@ impl Backend for Fake {
         }])
     }
 
-    fn media(&self) -> BackendResult<Vec<String>> {
+    fn media_files(&self) -> BackendResult<Vec<MediaFile>> {
         self.reachable()?;
-        Ok(vec!["lunch.wav".into()])
+        let mut st = self.st.lock().unwrap();
+        Ok(st
+            .files()
+            .iter()
+            .map(|(name, bytes)| MediaFile {
+                name: name.clone(),
+                bytes: *bytes,
+                modified_ms: Some(1),
+            })
+            .collect())
+    }
+
+    fn media_folders(&self) -> BackendResult<Vec<String>> {
+        self.reachable()?;
+        Ok(self.st.lock().unwrap().folders.iter().cloned().collect())
+    }
+
+    fn upload_media(&self, name: &str, data: &[u8]) -> BackendResult<()> {
+        self.reachable()?;
+        let mut st = self.st.lock().unwrap();
+        st.add_parents(name);
+        st.files().insert(name.into(), data.len() as u64);
+        drop(st);
+        self.emit(Feed::MediaChanged);
+        Ok(())
+    }
+
+    fn delete_media(&self, name: &str) -> BackendResult<()> {
+        self.reachable()?;
+        let gone = self.st.lock().unwrap().files().remove(name).is_some();
+        if !gone {
+            return Err(err(404, format!("no media file \"{name}\"")));
+        }
+        self.emit(Feed::MediaChanged);
+        Ok(())
+    }
+
+    fn create_folder(&self, name: &str) -> BackendResult<()> {
+        self.reachable()?;
+        let mut st = self.st.lock().unwrap();
+        st.add_parents(name);
+        st.folders.insert(name.into());
+        drop(st);
+        self.emit(Feed::MediaChanged);
+        Ok(())
+    }
+
+    fn delete_folder(&self, name: &str) -> BackendResult<()> {
+        self.reachable()?;
+        let inside = format!("{name}/");
+        {
+            let mut st = self.st.lock().unwrap();
+            let full = st.files().keys().any(|f| f.starts_with(&inside))
+                || st.folders.iter().any(|f| f.starts_with(&inside));
+            if full {
+                return Err(err(409, format!("folder \"{name}\" isn't empty")));
+            }
+            if !st.folders.remove(name) {
+                return Err(err(404, format!("no folder \"{name}\"")));
+            }
+        }
+        self.emit(Feed::MediaChanged);
+        Ok(())
+    }
+
+    fn move_media(&self, from: &str, to: &str) -> BackendResult<bool> {
+        self.reachable()?;
+        let folder = {
+            let mut st = self.st.lock().unwrap();
+            let files = st.files().clone();
+            if files.contains_key(to) || st.folders.contains(to) {
+                return Err(err(409, format!("\"{to}\" already exists")));
+            }
+            st.add_parents(to);
+            if let Some(bytes) = files.get(from) {
+                st.files().remove(from);
+                st.files().insert(to.into(), *bytes);
+                false
+            } else {
+                let inside = format!("{from}/");
+                let moved: Vec<_> = files
+                    .keys()
+                    .filter(|f| f.starts_with(&inside))
+                    .cloned()
+                    .collect();
+                if moved.is_empty() && !st.folders.contains(from) {
+                    return Err(err(404, format!("no file or folder \"{from}\"")));
+                }
+                for f in moved {
+                    let bytes = st.files().remove(&f).unwrap();
+                    st.files()
+                        .insert(format!("{to}/{}", &f[inside.len()..]), bytes);
+                }
+                let folders: Vec<_> = st.folders.iter().cloned().collect();
+                for f in folders {
+                    if f == from || f.starts_with(&inside) {
+                        st.folders.remove(&f);
+                        st.folders.insert(format!("{to}{}", &f[from.len()..]));
+                    }
+                }
+                true
+            }
+        };
+        self.emit(Feed::MediaChanged);
+        Ok(folder)
+    }
+
+    fn download_media(&self, name: &str) -> BackendResult<(String, Vec<u8>)> {
+        self.reachable()?;
+        match self.st.lock().unwrap().files().get(name) {
+            Some(_) => Ok(("audio/wav".into(), b"RIFF fake wav".to_vec())),
+            None => Err(err(404, format!("no media file \"{name}\""))),
+        }
     }
 
     fn chimes(&self) -> BackendResult<Vec<Value>> {

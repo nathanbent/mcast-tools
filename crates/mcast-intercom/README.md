@@ -34,13 +34,14 @@ A page with a tab for each part:
 |---|---|
 | **Panel** | A big button for each announcement, what's playing now (with Stop) and what's next. *All stop* in the header stops everything |
 | **History** | Recent plays, and how each group fared |
-| **Schedules** | When announcements play by themselves; what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays |
+| **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
 | **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
+| **Sounds** | The mcast server's sound files, in folders: upload (or drop files on it), listen, rename or move, hide from the lists, delete. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, which chimes the lists show, and the connection to the mcast server |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, and the connection to the mcast server |
 
-Media files and phonebook names come from the mcast server; upload files
-through `mcast serve`.
+Sound files and phonebook names come from the mcast server, so its own web
+page and TUI see the same files and folders.
 
 Schedules only play while `mcast intercom serve` runs.
 
@@ -100,7 +101,7 @@ multicast `group` (a phonebook name or an address) plus the send options
 its speakers need: `encoding`, `volume_db` (added to the announcement's),
 `tos`, `ttl`, `interface`. Leave `encoding` out to use the default codec
 (`defaults.encoding`, else the mcast server's, L16), and any other option
-out to use the server's default.
+out to use the server's default. `site`: the site it's at, if any.
 
 **Announcements.** `id`, `name` and `zones` (zone ids), then:
 
@@ -117,7 +118,30 @@ out to use the server's default.
 **Schedules.** `id`, `announcement` (its id), `enabled` (default `true`),
 an optional `name`, and `when`: `{"weekly": {"days": [...], "times": [...]}}`
 with days `mon` to `sun` and 24-hour times (`"08:30"`, or with seconds), or
-`{"once": "YYYY-MM-DDTHH:MM"}`.
+`{"once": "YYYY-MM-DDTHH:MM"}`. Optionally `site` (a site's id: it plays only
+to the announcement's zones at that site, in that site's time zone) and
+`group` (a schedule group's id: it plays only while the group is on).
+
+**`sites`**: places with their own zones and schedules, such as buildings or
+campuses. Each has `id`, `name`, and optionally its own `time_zone` (else the
+panel's), `days_off` (on top of the panel's) and `paused`. A schedule at a
+site needs the announcement to have at least one zone there. Without sites,
+everything is one place, as before.
+
+**`schedule_groups`**: `[{"id", "name", "enabled"}]`, sets of schedules
+switched on and off together: "Normal bells", "Exam week".
+
+```json
+"sites": [
+  {"id": "north", "name": "North campus"},
+  {"id": "south", "name": "South campus", "time_zone": "America/New_York",
+   "days_off": [{"name": "Thanksgiving", "from": "2026-11-26", "to": "2026-11-27"}]}
+],
+"schedule_groups": [
+  {"id": "normal", "name": "Normal bells", "enabled": true},
+  {"id": "exams", "name": "Exam week", "enabled": false}
+]
+```
 
 **`defaults`**: what announcements use for `chime`, `end_chime`, `mode`,
 `volume_db` and `lead_in_ms` when they leave them out, so one chime can be
@@ -129,6 +153,10 @@ before. `encoding` is the codec for zone groups that don't name one
 **`days_off`**: dates no schedule plays on, each `{"from": "YYYY-MM-DD"}`,
 with `"to"` (the last day, included) for more than one day and an optional
 `"name"`. Playing from the panel or the command line still works.
+
+**`hidden_media`**: media files and folders (`"bells/old"`) the panel leaves
+out of its lists; everything in a hidden folder is hidden. Announcements that
+use one still play it.
 
 **`schedules_paused`**: `true` stops every schedule playing, without
 turning each one off.
@@ -155,8 +183,13 @@ if it played to none.
 
 ## Schedules
 
-Times are wall-clock times in the config's time zone, so 12:00 stays at
-noon when the clocks change. On the day they change:
+A schedule plays when it's on, its group (if any) is on, its site (if any)
+isn't paused, schedules aren't all paused, and the day isn't a day off (the
+panel's, or its site's).
+
+Times are wall-clock times in the schedule's site's time zone (else the
+panel's), so 12:00 stays at noon when the clocks change. On the day they
+change:
 
 - A time the clocks skip (01:30 when they go forward from 01:00 to 02:00)
   plays at the same distance past the gap: 02:30.
@@ -194,14 +227,21 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 | `GET`, `PUT`, `DELETE /zones/{id}` | `PUT` replaces it; the id can't change |
 | `GET`, `POST /announcements`, `GET`, `PUT`, `DELETE /announcements/{id}` | The same |
 | `GET`, `POST /schedules`, `GET`, `PUT`, `DELETE /schedules/{id}` | The same; without `id` or `name`, the id comes from the announcement |
-| `GET /upcoming?n=10` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name"}], "next": {SCHEDULE: at_ms or null}}`. `fires` leaves out days off, and is empty while schedules are paused; `next` leaves out days off only |
+| `GET`, `POST /sites`, `GET`, `PUT`, `DELETE /sites/{id}` | The same; a site with zones or schedules can't be deleted (`409`) |
+| `GET`, `POST /schedule-groups`, `GET`, `PUT`, `DELETE /schedule-groups/{id}` | The same; switch one with `PUT` and `"enabled"`. One with schedules can't be deleted |
+| `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
 | `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
-| `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups |
+| `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
+| `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by"}], "folders": [{"name", "hidden"}]}`; `used_by` names the announcements (and "the defaults") that use a file |
+| `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. `DELETE` is refused (`409`) while something uses it |
+| `POST /media-folders`, `DELETE /media-folders/{path}` | `{"name"}`: make a folder; delete an empty one |
+| `POST /media-move` | `{"from", "to"}`: rename or move a file or folder, then point what used it at the new name. Returns `{"from", "to", "folder", "updated"}` |
+| `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |
 | `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
-| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `lagged` |
+| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `media_changed`, `lagged` |
 
 A run:
 
@@ -229,7 +269,7 @@ time it was due. Run `state` is `playing`, `waiting` (between repeats), `stoppin
 | `scheduler.rs` | When schedules are due (time zones, clock changes), and the thread that plays them |
 | `cli.rs` | `mcast intercom list`, `check`, `play` |
 | `server/` | `mcast intercom serve`: the API (`mod.rs`, `routes.rs`) and the web page (`web.rs`) |
-| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `settings.js`), and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
+| `assets/` | The web page: no framework and no build step, one module per tab (`panel.js`, `history.js`, `schedules.js`, `announcements.js`, `zones.js`, `sounds.js`, `settings.js`), and `chimes.js` for the chime fields and lists; `api.js` is the only one that calls the server |
 
 `cargo test -p mcast-intercom` runs the runner and the API against a fake
 backend and, in `tests/server.rs`, against a real in-process `mcast serve`.

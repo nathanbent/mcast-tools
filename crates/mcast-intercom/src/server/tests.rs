@@ -528,3 +528,223 @@ async fn schedules_and_whats_coming_up() {
     let (s, _) = p.call(Method::DELETE, "/announcements/bell", None).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn manages_sound_files_and_keeps_announcements_pointing_at_them() {
+    let p = panel(None);
+    p.set_up().await;
+    let raw = |method: Method, path: &str, body: &'static [u8]| {
+        Request::builder()
+            .method(method)
+            .uri(format!("{API_PREFIX}{path}"))
+            .body(Body::from(body))
+            .unwrap()
+    };
+    // Upload into a folder.
+    let r = p
+        .app
+        .clone()
+        .oneshot(raw(Method::PUT, "/media/bells/ring.wav", b"RIFF..."))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = p
+        .app
+        .clone()
+        .oneshot(raw(Method::GET, "/media/bells%2Fring.wav", b""))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()[header::CONTENT_TYPE], "audio/wav");
+
+    // An announcement uses it, so it can't be deleted.
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/announcements/bell",
+            Some(json!({"name": "Bell", "audio": {"media": "bells/ring.wav"},
+                        "chime": {"file": "bells/ring.wav"}, "zones": ["hall"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = p.call(Method::DELETE, "/media/bells/ring.wav", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("announcement Bell"),
+        "{v}"
+    );
+
+    // Moving the folder moves what points into it.
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/media-move",
+            Some(json!({"from": "bells", "to": "old/bells"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["folder"], true);
+    assert_eq!(v["updated"], json!(["announcement Bell"]));
+    let (_, a) = p.call(Method::GET, "/announcements/bell", None).await;
+    assert_eq!(a["audio"]["media"], "old/bells/ring.wav");
+    assert_eq!(a["chime"]["file"], "old/bells/ring.wav");
+    // And a file rename.
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/media-move",
+            Some(json!({"from": "old/bells/ring.wav", "to": "old/bells/bell.wav"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, a) = p.call(Method::GET, "/announcements/bell", None).await;
+    assert_eq!(a["audio"]["media"], "old/bells/bell.wav");
+
+    // Hiding a folder hides what's in it; the library says who uses what.
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/media-hidden",
+            Some(json!({"name": "old", "hidden": true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, lib) = p.call(Method::GET, "/library", None).await;
+    let file = |name: &str| {
+        lib["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(file("old/bells/bell.wav")["hidden"], true);
+    assert_eq!(
+        file("old/bells/bell.wav")["used_by"],
+        json!(["announcement Bell"])
+    );
+    assert_eq!(file("lunch.wav")["hidden"], false);
+    assert!(lib["folders"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"name": "old", "hidden": true})));
+    // A move keeps it hidden under its new name.
+    p.call(
+        Method::POST,
+        "/media-move",
+        Some(json!({"from": "old", "to": "archive"})),
+    )
+    .await;
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert_eq!(cfg["hidden_media"], json!(["archive"]));
+
+    // Free it, then delete the file and the empty folders.
+    p.call(
+        Method::PUT,
+        "/announcements/bell",
+        Some(json!({"name": "Bell", "audio": "chime_only", "zones": ["hall"]})),
+    )
+    .await;
+    let (s, _) = p
+        .call(Method::DELETE, "/media/archive/bells/bell.wav", None)
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, _) = p.call(Method::DELETE, "/media-folders/archive", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "archive/bells is still in it");
+    for f in ["archive/bells", "archive"] {
+        let (s, v) = p
+            .call(Method::DELETE, &format!("/media-folders/{f}"), None)
+            .await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{f}: {v}");
+    }
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert!(cfg.get("hidden_media").is_none(), "{cfg}");
+
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/media-move",
+            Some(json!({"from": "lunch.wav", "to": "../x.wav"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn sites_and_schedule_groups() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, site) = p
+        .call(
+            Method::POST,
+            "/sites",
+            Some(json!({"name": "North campus", "time_zone": "America/New_York"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{site}");
+    assert_eq!(site["id"], "north-campus");
+    let (s, g) = p
+        .call(
+            Method::POST,
+            "/schedule-groups",
+            Some(json!({"name": "Exam week"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{g}");
+    assert_eq!(g["enabled"], true);
+
+    // The hall belongs to the site; a schedule there, in the group.
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/zones/hall",
+            Some(json!({"name": "Hall", "targets": [{"group": "zone-1"}], "site": "north-campus"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/schedules",
+            Some(
+                json!({"announcement": "bell", "site": "north-campus", "group": "exam-week",
+                        "when": {"weekly": {"days": ["mon"], "times": ["09:00"]}}}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, up) = p
+        .call(Method::GET, "/upcoming?site=north-campus", None)
+        .await;
+    assert_eq!(up["fires"][0]["site"], "north-campus", "{up}");
+    assert_eq!(up["sites"]["north-campus"]["time_zone"], "America/New_York");
+    let (_, other) = p.call(Method::GET, "/upcoming?site=", None).await;
+    assert_eq!(other["fires"], json!([]));
+
+    // Switching the group off takes it out of what's coming up.
+    let (s, _) = p
+        .call(
+            Method::PUT,
+            "/schedule-groups/exam-week",
+            Some(json!({"name": "Exam week", "enabled": false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, up) = p.call(Method::GET, "/upcoming", None).await;
+    assert_eq!(up["fires"], json!([]));
+
+    // In use: neither can go.
+    for path in ["/sites/north-campus", "/schedule-groups/exam-week"] {
+        let (s, v) = p.call(Method::DELETE, path, None).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{path}: {v}");
+    }
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/sites",
+            Some(json!({"name": "Bad", "time_zone": "Mars/Base"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}

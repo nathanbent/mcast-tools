@@ -2,7 +2,7 @@
 // the codec and volume its speakers need.
 
 import { h, replace } from "./dom.js";
-import { state } from "./store.js";
+import { state, siteName } from "./store.js";
 import { mountEditor, field, select, numberInput, num } from "./editor.js";
 
 export const ENCODINGS = [
@@ -29,6 +29,8 @@ function describe(t) {
 
 function form(z, save, cancel) {
   const name = h("input", { value: z?.name ?? "", required: true, maxLength: 64 });
+  const sites = state.config.sites ?? [];
+  const site = select([["", "No site"], ...sites.map((s) => [s.id, s.name])], z?.site ?? "");
   const rows = [];
   const rowsEl = h("div", { class: "runs" });
 
@@ -63,6 +65,7 @@ function form(z, save, cancel) {
     e.preventDefault();
     save({
       name: name.value.trim(),
+      site: site.value || null,
       targets: rows.map((r) => ({
         group: r.group.value.trim(),
         encoding: r.encoding.value || null,
@@ -75,7 +78,9 @@ function form(z, save, cancel) {
   };
 
   return h("form", { onsubmit: submit },
-    h("fieldset", { class: "part" }, h("legend", {}, "General"), field("Name", name)),
+    h("fieldset", { class: "part" }, h("legend", {}, "General"),
+      h("div", { class: "row" }, field("Name", name),
+        sites.length > 0 && field("Site", site, "A site's schedules play only to its zones"))),
     h("fieldset", { class: "part" }, h("legend", {}, "Groups"),
       h("p", { class: "small muted" },
         "Each group with the options its speakers need. Volume is added to the announcement's. A codec left on Default uses the one in Settings; other options left empty use the server's."),
@@ -92,8 +97,9 @@ export function mount(el) {
     kind: "zone",
     path: "/zones",
     items: () => state.config.zones,
-    columns: [
+    columns: () => [
       ["Name", (z) => z.name],
+      ...((state.config.sites ?? []).length ? [["Site", (z) => (z.site ? siteName(z.site) : "—"), true]] : []),
       ["Groups", (z) => z.targets.map(describe).join(", "), true],
     ],
     form,

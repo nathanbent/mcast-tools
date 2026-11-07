@@ -4,11 +4,12 @@
 //! It runs as its own process with its own token, and reaches the mcast
 //! server only through a [`Backend`].
 
+mod library;
 mod routes;
 mod web;
 
 use crate::backend::Backend;
-use crate::model::{Announcement, Config, Schedule, Zone};
+use crate::model::{Announcement, Config, Schedule, ScheduleGroup, Site, Zone};
 use crate::runner::{BackendStatus, Change, Run, Runner};
 use crate::scheduler::{Scheduler, GRACE};
 use crate::store;
@@ -55,6 +56,8 @@ pub enum Event {
     ConfigChanged,
     /// The connection to the mcast server changed.
     Backend { status: BackendStatus },
+    /// Media files or folders changed on the mcast server; fetch them again.
+    MediaChanged,
 }
 
 pub(crate) struct Inner {
@@ -90,6 +93,7 @@ impl AppState {
                 let _ = tx.send(match c {
                     Change::Run(run) => Event::Run { run: run.clone() },
                     Change::Backend(s) => Event::Backend { status: s.clone() },
+                    Change::Media => Event::MediaChanged,
                 });
             })
         };
@@ -199,11 +203,40 @@ pub fn router(state: AppState) -> Router {
                 .put(put::<Schedule>)
                 .delete(delete::<Schedule>),
         )
+        .route("/sites", get(list::<Site>).post(create::<Site>))
+        .route(
+            "/sites/{id}",
+            get(get_one::<Site>).put(put::<Site>).delete(delete::<Site>),
+        )
+        .route(
+            "/schedule-groups",
+            get(list::<ScheduleGroup>).post(create::<ScheduleGroup>),
+        )
+        .route(
+            "/schedule-groups/{id}",
+            get(get_one::<ScheduleGroup>)
+                .put(put::<ScheduleGroup>)
+                .delete(delete::<ScheduleGroup>),
+        )
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))
         .route("/runs/{id}", get(get_run).delete(stop_run))
         .route("/media", get(media))
+        .route(
+            "/media/{*name}",
+            get(library::download)
+                .put(library::upload)
+                .delete(library::delete),
+        )
+        .route("/library", get(library::library))
+        .route("/media-folders", post(library::create_folder))
+        .route(
+            "/media-folders/{*name}",
+            axum::routing::delete(library::delete_folder),
+        )
+        .route("/media-move", post(library::move_media))
+        .route("/media-hidden", axum::routing::put(library::hide))
         .route("/phonebook", get(phonebook))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))

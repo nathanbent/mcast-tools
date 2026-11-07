@@ -50,10 +50,14 @@ Errors are JSON: `{"error": "message"}`.
 | GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
 | POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
 | POST | `/file-receivers` | Receive files into the media directory (body: file receive request). `201` with the job |
-| GET | `/media` | `[{"name", "bytes", "modified_ms"}]` |
+| GET | `/media` | Every file, in every folder: `[{"name", "bytes", "modified_ms"}]`, `name` being its path (`bells/lunch.wav`) |
 | GET | `/media/{name}` | Download a file. Pictures and audio come with their type; anything else downloads as `application/octet-stream`, so nothing received can run in a browser |
-| PUT | `/media/{name}` | Upload a file (raw body). Replaces any file of that name |
+| PUT | `/media/{name}` | Upload a file (raw body), making any folders in its path. Replaces any file of that name |
 | DELETE | `/media/{name}` | Delete a file |
+| GET | `/media-folders` | Every folder, empty ones included: `["bells", "bells/old"]` |
+| POST | `/media-folders` | `{"name": "bells/old"}`: make a folder (and those above it) |
+| DELETE | `/media-folders/{name}` | Delete a folder; `409` unless it's empty |
+| POST | `/media-move` | `{"from", "to"}`: rename or move a file, or a folder with everything in it. Makes the folders above `to`; `409` if `to` exists. Returns `{"from", "to", "folder"}` |
 | GET | `/phonebook` | Saved groups, by name: `[{"name", "group", "description"}]` |
 | PUT | `/phonebook/{name}` | `{"group": "ADDR:PORT", "description": "...", "name": "new name"}`: add or replace an entry (`name` renames it; `description` and `name` are optional). `201` when new, else `200`, with the entry |
 | DELETE | `/phonebook/{name}` | Remove an entry; returns it |
@@ -113,7 +117,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `rtcp` | `true` | Send RTCP sender reports (and BYE) on the RTP port + 1 |
 | `rtcp_interval_s` | `5` | Average time between reports |
 
-File and chime paths are names of uploaded media files. `render` exists in
+File and chime paths are names of uploaded media files, with their folders (`bells/lunch.wav`). `render` exists in
 the request type but is only available from the CLI.
 
 A page from an uploaded file, with a chime and voice processing for phones:
@@ -305,6 +309,7 @@ its data is JSON with that `type` too:
 | `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
 | `phonebook_changed` | `{}`: the phonebook was changed through the API; fetch it again |
 | `chimes_changed` | `{}`: chimes were hidden or shown through the API; fetch `/chimes` again |
+| `media_changed` | `{}`: media files or folders were uploaded, deleted, moved or made through the API; fetch `/media` (and `/media-folders`) again |
 | `lagged` | `{"missed": N}`: the client fell behind; refetch the lists |
 
 Fetch the lists first, then apply events. For example:
