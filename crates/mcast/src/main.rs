@@ -483,6 +483,18 @@ struct ServeArgs {
     /// File keeping known probes and their configurations [default: ~/.local/share/mcast/probes.json]
     #[arg(long, value_name = "FILE")]
     probe_state: Option<PathBuf>,
+    /// Don't announce this server to probes (it does unless listening on loopback)
+    #[arg(long)]
+    no_beacon: bool,
+    /// Group to announce this server to probes on
+    #[arg(long, default_value = mcast_probe::DEFAULT_BEACON_GROUP, value_name = "ADDR:PORT")]
+    beacon_group: SocketAddr,
+    /// URL probes should use, instead of this host's address and port (e.g. behind a TLS proxy)
+    #[arg(long, value_name = "URL")]
+    beacon_url: Option<String>,
+    /// TTL of the announcements: raise it for probes several routers away
+    #[arg(long, default_value_t = 16)]
+    beacon_ttl: u32,
 }
 
 #[derive(Args)]
@@ -982,6 +994,14 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
         max_upload: a.max_upload_mb.saturating_mul(1 << 20),
         probe_token: a.probe_token,
         probe_state: Some(probe_state),
+        // On loopback only this host could reach us anyway.
+        beacon: (!a.no_beacon && !a.listen.ip().is_loopback()).then_some(
+            mcast_server::BeaconConfig {
+                group: a.beacon_group,
+                url: a.beacon_url,
+                ttl: a.beacon_ttl,
+            },
+        ),
     };
     let web = if a.no_web {
         axum::Router::new()

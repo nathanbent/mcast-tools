@@ -617,7 +617,7 @@ ssh pager mcast tui                                  # the server on that box
 MCAST_TOKEN=change-me mcast tui --url http://pager:8650
 ```
 
-Tabs for what's playing, announced streams, the monitor and media; `p` opens
+Tabs for what's playing, announced streams, the monitor, media and probes; `p` opens
 the page form, `?` lists the keys. Like the web GUI, it's a client of the
 API: it needs `mcast serve` running, and every client sees the same jobs.
 
@@ -633,18 +633,21 @@ or on both paths (the network itself):
 
 ```bash
 mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES      # server
-mcast probe run --server http://10.0.0.5:8650 --token PROBES        # each probe
+mcast probe run --token PROBES                                      # each probe: finds the server by multicast
 MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN mcast probe config idf-3 --unicast --label "IDF 3"
 MCAST_URL=http://10.0.0.5:8650 MCAST_TOKEN=ADMIN mcast probe list
 ```
 
+The server announces itself by multicast, so probes find it on their own
+(and only use one that knows their token); `--server URL` names it instead.
 Probes connect out to the server, so they need no open port except UDP 5104
 for the unicast copies. Reports that can't be delivered are queued and sent
 when the server is back. See [docs/probes.md](docs/probes.md) for the design,
 verdicts and roadmap, and [docs/api.md](docs/api.md#probes) for the routes.
 The web GUI has a Probes view (the Probes tab, or `/#probes`) with each
 probe's state, verdicts and loss timeline, where probes can be configured
-and added before they're deployed.
+and added before they're deployed. `mcast tui` has a Probes tab (5) too:
+`u` toggles unicast copies, `l`/`g`/`i` set the label, groups and interval.
 
 ## Layout
 

@@ -8,6 +8,7 @@ mcast serve [--listen 127.0.0.1:8650] [--token TOKEN] [--media-dir DIR]
             [--max-upload-mb 200] [--iface IFACE] [--sap-group ADDR:PORT]...
             [--watch ADDR:PORT]... [--no-monitor]
             [--probe-token TOKEN] [--probe-state FILE]
+            [--no-beacon] [--beacon-group ADDR:PORT] [--beacon-url URL] [--beacon-ttl 16]
 ```
 
 Ctrl-C or SIGTERM stops every job (withdrawing their SAP announcements) before exiting.
@@ -58,6 +59,7 @@ Errors are JSON: `{"error": "message"}`.
 | PUT | `/probes/{id}/config` | Give a probe its own configuration (body: probe config); creates it if unknown |
 | DELETE | `/probes/{id}/config` | Back to the defaults |
 | GET | `/probes/{id}/reports` | Its last 360 reports, oldest first; `?after_ms=T` for those ending after `T` |
+| GET | `/probe-hello?nonce=HEX` | No token needed: `{"name", "proofs": [...]}`, HMAC-SHA256 of `mcast-probe-hello:NONCE` under each token the server accepts, as hex, so a probe that found the server by beacon can check it knows its token. Nonces are 16-128 hex digits |
 | POST | `/probes/{id}/checkin` | A probe's heartbeat and reports (below); the only route `--probe-token` opens |
 | GET, PUT | `/probe-defaults` | The configuration of probes without their own |
 

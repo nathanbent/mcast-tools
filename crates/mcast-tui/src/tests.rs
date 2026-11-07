@@ -1,7 +1,7 @@
 //! The TUI against a real in-process server, drawn into a test terminal.
 
 use crate::api::{Client, Feed};
-use crate::app::{App, Mode, Msg, Tab};
+use crate::app::{App, Mode, Msg, ProbeField, Tab};
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -35,6 +35,7 @@ fn server(token: Option<&str>) -> Server {
         max_upload: 1 << 20,
         probe_token: None,
         probe_state: None,
+        beacon: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -145,6 +146,12 @@ fn draws_every_screen_at_any_size() {
         Mode::Help,
         Mode::Upload("/tmp/x".into()),
         Mode::ConfirmDelete("a.wav".into()),
+        Mode::ConfirmForget("pi-1".into()),
+        Mode::ProbeInput {
+            id: "pi-1".into(),
+            field: ProbeField::Groups,
+            text: "239.1.1.1:5004".into(),
+        },
     ] {
         app.mode = mode;
         for tab in Tab::ALL {
@@ -209,4 +216,92 @@ fn reports_a_lost_server() {
         rx.recv_timeout(Duration::from_secs(10)),
         Ok(Feed::Disconnected(_))
     ));
+}
+
+/// Check in as a probe that sees loss on multicast but not on its unicast copy.
+fn fake_probe(url: &str, id: &str) {
+    let row = |group: &str, packets: u64, lost: u64| {
+        serde_json::json!({
+            "group": group, "name": "Zone 1", "source": "10.0.0.5:40000", "ssrc": 7,
+            "payload_type": 0, "codec": "PCMU", "packets": packets, "bytes": packets * 160,
+            "packets_per_sec": packets as f64 / 10.0, "kbit_per_sec": 64.0, "lost": lost,
+            "late": 0, "loss_percent": lost as f64 * 100.0 / (packets + lost) as f64,
+            "jitter_ms": 0.5, "max_gap_ms": 120.0, "ptime_ms": 20.0, "ttl": 15, "tos": null,
+            "peak_dbfs": null, "rms_dbfs": null, "idle_ms": 0.0,
+        })
+    };
+    let reports: Vec<serde_json::Value> = (1..=3)
+        .map(|seq| {
+            serde_json::json!({
+                "seq": seq, "start_ms": seq * 10_000, "end_ms": seq * 10_000 + 10_000,
+                "streams": [row("239.255.77.62:5004", 495, if seq == 3 { 5 } else { 0 }),
+                            row("0.0.0.0:5104", 500, 0)],
+            })
+        })
+        .collect();
+    ureq::post(&format!("{url}/api/v1/probes/{id}/checkin"))
+        .send_json(serde_json::json!({
+            "version": "test", "hostname": "pi", "boot": 1, "uptime_s": 60.0,
+            "unicast_addr": "127.0.0.1:5104", "reports": reports,
+        }))
+        .unwrap();
+}
+
+#[test]
+fn shows_and_configures_probes() {
+    let srv = server(None);
+    let (mut app, rx) = app(&srv.url);
+    app.refresh_all();
+    pump(&mut app, &rx, "the event stream", |a| a.connection.is_ok());
+    fake_probe(&srv.url, "idf-3");
+    pump(&mut app, &rx, "the probe", |a| a.probes.len() == 1);
+
+    key(&mut app, KeyCode::Char('5'));
+    assert_eq!(app.tab, Tab::Probes);
+    pump(&mut app, &rx, "its reports", |a| {
+        a.probe_reports().is_some_and(|r| r.len() == 3)
+    });
+    let s = screen(&app, 120, 30);
+    assert!(s.contains("idf-3") && s.contains("5 Probes 1"), "{s}");
+    assert!(s.contains("1 of 3 intervals with multicast loss"), "{s}");
+    assert!(s.contains("5 lost (1.00 %)"), "{s}");
+
+    // Turn unicast copies on: the server compares, and says multicast is at fault.
+    key(&mut app, KeyCode::Char('u'));
+    pump(&mut app, &rx, "unicast on", |a| {
+        !a.busy && a.probes[0].flag("unicast")
+    });
+    fake_probe(&srv.url, "idf-3");
+    pump(&mut app, &rx, "the comparison", |a| {
+        !a.probes[0].comparisons.is_empty()
+    });
+    let s = screen(&app, 120, 30);
+    assert!(s.contains("[MULTICAST LOSS] Zone 1"), "{s}");
+    assert!(s.contains("IGMP snooping"), "{s}");
+
+    // Typed settings.
+    key(&mut app, KeyCode::Char('l'));
+    for c in "IDF 3".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    pump(&mut app, &rx, "the label", |a| {
+        a.probes[0].label() == Some("IDF 3")
+    });
+    key(&mut app, KeyCode::Char('g'));
+    for c in "10.0.0.1:5004".chars() {
+        key(&mut app, KeyCode::Char(c));
+    }
+    key(&mut app, KeyCode::Enter);
+    assert!(app.status().unwrap().0.contains("isn't a multicast group"));
+
+    // Back to the defaults, then forget it.
+    key(&mut app, KeyCode::Char('D'));
+    pump(&mut app, &rx, "the defaults", |a| {
+        !a.probes[0].custom_config
+    });
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('y'));
+    pump(&mut app, &rx, "the probe to go", |a| a.probes.is_empty());
+    assert!(screen(&app, 120, 10).contains("No probes yet"));
 }

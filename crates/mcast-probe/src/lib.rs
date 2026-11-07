@@ -8,6 +8,7 @@
 //! doesn't lose the record of how multicast did meanwhile.
 
 pub mod client;
+pub mod discovery;
 
 use anyhow::Result;
 use mcast_control::probes::{CheckIn, CheckInReply, IntervalReport, MAX_REPORTS_PER_CHECKIN};
@@ -21,12 +22,24 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub use mcast_control::probes::DEFAULT_UNICAST_PORT;
+pub use mcast_control::probes::{DEFAULT_BEACON_GROUP, DEFAULT_UNICAST_PORT};
+
+/// Which server to report to.
+#[derive(Debug, Clone)]
+pub enum Server {
+    /// This one, e.g. "http://10.0.0.5:8650".
+    Url(String),
+    /// Whichever announces itself on `group` (and knows our token).
+    Discover {
+        group: SocketAddr,
+        /// Only servers whose name contains this.
+        name: Option<String>,
+    },
+}
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// The server, e.g. "http://10.0.0.5:8650".
-    pub server: String,
+    pub server: Server,
     pub token: Option<String>,
     /// This probe's name on the server.
     pub id: String,
@@ -51,12 +64,39 @@ struct Running {
     /// `None` if the monitor couldn't start (the error is logged).
     watch: Option<(Watch, Receiver<MonitorSnapshot>)>,
     unicast_addr: Option<SocketAddr>,
+    /// The server the unicast address was chosen for.
+    server: String,
     since_ms: u64,
 }
 
 /// Run until `stop` is set.
 pub fn run(cfg: AgentConfig, stop: &AtomicBool) -> Result<()> {
-    let client = client::Client::new(&cfg.server, cfg.token.clone());
+    let discovery = match &cfg.server {
+        Server::Url(_) => None,
+        Server::Discover { group, name } => {
+            let d = discovery::Discovery::start(discovery::DiscoveryConfig {
+                group: *group,
+                interface: cfg.interface,
+                name: name.clone(),
+                token: cfg.token.clone(),
+            })
+            .map_err(|e| anyhow::anyhow!("listening for servers on {group}: {e}"))?;
+            eprintln!(
+                "probe \"{}\" looking for a server on {group}{} (Ctrl-C to stop)",
+                cfg.id,
+                name.as_ref()
+                    .map_or(String::new(), |n| format!(" named like \"{n}\""))
+            );
+            Some(d)
+        }
+    };
+    let mut client = match &cfg.server {
+        Server::Url(u) => {
+            eprintln!("probe \"{}\" checking in with {u} (Ctrl-C to stop)", cfg.id);
+            Some(client::Client::new(u, cfg.token.clone()))
+        }
+        Server::Discover { .. } => None,
+    };
     let boot = mcast_core::random_u32();
     let started = Instant::now();
     let interval = |r: &Option<Running>| {
@@ -74,11 +114,6 @@ pub fn run(cfg: AgentConfig, stop: &AtomicBool) -> Result<()> {
     let mut next_check_in = Instant::now();
     let mut failures = 0u32;
     let mut last_error: Option<String> = None;
-    eprintln!(
-        "probe \"{}\" checking in with {} (Ctrl-C to stop)",
-        cfg.id,
-        client.base()
-    );
 
     while !stop.load(Ordering::Relaxed) {
         // Wait for the monitor's next report (or a moment, with none running).
@@ -117,6 +152,22 @@ pub fn run(cfg: AgentConfig, stop: &AtomicBool) -> Result<()> {
                 next_check_in = Instant::now();
             }
         }
+        if let Some(d) = &discovery {
+            for why in d.refused() {
+                eprintln!("{why}");
+            }
+            if let Some(found) = d.current() {
+                if client.as_ref().map_or(true, |c| c.base() != found.url) {
+                    eprintln!("found server \"{}\" at {}", found.name, found.url);
+                    client = Some(client::Client::new(&found.url, cfg.token.clone()));
+                    next_check_in = Instant::now();
+                    failures = 0;
+                }
+            }
+        }
+        let Some(client) = client.as_ref() else {
+            continue; // nothing found yet
+        };
         if Instant::now() < next_check_in {
             continue;
         }
@@ -154,17 +205,20 @@ pub fn run(cfg: AgentConfig, stop: &AtomicBool) -> Result<()> {
                         queue.pop_front();
                     }
                 }
-                // A new configuration, or a retry of one that failed to start.
-                let changed = running
-                    .as_ref()
-                    .map_or(true, |r| r.config != config || r.watch.is_none());
+                // A new configuration, a retry of one that failed to start,
+                // or a new server that may need unicast copies elsewhere.
+                let changed = running.as_ref().map_or(true, |r| {
+                    r.config != config
+                        || r.watch.is_none()
+                        || (config.unicast && r.server != client.base())
+                });
                 if changed {
                     drop(running.take()); // stop the old monitor (and free its ports) first
-                    running = Some(start(&cfg, config));
+                    running = Some(start(&cfg, config, client.base()));
                 }
-                // More queued? Send the next batch at once; otherwise this
-                // check-in is also the heartbeat until the next report.
-                next_check_in = if queue.is_empty() {
+                // More queued, or a new config to confirm? Check in again at
+                // once; otherwise this is the heartbeat until the next report.
+                next_check_in = if queue.is_empty() && !changed {
                     Instant::now() + interval(&running)
                 } else {
                     Instant::now()
@@ -188,11 +242,11 @@ pub fn run(cfg: AgentConfig, stop: &AtomicBool) -> Result<()> {
 }
 
 /// Start monitoring as `config` asks.
-fn start(cfg: &AgentConfig, config: ProbeConfig) -> Running {
+fn start(cfg: &AgentConfig, config: ProbeConfig, server: &str) -> Running {
     let mut targets: Vec<Target> = config.groups.iter().map(|&g| Target::new(g)).collect();
     let mut unicast_addr = None;
     if config.unicast {
-        match advertised_ip(cfg) {
+        match advertised_ip(cfg, server) {
             Ok(ip) => {
                 let bind: SocketAddr = match ip {
                     IpAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, cfg.unicast_port).into(),
@@ -233,6 +287,7 @@ fn start(cfg: &AgentConfig, config: ProbeConfig) -> Running {
         config,
         unicast_addr: unicast_addr.filter(|_| watch.is_some()),
         watch,
+        server: server.to_string(),
         since_ms: now_ms(),
     }
 }
@@ -269,13 +324,13 @@ fn describe(c: &ProbeConfig, unicast: Option<SocketAddr>) -> String {
 }
 
 /// The address the server should send unicast copies to.
-fn advertised_ip(cfg: &AgentConfig) -> std::io::Result<IpAddr> {
+fn advertised_ip(cfg: &AgentConfig, server: &str) -> std::io::Result<IpAddr> {
     if let Some(ip) = cfg.advertise {
         return Ok(ip);
     }
     // The source address this host would use to reach the server. No packet
     // is sent: connecting a UDP socket only picks a route.
-    let server = server_addr(&cfg.server)?;
+    let server = server_addr(server)?;
     let bind: SocketAddr = if server.is_ipv4() {
         (Ipv4Addr::UNSPECIFIED, 0).into()
     } else {

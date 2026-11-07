@@ -36,6 +36,7 @@ mcast-text = { path = "crates/mcast-text" }
 mcast-file = { path = "crates/mcast-file" }
 mcast-probe = { path = "crates/mcast-probe" }
 raptorq = "2"
+ring = "0.17"
 crc32fast = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 

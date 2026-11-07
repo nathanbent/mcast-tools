@@ -1,6 +1,6 @@
 //! Blocking client for the probe routes of the mcast API.
 
-use mcast_control::probes::{CheckIn, CheckInReply, IntervalReport};
+use mcast_control::probes::{CheckIn, CheckInReply, Hello, IntervalReport};
 use mcast_control::{ProbeConfig, ProbeInfo};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -99,6 +99,10 @@ impl Client {
         body: &impl Serialize,
     ) -> ClientResult<T> {
         Ok(self.request(method, path).send_json(body)?.into_json()?)
+    }
+
+    pub fn hello(&self, nonce: &str) -> ClientResult<Hello> {
+        self.get(&format!("/probe-hello?nonce={nonce}"))
     }
 
     pub fn check_in(&self, id: &str, c: &CheckIn) -> ClientResult<CheckInReply> {

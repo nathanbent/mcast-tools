@@ -21,17 +21,22 @@ impl Drop for Server {
 }
 
 fn server() -> Server {
+    server_with(None, None)
+}
+
+fn server_with(token: Option<&str>, probe_token: Option<&str>) -> Server {
     let dir = std::env::temp_dir().join(format!("mcast-probe-test-{}", mcast_core::random_u32()));
     let cfg = mcast_server::ServerConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
-        token: None,
+        token: token.map(Into::into),
         media_dir: dir.clone(),
         interface: Interface::Any,
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor: None,
         max_upload: 1 << 20,
-        probe_token: None,
+        probe_token: probe_token.map(Into::into),
         probe_state: None,
+        beacon: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (_tx, rx) = tokio::sync::watch::channel(false);
@@ -97,7 +102,7 @@ fn reports_multicast_and_unicast_side_by_side() {
     let agent = {
         let stop = stop.clone();
         let cfg = AgentConfig {
-            server: srv.url.clone(),
+            server: super::Server::Url(srv.url.clone()),
             token: None,
             id: "pi-test".into(),
             interface: Interface::Any,
@@ -162,4 +167,84 @@ fn reports_multicast_and_unicast_side_by_side() {
         .unwrap();
     stop.store(true, Ordering::Relaxed);
     agent.join().unwrap().unwrap();
+}
+
+/// Announce `url` on `group` until `stop`, like `mcast serve` does.
+fn beacon(
+    group: SocketAddr,
+    name: &str,
+    url: &str,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    let socket =
+        mcast_core::open_sender(&mcast_core::MulticastOptions::new(group).unwrap()).unwrap();
+    let payload = serde_json::to_vec(&mcast_control::probes::Beacon {
+        service: mcast_control::probes::Beacon::SERVICE.into(),
+        v: 1,
+        name: name.into(),
+        port: 1,
+        url: Some(url.into()),
+    })
+    .unwrap();
+    thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            let _ = socket.send(&payload);
+            thread::sleep(Duration::from_millis(200));
+        }
+    })
+}
+
+#[test]
+fn finds_the_server_that_knows_its_token() {
+    let ours = server_with(Some("admin"), Some("probes"));
+    let theirs = server_with(Some("other"), None);
+    let group: SocketAddr = format!(
+        "239.255.86.{}:{}",
+        100 + mcast_core::random_u32() % 100,
+        free_udp_port()
+    )
+    .parse()
+    .unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    // The wrong one first, so it's heard first.
+    let beacons = [
+        beacon(group, "theirs", &theirs.url, stop.clone()),
+        beacon(group, "ours", &ours.url, stop.clone()),
+    ];
+
+    let found = discovery::listen_for(group, Interface::Any, Duration::from_secs(1)).unwrap();
+    assert_eq!(found.len(), 2, "{found:?}");
+
+    let agent = {
+        let stop = stop.clone();
+        let cfg = AgentConfig {
+            server: super::Server::Discover { group, name: None },
+            token: Some("probes".into()),
+            id: "pi-disc".into(),
+            interface: Interface::Any,
+            sap_groups: Vec::new(),
+            unicast_port: free_udp_port(),
+            advertise: None,
+            max_queue: 100,
+            verbose: false,
+        };
+        thread::spawn(move || run(cfg, &stop))
+    };
+    let admin = Client::new(&ours.url, Some("admin".into()));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while admin.probe("pi-disc").is_err() {
+        assert!(Instant::now() < deadline, "the probe never checked in");
+        thread::sleep(Duration::from_millis(100));
+    }
+    let other = Client::new(&theirs.url, Some("other".into()));
+    assert!(
+        other.probes().unwrap().is_empty(),
+        "it went to the wrong server"
+    );
+
+    stop.store(true, Ordering::Relaxed);
+    agent.join().unwrap().unwrap();
+    for b in beacons {
+        b.join().unwrap();
+    }
 }

@@ -9,6 +9,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ring.workspace = true
 mcast-core.workspace = true
 mcast-audio.workspace = true
 mcast-monitor.workspace = true

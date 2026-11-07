@@ -1,11 +1,11 @@
 //! Key bindings. Each mode has its own handler.
 
-use crate::app::{App, Level, Mode, Tab};
+use crate::app::{App, Level, Mode, ProbeField, Tab};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Shown by `?`: (keys, what they do).
 pub const HELP: &[(&str, &str)] = &[
-    ("1-4, Tab", "switch tab"),
+    ("1-5, Tab", "switch tab"),
     ("↑↓ / j k", "select"),
     ("p", "page (open the form)"),
     ("s, Del", "stop the selected job"),
@@ -14,6 +14,10 @@ pub const HELP: &[(&str, &str)] = &[
     ("o", "Streams: choose the output device"),
     ("u", "Media: upload a local file"),
     ("d", "Media: delete the selected file"),
+    ("u / s", "Probes: unicast copies / SAP streams on or off"),
+    ("l / g / i", "Probes: set label / groups / report interval"),
+    ("D", "Probes: back to the default configuration"),
+    ("f", "Probes: forget the probe"),
     ("r", "refresh everything"),
     ("q, Ctrl-C", "quit"),
     ("", ""),
@@ -33,6 +37,13 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         Mode::Normal => normal(app, key),
         Mode::Page => page(app, key),
         Mode::Upload(path) => upload(app, key, path),
+        Mode::ProbeInput { id, field, text } => probe_input(app, key, id, field, text),
+        Mode::ConfirmForget(id) => {
+            if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                app.forget_probe(id);
+            }
+            app.mode = Mode::Normal;
+        }
         Mode::ConfirmDelete(name) => {
             if matches!(key.code, KeyCode::Char('y' | 'Y')) {
                 app.delete_media(name);
@@ -50,15 +61,28 @@ fn select(app: &mut App, delta: isize) {
     }
     let i = app.selected() as isize + delta;
     app.selected[app.tab.index()] = i.clamp(0, n as isize - 1) as usize;
+    if app.tab == Tab::Probes {
+        app.want_reports();
+    }
+}
+
+fn switch(app: &mut App, tab: Tab) {
+    app.tab = tab;
+    if tab == Tab::Probes {
+        app.want_reports();
+    }
 }
 
 fn normal(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => app.quit = true,
         KeyCode::Char('?') => app.mode = Mode::Help,
-        KeyCode::Char(c @ '1'..='4') => app.tab = Tab::ALL[c as usize - '1' as usize],
-        KeyCode::Tab => app.tab = Tab::ALL[(app.tab.index() + 1) % 4],
-        KeyCode::BackTab => app.tab = Tab::ALL[(app.tab.index() + 3) % 4],
+        KeyCode::Char(c @ '1'..='5') => switch(app, Tab::ALL[c as usize - '1' as usize]),
+        KeyCode::Tab => switch(app, Tab::ALL[(app.tab.index() + 1) % Tab::ALL.len()]),
+        KeyCode::BackTab => switch(
+            app,
+            Tab::ALL[(app.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len()],
+        ),
         KeyCode::Up | KeyCode::Char('k') => select(app, -1),
         KeyCode::Down | KeyCode::Char('j') => select(app, 1),
         KeyCode::PageUp => select(app, -10),
@@ -98,10 +122,66 @@ fn tab_key(app: &mut App, key: KeyEvent) {
             }
         }
         (Tab::Media, KeyCode::Char('u')) => app.mode = Mode::Upload(String::new()),
+        (Tab::Probes, code) => probe_key(app, code),
         (Tab::Media, KeyCode::Char('d') | KeyCode::Delete) => {
             if let Some(m) = app.media.get(i) {
                 app.mode = Mode::ConfirmDelete(m.name.clone());
             }
+        }
+        _ => {}
+    }
+}
+
+fn probe_key(app: &mut App, code: KeyCode) {
+    let Some(p) = app.selected_probe() else {
+        return;
+    };
+    let id = p.id.clone();
+    let prompt = |field, text: String| Mode::ProbeInput {
+        id: id.clone(),
+        field,
+        text,
+    };
+    match code {
+        KeyCode::Char('u') => {
+            app.toggle_probe("unicast", "unicast copies on", "unicast copies off")
+        }
+        KeyCode::Char('s') => app.toggle_probe(
+            "sap",
+            "watching announced streams",
+            "not watching announced streams",
+        ),
+        KeyCode::Char('l') => {
+            app.mode = prompt(ProbeField::Label, p.label().unwrap_or("").to_string())
+        }
+        KeyCode::Char('g') => app.mode = prompt(ProbeField::Groups, p.groups().join(" ")),
+        KeyCode::Char('i') => {
+            app.mode = prompt(ProbeField::Interval, format!("{}", p.interval_s()))
+        }
+        KeyCode::Char('D') if p.custom_config => app.reset_probe(),
+        KeyCode::Char('D') => app.say("it already uses the defaults", Level::Info),
+        KeyCode::Char('f') | KeyCode::Delete => app.mode = Mode::ConfirmForget(id),
+        _ => {}
+    }
+}
+
+fn probe_input(app: &mut App, key: KeyEvent, id: String, field: ProbeField, mut text: String) {
+    match key.code {
+        KeyCode::Esc => app.mode = Mode::Normal,
+        KeyCode::Enter => {
+            app.mode = Mode::Normal;
+            // The selection may have moved under an event; only edit the probe asked about.
+            if app.selected_probe().is_some_and(|p| p.id == id) {
+                app.set_probe_field(field, text);
+            }
+        }
+        KeyCode::Backspace => {
+            text.pop();
+            app.mode = Mode::ProbeInput { id, field, text };
+        }
+        KeyCode::Char(c) => {
+            text.push(c);
+            app.mode = Mode::ProbeInput { id, field, text };
         }
         _ => {}
     }

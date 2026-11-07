@@ -15,7 +15,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::{Stream, StreamExt};
-use mcast_control::probes::{CheckIn, CheckInReply, IntervalReport, ProbeError};
+use mcast_control::probes::{
+    hello_proof, Beacon, CheckIn, CheckInReply, Hello, IntervalReport, ProbeError,
+};
 use mcast_control::request::{ChimeRequest, SinkRequest, SourceRequest};
 use mcast_control::{
     Announcements, Event, EventSink, JobId, Jobs, ProbeConfig, ProbeInfo, Probes, RecvRequest,
@@ -58,6 +60,16 @@ pub struct ServerConfig {
     /// Where to keep the known probes and their configurations; `None`
     /// keeps them in memory only.
     pub probe_state: Option<PathBuf>,
+    /// Announce the server to probes by multicast; `None` doesn't.
+    pub beacon: Option<BeaconConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BeaconConfig {
+    pub group: SocketAddr,
+    /// URL for probes to use instead of this host's address and port.
+    pub url: Option<String>,
+    pub ttl: u32,
 }
 
 struct Inner {
@@ -164,6 +176,13 @@ pub async fn serve(
         }
     );
     let app = router(state.clone()).merge(extra);
+    let beacon = match &cfg.beacon {
+        Some(b) => {
+            let port = listener.local_addr()?.port();
+            Some(start_beacon(b, cfg.interface, port).context("starting the probe beacon")?)
+        }
+        None => None,
+    };
     {
         // Notice probes that stop checking in.
         let state = state.clone();
@@ -181,6 +200,7 @@ pub async fn serve(
             let _ = close_tx.send(true);
         })
         .await?;
+    drop(beacon);
     eprintln!("stopping jobs...");
     tokio::task::spawn_blocking(move || state.shutdown()).await?;
     Ok(())
@@ -199,6 +219,7 @@ pub fn router(state: AppState) -> Router {
         .route("/media", get(list_media))
         .route("/media/{name}", put(upload_media).delete(delete_media))
         .route("/events", get(events))
+        .route("/probe-hello", get(probe_hello))
         .route("/probes", get(list_probes))
         .route("/probes/{id}", get(get_probe).delete(remove_probe))
         .route("/probes/{id}/checkin", post(probe_check_in))
@@ -303,7 +324,8 @@ fn is_check_in(req: &Request) -> bool {
 }
 
 async fn auth(State(s): State<AppState>, req: Request, next: Next) -> Response {
-    if s.0.token.is_none() {
+    // Probes ask this before they have reason to trust the server with a token.
+    if s.0.token.is_none() || req.uri().path().ends_with("/probe-hello") {
         return next.run(req).await;
     }
     let bearer = req
@@ -443,6 +465,83 @@ async fn start_receiver(
 }
 
 // ---- probes ----
+
+/// Multicasts a [`Beacon`] every few seconds until dropped.
+struct BeaconSender {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for BeaconSender {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn start_beacon(b: &BeaconConfig, interface: Interface, port: u16) -> Result<BeaconSender> {
+    let mut opts = mcast_core::MulticastOptions::new(b.group)?;
+    opts.interface = interface;
+    opts.ttl = b.ttl;
+    let socket = mcast_core::open_sender(&opts)?;
+    let payload = serde_json::to_vec(&Beacon {
+        service: Beacon::SERVICE.into(),
+        v: 1,
+        name: mcast_control::request::hostname(),
+        port,
+        url: b.url.clone(),
+    })?;
+    eprintln!("announcing to probes on {}", b.group);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread = {
+        let stop = stop.clone();
+        std::thread::Builder::new()
+            .name("mcast-beacon".into())
+            .spawn(move || {
+                let tick = Duration::from_millis(200);
+                let every = Duration::from_secs(mcast_control::probes::BEACON_INTERVAL_S);
+                let mut next = std::time::Instant::now();
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if std::time::Instant::now() >= next {
+                        // A missing route now may be there later; keep trying.
+                        let _ = socket.send(&payload);
+                        next += every;
+                    }
+                    std::thread::sleep(tick);
+                }
+            })?
+    };
+    Ok(BeaconSender {
+        stop,
+        thread: Some(thread),
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct HelloQuery {
+    nonce: String,
+}
+
+/// Prove to a probe that found us by beacon that we know its token.
+async fn probe_hello(
+    State(s): State<AppState>,
+    Query(q): Query<HelloQuery>,
+) -> ApiResult<Json<Hello>> {
+    if !mcast_control::probes::valid_nonce(&q.nonce) {
+        return Err(ApiError::bad("nonce must be 16-128 hex digits"));
+    }
+    let proofs = [&s.0.probe_token, &s.0.token]
+        .into_iter()
+        .flatten()
+        .map(|t| hello_proof(t, &q.nonce))
+        .collect();
+    Ok(Json(Hello {
+        name: mcast_control::request::hostname(),
+        proofs,
+    }))
+}
 
 impl From<ProbeError> for ApiError {
     fn from(e: ProbeError) -> Self {

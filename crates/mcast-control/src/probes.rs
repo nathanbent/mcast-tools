@@ -33,6 +33,63 @@ pub const HISTORY: usize = 360;
 pub const MAX_REPORTS_PER_CHECKIN: usize = 30;
 /// Default port probes listen on for unicast copies.
 pub const DEFAULT_UNICAST_PORT: u16 = 5104;
+/// Where servers announce themselves to probes (IPv4 administratively scoped).
+pub const DEFAULT_BEACON_GROUP: &str = "239.255.86.50:8651";
+/// Seconds between beacons.
+pub const BEACON_INTERVAL_S: u64 = 5;
+
+/// What a server multicasts so probes can find it without being told.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Beacon {
+    /// Always [`Beacon::SERVICE`]; anything else on the group is ignored.
+    pub service: String,
+    pub v: u32,
+    /// The server's hostname, for picking one with `--server-name`.
+    pub name: String,
+    /// The API's port, on the address the beacon came from.
+    pub port: u16,
+    /// A URL to use instead (behind a TLS proxy, say).
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+impl Beacon {
+    pub const SERVICE: &'static str = "mcast-probe-server";
+
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        let b: Beacon = serde_json::from_slice(bytes).ok()?;
+        (b.service == Self::SERVICE && b.v == 1).then_some(b)
+    }
+
+    /// Where to reach the server: its `url`, or the beacon's source address and `port`.
+    pub fn server_url(&self, from: std::net::IpAddr) -> String {
+        match &self.url {
+            Some(u) => u.trim_end_matches('/').to_string(),
+            None => format!("http://{}", SocketAddr::new(from, self.port)),
+        }
+    }
+}
+
+/// The server's answer to `GET /probe-hello?nonce=N`: a proof for each token
+/// it accepts, so a probe can check a discovered server knows its token
+/// before sending it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Hello {
+    pub name: String,
+    pub proofs: Vec<String>,
+}
+
+/// HMAC-SHA256 of the nonce under `token`, as hex.
+pub fn hello_proof(token: &str, nonce: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, token.as_bytes());
+    let tag = ring::hmac::sign(&key, format!("mcast-probe-hello:{nonce}").as_bytes());
+    tag.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Nonces are 16 to 128 hex digits.
+pub fn valid_nonce(nonce: &str) -> bool {
+    (16..=128).contains(&nonce.len()) && nonce.bytes().all(|b| b.is_ascii_hexdigit())
+}
 
 /// What the server asks a probe to do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -780,6 +837,37 @@ mod tests {
             queued: 0,
             dropped: 0,
         }
+    }
+
+    #[test]
+    fn beacons_and_proofs() {
+        let b = Beacon {
+            service: Beacon::SERVICE.into(),
+            v: 1,
+            name: "pager".into(),
+            port: 8650,
+            url: None,
+        };
+        let bytes = serde_json::to_vec(&b).unwrap();
+        let parsed = Beacon::parse(&bytes).unwrap();
+        assert_eq!(
+            parsed.server_url("10.0.0.5".parse().unwrap()),
+            "http://10.0.0.5:8650"
+        );
+        assert_eq!(
+            parsed.server_url("fe80::1".parse().unwrap()),
+            "http://[fe80::1]:8650"
+        );
+        assert!(
+            Beacon::parse(b"{\"service\":\"other\",\"v\":1,\"name\":\"x\",\"port\":1}").is_none()
+        );
+        assert!(Beacon::parse(b"junk").is_none());
+
+        let p = hello_proof("s3cret", "00112233445566778899");
+        assert_eq!(p.len(), 64);
+        assert_eq!(p, hello_proof("s3cret", "00112233445566778899"));
+        assert_ne!(p, hello_proof("other", "00112233445566778899"));
+        assert!(valid_nonce("00112233445566778899") && !valid_nonce("xyz") && !valid_nonce("00"));
     }
 
     #[test]

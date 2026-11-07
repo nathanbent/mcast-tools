@@ -15,8 +15,11 @@ use std::sync::atomic::AtomicBool;
 #[command(after_help = "Examples:
   # on the server
   mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES
-  # on each Pi
+  # on each Pi: find the server by its multicast beacon...
+  mcast probe run --token PROBES --id idf-3
+  # ...or name it
   mcast probe run --server http://10.0.0.5:8650 --token PROBES --id idf-3
+  mcast probe discover                  # which servers announce themselves here?
   # from anywhere with the admin token
   mcast probe list --url http://10.0.0.5:8650 --token ADMIN
   mcast probe config idf-3 --label \"3rd floor IDF\" --unicast --interval 5
@@ -35,6 +38,18 @@ pub enum ProbeCommand {
     },
     /// Change a probe's configuration (or the defaults, with --defaults)
     Config(ConfigArgs),
+    /// List the servers announcing themselves to probes on this network
+    Discover {
+        /// Seconds to listen (servers announce every 5 s)
+        #[arg(short, long, default_value_t = 6.0)]
+        wait: f64,
+        /// Beacon group
+        #[arg(long, default_value = mcast_probe::DEFAULT_BEACON_GROUP, value_name = "ADDR:PORT")]
+        beacon_group: SocketAddr,
+        /// Interface to join on: IPv4 address or interface index
+        #[arg(short, long, default_value = "any")]
+        iface: Interface,
+    },
     /// Forget a probe
     #[command(visible_alias = "rm")]
     Remove {
@@ -46,12 +61,19 @@ pub enum ProbeCommand {
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// The `mcast serve` server to report to
+    /// The `mcast serve` server to report to [default: find one by its multicast beacon]
     #[arg(short, long, env = "MCAST_URL")]
-    server: String,
-    /// Its probe token (or its admin token)
+    server: Option<String>,
+    /// Its probe token (or its admin token). When finding a server by beacon,
+    /// only one that knows this token is used
     #[arg(long, env = "MCAST_TOKEN", hide_env_values = true)]
     token: Option<String>,
+    /// Group servers announce themselves on
+    #[arg(long, default_value = mcast_probe::DEFAULT_BEACON_GROUP, value_name = "ADDR:PORT", conflicts_with = "server")]
+    beacon_group: SocketAddr,
+    /// Only use a discovered server whose name (its hostname) contains this
+    #[arg(long, value_name = "NAME", conflicts_with = "server")]
+    server_name: Option<String>,
     /// This probe's name on the server [default: the hostname]
     #[arg(long)]
     id: Option<String>,
@@ -159,9 +181,16 @@ pub fn run(c: ProbeCommand, stop: &AtomicBool) -> Result<()> {
             } else {
                 a.sap.sap_groups
             };
+            let server = match a.server {
+                Some(u) => mcast_probe::Server::Url(u),
+                None => mcast_probe::Server::Discover {
+                    group: a.beacon_group,
+                    name: a.server_name,
+                },
+            };
             mcast_probe::run(
                 mcast_probe::AgentConfig {
-                    server: a.server,
+                    server,
                     token: a.token,
                     id,
                     interface: a.iface,
@@ -212,6 +241,27 @@ pub fn run(c: ProbeCommand, stop: &AtomicBool) -> Result<()> {
             Ok(())
         }
         ProbeCommand::Config(a) => config(a),
+        ProbeCommand::Discover {
+            wait,
+            beacon_group,
+            iface,
+        } => {
+            let found = mcast_probe::discovery::listen_for(
+                beacon_group,
+                iface,
+                std::time::Duration::from_secs_f64(wait.max(0.1)),
+            )?;
+            if found.is_empty() {
+                println!(
+                    "no servers heard on {beacon_group} in {wait} s \
+                     (mcast serve announces itself unless it listens on loopback or has --no-beacon)"
+                );
+            }
+            for (f, _) in found {
+                println!("{:<24} {}", f.name, f.url);
+            }
+            Ok(())
+        }
         ProbeCommand::Remove { id, server } => {
             server.client().remove(&id)?;
             println!("forgot {id}");

@@ -31,6 +31,7 @@ fn harness_with(token: Option<&str>, probe_token: Option<&str>) -> Harness {
         max_upload: 1 << 20,
         probe_token: probe_token.map(Into::into),
         probe_state: None,
+        beacon: None,
     };
     let (_tx, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
@@ -268,6 +269,7 @@ async fn refuses_to_listen_publicly_without_a_token() {
         max_upload: 0,
         probe_token: None,
         probe_state: None,
+        beacon: None,
     };
     let err = serve(cfg, Router::new(), async {}).await.unwrap_err();
     assert!(err.to_string().contains("without a token"));
@@ -403,4 +405,28 @@ async fn configures_probes_and_mirrors_senders_to_them() {
         call(&h, "GET", "/api/v1/probes/pi-1", None, None).await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proves_it_knows_the_tokens_without_asking_for_one() {
+    let h = harness_with(Some("admin"), Some("probe"));
+    let nonce = "00112233445566778899aabb";
+    let (status, hello) = call(
+        &h,
+        "GET",
+        &format!("/api/v1/probe-hello?nonce={nonce}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{hello}");
+    let proofs: Vec<String> = serde_json::from_value(hello["proofs"].clone()).unwrap();
+    assert!(proofs.contains(&hello_proof("probe", nonce)));
+    assert!(proofs.contains(&hello_proof("admin", nonce)));
+    assert!(!proofs.contains(&hello_proof("guess", nonce)));
+    let (status, _) = call(&h, "GET", "/api/v1/probe-hello?nonce=zz", None, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    // The exemption is for that route only.
+    let (status, _) = call(&h, "GET", "/api/v1/probes", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

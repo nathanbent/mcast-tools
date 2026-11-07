@@ -3,7 +3,7 @@
 
 use crate::api::{ApiError, Client, Feed};
 use crate::form::PageForm;
-use crate::model::{Device, Job, MediaFile, Snapshot, Stream};
+use crate::model::{Device, Job, MediaFile, Probe, Report, Snapshot, Stream};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::mpsc::Sender;
@@ -18,10 +18,17 @@ pub enum Tab {
     Streams,
     Monitor,
     Media,
+    Probes,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Jobs, Tab::Streams, Tab::Monitor, Tab::Media];
+    pub const ALL: [Tab; 5] = [
+        Tab::Jobs,
+        Tab::Streams,
+        Tab::Monitor,
+        Tab::Media,
+        Tab::Probes,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -29,6 +36,7 @@ impl Tab {
             Tab::Streams => "Streams",
             Tab::Monitor => "Monitor",
             Tab::Media => "Media",
+            Tab::Probes => "Probes",
         }
     }
 
@@ -46,7 +54,33 @@ pub enum Mode {
     Upload(String),
     /// Waiting for y/n to delete a media file.
     ConfirmDelete(String),
+    /// Editing one setting of a probe.
+    ProbeInput {
+        id: String,
+        field: ProbeField,
+        text: String,
+    },
+    /// Waiting for y/n to forget a probe.
+    ConfirmForget(String),
     Help,
+}
+
+/// Probe settings typed in a prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeField {
+    Label,
+    Groups,
+    Interval,
+}
+
+impl ProbeField {
+    pub fn prompt(self) -> &'static str {
+        match self {
+            ProbeField::Label => "Label (empty for none):",
+            ProbeField::Groups => "Groups to watch besides announced ones, e.g. 239.192.2.1:10000 (space or comma between):",
+            ProbeField::Interval => "Seconds per report and check-in (1-3600):",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +98,11 @@ pub enum Msg {
     Media(Result<Vec<MediaFile>, ApiError>),
     Devices(Result<Vec<Device>, ApiError>),
     Monitor(Result<Snapshot, ApiError>),
+    Probes(Result<Vec<Probe>, ApiError>),
+    /// A probe's stored reports, for its timeline.
+    Reports(String, Result<Vec<Report>, ApiError>),
+    /// A probe after a change to it.
+    ProbeChanged(Result<Box<Probe>, ApiError>, String),
     /// A job was started (or failed to).
     Started(Result<Value, ApiError>),
     /// Some other action finished: the message to show, and what to refetch.
@@ -81,8 +120,14 @@ pub struct App {
     pub devices: Vec<Device>,
     /// `None` until loaded; `Some(None)` when the server's monitor is off.
     pub monitor: Option<Option<Snapshot>>,
+    /// Sorted by ID.
+    pub probes: Vec<Probe>,
+    /// The selected probe's reports (its ID, oldest first).
+    pub reports: Option<(String, Vec<Report>)>,
+    /// A probe whose reports are being fetched.
+    reports_loading: Option<String>,
     /// Selected row per tab.
-    pub selected: [usize; 4],
+    pub selected: [usize; 5],
     pub form: PageForm,
     /// Output device for Listen ("" = default).
     pub output: String,
@@ -106,7 +151,10 @@ impl App {
             media: Vec::new(),
             devices: Vec::new(),
             monitor: None,
-            selected: [0; 4],
+            probes: Vec::new(),
+            reports: None,
+            reports_loading: None,
+            selected: [0; 5],
             form: PageForm::new(),
             output: String::new(),
             status: None,
@@ -140,12 +188,13 @@ impl App {
                 }))
             }),
             "monitor" => self.spawn(|c| Msg::Monitor(c.get("/monitor"))),
+            "probes" => self.spawn(|c| Msg::Probes(c.get("/probes"))),
             _ => {}
         }
     }
 
     pub fn refresh_all(&self) {
-        for w in ["jobs", "streams", "media", "devices", "monitor"] {
+        for w in ["jobs", "streams", "media", "devices", "monitor", "probes"] {
             self.refresh(w);
         }
     }
@@ -185,6 +234,7 @@ impl App {
                 .and_then(|m| m.as_ref())
                 .map_or(0, |m| m.streams.len()),
             Tab::Media => self.media.len(),
+            Tab::Probes => self.probes.len(),
         }
     }
 
@@ -240,6 +290,47 @@ impl App {
                 Err(e) if e.status == 404 => self.monitor = Some(None),
                 Err(e) => fail(self, e),
             },
+            Msg::Probes(r) => match r {
+                Ok(mut p) => {
+                    p.sort_by(|a, b| a.id.cmp(&b.id));
+                    self.probes = p;
+                    self.want_reports();
+                }
+                Err(e) => fail(self, e),
+            },
+            Msg::Reports(id, r) => {
+                if self.reports_loading.as_deref() == Some(id.as_str()) {
+                    self.reports_loading = None;
+                }
+                match r {
+                    Ok(more) => {
+                        let mut all = match self.reports.take() {
+                            Some((have, old)) if have == id => old,
+                            _ => Vec::new(),
+                        };
+                        let last = all.last().map(|r| r.end_ms);
+                        all.extend(
+                            more.into_iter()
+                                .filter(|r| last.map_or(true, |l| r.end_ms > l)),
+                        );
+                        let excess = all.len().saturating_sub(360);
+                        all.drain(..excess);
+                        self.reports = Some((id, all));
+                    }
+                    Err(e) if e.status == 404 => {}
+                    Err(e) => fail(self, e),
+                }
+            }
+            Msg::ProbeChanged(r, what) => {
+                self.busy = false;
+                match r {
+                    Ok(p) => {
+                        self.say(format!("{}: {what}", p.id), Level::Ok);
+                        self.put_probe(*p);
+                    }
+                    Err(e) => fail(self, e),
+                }
+            }
             Msg::Started(r) => {
                 self.busy = false;
                 match r {
@@ -292,9 +383,164 @@ impl App {
                     self.monitor = Some(Some(s));
                 }
             }
+            "probe_updated" => {
+                if let Ok(p) = serde_json::from_value::<Probe>(e["probe"].clone()) {
+                    let id = p.id.clone();
+                    self.put_probe(p);
+                    // Keep the selected probe's timeline current.
+                    if self.selected_probe().is_some_and(|p| p.id == id) {
+                        self.load_reports(id);
+                    }
+                }
+            }
+            "probe_removed" => {
+                if let Some(id) = e["id"].as_str() {
+                    self.probes.retain(|p| p.id != id);
+                    self.want_reports();
+                }
+            }
             "lagged" => self.refresh_all(),
             _ => {}
         }
+    }
+
+    // ---- probes ----
+
+    fn put_probe(&mut self, p: Probe) {
+        match self.probes.binary_search_by(|q| q.id.cmp(&p.id)) {
+            Ok(i) => self.probes[i] = p,
+            Err(i) => self.probes.insert(i, p),
+        }
+        self.want_reports();
+    }
+
+    pub fn selected_probe(&self) -> Option<&Probe> {
+        self.probes
+            .get(self.selected[Tab::Probes.index()].min(self.probes.len().saturating_sub(1)))
+    }
+
+    /// The reports shown belong to the selected probe.
+    pub fn probe_reports(&self) -> Option<&[Report]> {
+        let p = self.selected_probe()?;
+        match &self.reports {
+            Some((id, r)) if *id == p.id => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Fetch the selected probe's reports if they aren't here yet.
+    pub fn want_reports(&mut self) {
+        let Some(id) = self.selected_probe().map(|p| p.id.clone()) else {
+            return;
+        };
+        if self.reports.as_ref().is_some_and(|(have, _)| *have == id) {
+            return;
+        }
+        self.load_reports(id);
+    }
+
+    /// Fetch reports newer than those held (all of them for another probe).
+    fn load_reports(&mut self, id: String) {
+        if self.reports_loading.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        let after = match &self.reports {
+            Some((have, r)) if *have == id => r.last().map(|r| r.end_ms),
+            _ => None,
+        };
+        self.reports_loading = Some(id.clone());
+        let path = format!(
+            "/probes/{}/reports{}",
+            crate::api::encode(&id),
+            after.map_or(String::new(), |a| format!("?after_ms={a}"))
+        );
+        self.spawn(move |c| Msg::Reports(id, c.get(&path)));
+    }
+
+    /// Change the selected probe's configuration with `f`, and save it.
+    pub fn configure_probe(
+        &mut self,
+        what: &str,
+        f: impl FnOnce(&mut Value) -> Result<(), String>,
+    ) {
+        let Some(p) = self.selected_probe() else {
+            return;
+        };
+        let (id, mut config) = (p.id.clone(), p.config.clone());
+        if let Err(e) = f(&mut config) {
+            return self.say(e, Level::Error);
+        }
+        let what = what.to_string();
+        self.busy = true;
+        self.spawn(move |c| {
+            let path = format!("/probes/{}/config", crate::api::encode(&id));
+            let r = c.put(&path, &config).and_then(|v| {
+                serde_json::from_value(v).map_err(|e| ApiError::from(std::io::Error::other(e)))
+            });
+            Msg::ProbeChanged(r, what)
+        });
+    }
+
+    /// Apply a typed setting.
+    pub fn set_probe_field(&mut self, field: ProbeField, text: String) {
+        let text = text.trim().to_string();
+        match field {
+            ProbeField::Label => self.configure_probe("label saved", |c| {
+                c["label"] = if text.is_empty() {
+                    Value::Null
+                } else {
+                    text.into()
+                };
+                Ok(())
+            }),
+            ProbeField::Groups => self.configure_probe("groups saved", |c| {
+                let groups: Vec<&str> = text.split([' ', ',']).filter(|g| !g.is_empty()).collect();
+                if let Some(bad) = groups.iter().find(|g| !crate::model::is_multicast(g)) {
+                    return Err(format!("{bad} isn't a multicast group and port"));
+                }
+                c["groups"] = json!(groups);
+                Ok(())
+            }),
+            ProbeField::Interval => self.configure_probe("report interval saved", |c| {
+                let s: f64 = text
+                    .parse()
+                    .map_err(|_| "that isn't a number of seconds".to_string())?;
+                c["report_interval_s"] = json!(s);
+                Ok(())
+            }),
+        }
+    }
+
+    pub fn toggle_probe(&mut self, key: &'static str, on: &'static str, off: &'static str) {
+        let now = self.selected_probe().is_some_and(|p| p.flag(key));
+        self.configure_probe(if now { off } else { on }, |c| {
+            c[key] = json!(!now);
+            Ok(())
+        });
+    }
+
+    pub fn reset_probe(&mut self) {
+        let Some(id) = self.selected_probe().map(|p| p.id.clone()) else {
+            return;
+        };
+        self.busy = true;
+        self.spawn(move |c| {
+            let path = format!("/probes/{}/config", crate::api::encode(&id));
+            let r = c.request_delete_json(&path).and_then(|v| {
+                serde_json::from_value(v).map_err(|e| ApiError::from(std::io::Error::other(e)))
+            });
+            Msg::ProbeChanged(r, "back to the defaults".into())
+        });
+    }
+
+    pub fn forget_probe(&mut self, id: String) {
+        self.spawn(move |c| {
+            let path = format!("/probes/{}", crate::api::encode(&id));
+            Msg::Done(
+                c.delete(&path).map(|_| format!("Forgot {id}")),
+                Some("probes"),
+            )
+        });
     }
 
     // ---- actions ----

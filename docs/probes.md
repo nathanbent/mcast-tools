@@ -25,7 +25,14 @@ On the server:
 mcast serve -l 0.0.0.0:8650 --token ADMIN --probe-token PROBES
 ```
 
-On each probe (the ID defaults to the hostname):
+On each probe (the ID defaults to the hostname). It finds the server by
+its multicast beacon:
+
+```bash
+mcast probe run --token PROBES --id idf-3
+```
+
+or, where multicast doesn't reach (or to be explicit), name the server:
 
 ```bash
 mcast probe run --server http://10.0.0.5:8650 --token PROBES --id idf-3
@@ -99,6 +106,43 @@ idf-3 [3rd floor IDF]  online  host pi-idf3  v0.1.1
 Each is for one report interval; the totals (`mcast probe show`) count how
 many intervals had loss, and the largest gap and worst jitter seen.
 
+## Discovery
+
+A server listening on anything but loopback announces itself every 5 s on
+`239.255.86.50:8651` (`--beacon-group`, `--beacon-ttl` 16, `--no-beacon`
+to stop) with a small JSON message:
+
+```json
+{"service": "mcast-probe-server", "v": 1, "name": "pager", "port": 8650, "url": null}
+```
+
+A probe started without `--server` listens there and uses
+`http://<the beacon's source address>:<port>`, or `url` when the server sets
+one with `--beacon-url` (for a TLS proxy, say). `mcast probe discover` lists
+the servers heard.
+
+Before it sends its token to a server it found, the probe checks the server
+already knows it: it sends a random nonce to `GET /api/v1/probe-hello`
+(no token needed) and the server answers with HMAC-SHA256 of the nonce
+under each token it accepts. A server that can't prove it knows the probe's
+token is ignored (and asked again a minute later). So with several servers
+on one network (a lab and production, say), each probe reports to the one
+whose token it was given; `--server-name` narrows it further by the server's
+hostname.
+
+The probe stays with its server while that keeps announcing itself, follows
+it to a new address (the same name from another address, after a DHCP
+change), and moves to another server that passes the check only when its
+own has been silent for 20 s. If beacons stop but the server still answers,
+check-ins carry on.
+
+What the check is not: protection against an attacker on the network path.
+Everything is plain HTTP, so anyone who can see a check-in can read the
+token, and an attacker who can also reach the server could relay the
+challenge. It stops probes reporting to the wrong server by mistake and
+casual spoofing; for more, pin `--server` to an HTTPS URL behind a TLS
+proxy and turn the beacon off.
+
 ## Protocol
 
 Plain HTTP/JSON on the existing API, so it inherits its token auth and can
@@ -136,12 +180,14 @@ Done (this change):
 - [x] Stat upload with acknowledgement, retry and an offline queue
 - [x] Unicast copies of every sender job, and the multicast vs. unicast verdict
 - [x] `mcast probe run | list | show | config | remove`, probe-only token
+- [x] Discovery: the server's multicast beacon, `/probe-hello` token check,
+      `mcast probe discover`
+- [x] TUI Probes tab
 
 Next:
 
 - [x] Web GUI Probes view (`#probes`): online state, verdicts, loss timeline,
       configuration, adding probes ahead of deployment
-- [ ] TUI tab for probes
 - [ ] Alerts: a probe offline, `multicast_loss` or `no_multicast` for N
       intervals, as events (and optionally a webhook)
 - [ ] Persist report history (not only configurations), e.g. a JSON-lines file

@@ -4,10 +4,12 @@ mod jobs;
 mod media;
 mod monitor;
 mod page;
+mod probes;
 mod streams;
 
 use crate::app::{App, Level, Mode, Tab};
 use crate::keys::HELP;
+use crate::model::Health;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -28,6 +30,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         Tab::Streams => streams::draw(f, app, inner),
         Tab::Monitor => monitor::draw(f, app, inner),
         Tab::Media => media::draw(f, app, inner),
+        Tab::Probes => probes::draw(f, app, inner),
     }
     draw_footer(f, app, footer);
     match &app.mode {
@@ -50,6 +53,26 @@ pub fn draw(f: &mut Frame, app: &App) {
             "Delete",
             vec![Line::from(format!(
                 "Delete \"{name}\" from the server? (y/n)"
+            ))],
+        ),
+        Mode::ProbeInput { id, field, text } => prompt(
+            f,
+            id,
+            vec![
+                Line::from(field.prompt()),
+                Line::from(vec![
+                    Span::raw(text.clone()),
+                    Span::raw("▏").fg(Color::Cyan),
+                ]),
+                Line::from(""),
+                Line::from("Enter saves · Esc cancels").dim(),
+            ],
+        ),
+        Mode::ConfirmForget(id) => prompt(
+            f,
+            "Forget",
+            vec![Line::from(format!(
+                "Forget probe \"{id}\"? It comes back with the defaults if it checks in again. (y/n)"
             ))],
         ),
         Mode::Help => help(f),
@@ -75,10 +98,19 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
     ])
     .areas(top);
     f.render_widget(Paragraph::new(Span::raw(" mcast").bold()), name);
-    let titles = Tab::ALL
+    // Probes needing attention, beside the tab name.
+    let alerts = app
+        .probes
         .iter()
-        .enumerate()
-        .map(|(i, t)| format!("{} {}", i + 1, t.title()));
+        .filter(|p| matches!(p.health(), Health::Problem | Health::Offline))
+        .count();
+    let titles = Tab::ALL.iter().enumerate().map(|(i, t)| {
+        let mut l = Line::from(format!("{} {}", i + 1, t.title()));
+        if *t == Tab::Probes && alerts > 0 {
+            l.push_span(Span::raw(format!(" {alerts}")).fg(Color::Red).bold());
+        }
+        l
+    });
     let tabs = Tabs::new(titles)
         .select(app.tab.index())
         .highlight_style(Style::new().bold().fg(Color::Cyan));
@@ -109,6 +141,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
                 Tab::Streams => "Enter listen · o output",
                 Tab::Monitor => "",
                 Tab::Media => "Enter page this · u upload · d delete",
+                Tab::Probes => {
+                    "u unicast · s SAP · l label · g groups · i interval · D defaults · f forget"
+                }
             };
             let mut keys = vec!["p page", tab, "? help", "q quit"];
             keys.retain(|k| !k.is_empty());
