@@ -17,6 +17,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - a webhook delivery log;
   - text pages in playlists, spoken and shown on displays (nathanbent/mcast-tools#49).
 - **v0.5.5 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.5, tag `v0.5.5` on `7f3c8c7` (the merge of #49), with binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) and Windows. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. Pis upgrade with `sudo mcast update`.
+- **0.5.6** follows with the webhook log kept in the order deliveries were sent (nathanbent/mcast-tools#53) and customizing the Panel in place, with drag and drop on touch screens too (nathanbent/mcast-tools#54). The bump is its own PR, then the Release workflow from `main` with the tag `v0.5.6`.
 - **It was released before the hardware checks** below (What's next, 1). Their results decide whether a 0.5.6 is needed.
 - **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
 
