@@ -13,4 +13,5 @@ mcast-core.workspace = true
 opus.workspace = true
 rtrb.workspace = true
 rustfft.workspace = true
+serde.workspace = true
 symphonia.workspace = true

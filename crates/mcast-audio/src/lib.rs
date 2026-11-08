@@ -18,6 +18,7 @@ pub mod process;
 pub mod receiver;
 pub mod sender;
 pub mod session;
+pub mod tts;
 
 pub use codec::{Codec, StreamSpec};
 pub use format::{AudioFormat, Encoding};

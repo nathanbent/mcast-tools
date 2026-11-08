@@ -138,6 +138,11 @@ impl AudioFile {
         self.channels
     }
 
+    /// Frames in the file, if the container says.
+    pub fn frames(&self) -> Option<u64> {
+        self.frames
+    }
+
     /// Decode the next packet into `pending`; false at the end of the file.
     fn decode_next(&mut self) -> Result<bool> {
         loop {

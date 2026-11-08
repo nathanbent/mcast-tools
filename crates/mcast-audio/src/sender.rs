@@ -111,10 +111,55 @@ pub struct SenderStats {
 }
 
 /// Live counters for a running sender, readable from another thread.
-#[derive(Debug, Default)]
 pub struct Progress {
     pub packets: AtomicU64,
     pub send_errors: AtomicU64,
+    /// With a files source: the file being played (its index), once the
+    /// first one starts. [`NO_ITEM`] before.
+    pub item: AtomicU64,
+    /// Called as each file of a files source starts, with its index.
+    pub on_item: std::sync::OnceLock<Box<dyn Fn(usize) + Send + Sync>>,
+}
+
+/// [`Progress::item`] before a files source's first file starts.
+pub const NO_ITEM: u64 = u64::MAX;
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self {
+            packets: AtomicU64::new(0),
+            send_errors: AtomicU64::new(0),
+            item: AtomicU64::new(NO_ITEM),
+            on_item: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl Progress {
+    /// The file of a files source being played.
+    pub fn item(&self) -> Option<usize> {
+        match self.item.load(Ordering::Relaxed) {
+            NO_ITEM => None,
+            n => Some(n as usize),
+        }
+    }
+
+    fn set_item(&self, n: usize) {
+        self.item.store(n as u64, Ordering::Relaxed);
+        if let Some(f) = self.on_item.get() {
+            f(n);
+        }
+    }
+}
+
+impl std::fmt::Debug for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Progress")
+            .field("packets", &self.packets)
+            .field("send_errors", &self.send_errors)
+            .field("item", &self.item())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Result of measuring a file's loudness before sending.
@@ -162,6 +207,10 @@ struct FileList {
     scratch: Vec<f32>,
     /// Past the end of the last file (what's pending still goes out).
     done: bool,
+    /// The current file hasn't been read from yet (so isn't reported).
+    unreported: bool,
+    /// Told as each file starts.
+    progress: Option<Arc<Progress>>,
 }
 
 impl FileList {
@@ -186,6 +235,8 @@ impl FileList {
             gap: (gap.as_secs_f64() * rate as f64).round() as u64,
             scratch: Vec::new(),
             done: false,
+            unreported: true,
+            progress: None,
         })
     }
 
@@ -208,6 +259,7 @@ impl FileList {
         self.convert = ((r, c as usize) != (self.rate, self.channels))
             .then(|| Converter::new(r, c, self.rate, self.channels as u16));
         self.gap_left = self.gap;
+        self.unreported = true;
         Ok(true)
     }
 
@@ -237,6 +289,13 @@ impl FileList {
                 written += frames * self.channels;
                 self.gap_left -= frames as u64;
                 continue;
+            }
+            // A file starts after any gap before it.
+            if self.unreported {
+                self.unreported = false;
+                if let Some(p) = &self.progress {
+                    p.set_item(self.at);
+                }
             }
             let got = match &mut self.convert {
                 None => self.file.read(&mut out[written..])?,
@@ -792,6 +851,9 @@ impl Sender {
             let chunk_frames = ((rate as f64 * self.ptime.as_secs_f64()).ceil() as usize).max(64);
             let mut buf = vec![0.0f32; chunk_frames * src_channels as usize];
             let mut reader = self.reader.take().expect("paced sources have a reader");
+            if let Input::Files(list) = &mut reader.input {
+                list.progress = Some(out.progress.clone());
+            }
             while !stop.load(Ordering::Relaxed) && !out.done() {
                 let n = reader.fill(&mut buf)?;
                 let last = n < buf.len();
@@ -1063,15 +1125,41 @@ mod tests {
             gap: Duration::from_millis(100),
         };
         let mut r = Reader::open(&source, 8000, 1, None, None).unwrap();
+        // Each file is reported as it starts, after the gap before it.
+        let progress = Arc::new(Progress::default());
+        assert_eq!(progress.item(), None);
+        let starts: Arc<std::sync::Mutex<Vec<usize>>> = Arc::default();
+        let told = starts.clone();
+        let _ = progress
+            .on_item
+            .set(Box::new(move |i| told.lock().unwrap().push(i)));
+        if let Input::Files(list) = &mut r.input {
+            list.progress = Some(progress.clone());
+        }
         let mut all = Vec::new();
         let mut buf = vec![0.0f32; 333];
+        let mut reported = Vec::new();
         loop {
             let n = r.fill(&mut buf).unwrap();
+            if let Some(i) = progress.item() {
+                if reported.last() != Some(&i) {
+                    reported.push(i);
+                    // Told within the chunk the file starts in.
+                    let start = [0usize, 4800, 7600][i];
+                    assert!(
+                        all.len() <= start && start < all.len() + 333,
+                        "item {i} at {}",
+                        all.len()
+                    );
+                }
+            }
             all.extend_from_slice(&buf[..n]);
             if n < buf.len() {
                 break;
             }
         }
+        assert_eq!(reported, [0, 1, 2]);
+        assert_eq!(*starts.lock().unwrap(), [0, 1, 2]);
         // 4000 + 800 gap + ~2000 + 800 gap + 4000 frames.
         assert!((11_550..=11_650).contains(&all.len()), "{}", all.len());
         let near = |x: f32, want: f32| (x - want).abs() < 0.02;

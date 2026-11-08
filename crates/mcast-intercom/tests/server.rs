@@ -48,6 +48,7 @@ fn server_watching(monitor: Option<Vec<std::net::SocketAddr>>) -> Server {
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor,
         max_upload: 1 << 20,
+        tts: Default::default(),
         phonebook: dir.join("phonebook.conf"),
         chimes: dir.join("chimes.json"),
     };
