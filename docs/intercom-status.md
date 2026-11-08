@@ -226,7 +226,7 @@ The v0.5.5 items, plus requests that came up along the way:
 2. **Fix anything the hardware turns up,** then bump to 0.5.6 and release it the same way (Release workflow from `main`, tag `v0.5.6`).
 3. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
-   - `server::tests::webhooks_keep_a_log_of_their_deliveries` failed once under a full parallel test run and passed on every rerun: it looks like a race in the order deliveries are logged. Make it deterministic without weakening it.
+   - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
 
 ## Questions still open for the owner
 
@@ -240,7 +240,8 @@ The v0.5.5 items, plus requests that came up along the way:
 4. **GPIO choices to confirm (#45):**
    - An input plays at its announcement's priority, with no per-input priority.
    - Re-pressing while it plays is ignored, not restarted.
-5. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
+5. **Webhook log order (#47, noted in #50):** each delivery is sent and logged on its own thread, so two events fired close together can be logged in the order their deliveries finished, not the order they were sent. Fine as it is, or keep them in order?
+6. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
 
 ## How to work on it
 
