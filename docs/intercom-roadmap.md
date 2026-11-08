@@ -217,7 +217,7 @@ Admins drag the sections of a tab into the order they want. The layout is kept i
 **Built: categories and tags.**
 - **Categories:** each announcement can be in one (`category`), and each category is a heading on the Panel, with "Other" last. Categories are managed below the announcements list, which is grouped the same way.
 - **Tags:** an announcement can have any number (`tags`), shown as filter chips on the Panel. The chosen chip is remembered per screen.
-- **Arranging:** *Arrange the Panel…* (admins) orders the categories and the buttons inside each, through the layout (`panel`, `panel-buttons`). Every screen shows the same.
+- **Arranging:** *✎ Customize* (admins) turns the Panel itself into an editor: make, rename, color, size and delete groups, drag buttons between them and groups into order, undo, and save it all at once (`PUT /panel-layout`, refused if the Panel changed meanwhile). Dragging works with a mouse, a finger (press and hold, or the ⠿ handle) and the keyboard (Space, arrows, Space). It replaced the *Arrange the Panel…* dialog. Every screen shows the same.
 
 ### 9b. Panel customization
 

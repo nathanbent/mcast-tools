@@ -872,6 +872,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/playlists/{id}"),
     ("PUT", "/playlists/{id}"),
     ("DELETE", "/playlists/{id}"),
+    ("GET", "/panel-layout"),
+    ("PUT", "/panel-layout"),
     ("PUT", "/layout/{tab}"),
     ("DELETE", "/layout/{tab}"),
     ("GET", "/history"),
@@ -2319,6 +2321,164 @@ async fn categories_and_tags_organize_announcements() {
         )
         .await;
     assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_panel_is_arranged_in_one_go() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    p.call_with(
+        Method::POST,
+        "/zones",
+        Some(json!({"name": "Hall", "targets": [{"group": "zone-1"}]})),
+        admin,
+    )
+    .await;
+    for name in ["Bell", "Fire", "Lunch"] {
+        let body = json!({"name": name, "audio": "chime_only", "zones": ["hall"]});
+        let (s, v) = p
+            .call_with(Method::POST, "/announcements", Some(body), admin)
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let (s, v) = p.call_with(Method::GET, "/panel-layout", None, admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["groups"], json!([]));
+    assert_eq!(v["other"], json!(["bell", "fire", "lunch"]));
+    let rev = v["revision"].clone();
+
+    // Two new groups, buttons moved into them and reordered, all at once.
+    let layout = json!({"revision": rev, "groups": [
+        {"name": " Safety ", "color": "red", "size": "large", "announcements": ["fire"]},
+        {"name": "Daily", "announcements": ["lunch", "bell"]},
+    ], "other": []});
+    let (s, v) = p
+        .call_with(Method::PUT, "/panel-layout", Some(layout.clone()), admin)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["groups"],
+        json!([
+            {"id": "safety", "name": "Safety", "color": "red", "size": "large", "announcements": ["fire"]},
+            {"id": "daily", "name": "Daily", "announcements": ["lunch", "bell"]},
+        ])
+    );
+    assert_ne!(v["revision"], rev);
+    let (_, cfg) = p.call_with(Method::GET, "/config", None, admin).await;
+    assert_eq!(cfg["layout"]["panel"], json!(["safety", "daily"]));
+    assert_eq!(
+        cfg["layout"]["panel-buttons"],
+        json!(["fire", "lunch", "bell"])
+    );
+    assert_eq!(cfg["categories"][0]["id"], "safety");
+    let bell = cfg["announcements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == "bell")
+        .unwrap();
+    assert_eq!(bell["category"], "daily");
+
+    // The same edit again, from the old revision: refused, nothing changed.
+    let (s, e) = p
+        .call_with(Method::PUT, "/panel-layout", Some(layout), admin)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    let (_, now) = p.call_with(Method::GET, "/panel-layout", None, admin).await;
+    assert_eq!(now, v);
+
+    // Rename one, delete the other (its buttons to Other), and reorder.
+    let rev = v["revision"].clone();
+    let (s, v) = p
+        .call_with(
+            Method::PUT,
+            "/panel-layout",
+            Some(json!({"revision": rev, "groups": [
+                {"id": "daily", "name": "Every day", "announcements": ["bell"]},
+            ], "other": ["fire", "lunch"]})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["groups"],
+        json!([{"id": "daily", "name": "Every day", "announcements": ["bell"]}])
+    );
+    assert_eq!(v["other"], json!(["fire", "lunch"]));
+    let (_, cfg) = p.call_with(Method::GET, "/config", None, admin).await;
+    assert_eq!(cfg["categories"].as_array().unwrap().len(), 1);
+
+    // Mistakes are refused whole.
+    let daily = json!({"id": "daily", "name": "Every day", "announcements": ["bell"]});
+    for (bad, status) in [
+        (
+            json!({"groups": [{"name": "A", "announcements": ["bell"]}], "other": ["bell"]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"groups": [{"name": "A"}, {"name": "a"}]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"groups": [{"name": "  "}]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"groups": [daily.clone(), {"name": "A", "color": "pink"}]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"groups": [daily.clone(), {"id": "gone", "name": "A"}]}),
+            StatusCode::CONFLICT,
+        ),
+        (
+            json!({"groups": [daily.clone()], "other": ["nope"]}),
+            StatusCode::CONFLICT,
+        ),
+        // Deleting a group that still has a button, without moving it.
+        (json!({"groups": []}), StatusCode::CONFLICT),
+        (
+            json!({"groups": [daily.clone()], "extra": 1}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let (s, e) = p
+            .call_with(Method::PUT, "/panel-layout", Some(bad.clone()), admin)
+            .await;
+        assert_eq!(s, status, "{bad}: {e}");
+    }
+    let (_, after) = p.call_with(Method::GET, "/panel-layout", None, admin).await;
+    assert_eq!(after, v);
+
+    // A group called "Other" doesn't get the id the page uses for none.
+    let (s, v) = p
+        .call_with(
+            Method::PUT,
+            "/panel-layout",
+            Some(json!({"groups": [{"id": "daily", "name": "Every day", "announcements": ["bell"]}, {"name": "Other"}]})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["groups"][1]["id"], "other-2");
+
+    // Operators see it, only admins change it.
+    let desk = p
+        .token(admin, json!({"name": "Desk", "role": "operator"}))
+        .await;
+    let (s, _) = p
+        .call_with(Method::GET, "/panel-layout", None, Some(&desk))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = p
+        .call_with(
+            Method::PUT,
+            "/panel-layout",
+            Some(json!({"groups": []})),
+            Some(&desk),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
