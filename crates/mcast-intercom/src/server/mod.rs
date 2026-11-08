@@ -376,6 +376,7 @@ pub fn router(state: AppState) -> Router {
         .route("/media-hidden", axum::routing::put(library::hide))
         .route("/media-tags", axum::routing::put(library::tag))
         .route("/phonebook", get(phonebook))
+        .route("/listeners", get(routes::listeners))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))
         .route("/events", get(events))

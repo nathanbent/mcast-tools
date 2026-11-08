@@ -3,6 +3,7 @@
 
 import { h, replace } from "./dom.js";
 import { state, siteName } from "./store.js";
+import { api } from "./api.js";
 import { mountEditor, field, select, numberInput, num } from "./editor.js";
 
 export const ENCODINGS = [
@@ -25,6 +26,66 @@ function describe(t) {
   const codec = t.encoding ? encodingLabel(t.encoding) : `${defaultEncoding().split(",")[0]} (default)`;
   const opts = [codec, t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
   return opts.length ? `${t.group} (${opts.join(", ")})` : t.group;
+}
+
+// The speakers expected to hear a zone's pages: names as receivers give
+// them (`mcast receive --name Lobby`). Offers the ones the mcast server
+// hears now.
+function listenersPart(initial) {
+  const names = [...initial];
+  const has = (n) => names.some((x) => x.toLowerCase() === n.toLowerCase());
+  const chips = h("div", { class: "tag-bar" });
+  const heardBox = h("div", { class: "small muted" }, "Looking for receivers…");
+  let heard = [];
+  const input = h("input", { maxLength: 64, placeholder: "e.g. Lobby", list: "heard-listeners",
+    "aria-label": "Listener name",
+    onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); add(input.value); } } });
+  const datalist = h("datalist", { id: "heard-listeners" });
+
+  const add = (n) => {
+    n = n.trim();
+    if (n && !has(n) && names.length < 100) names.push(n);
+    input.value = "";
+    render();
+  };
+  const render = () => {
+    replace(chips, names.length
+      ? names.map((n) => h("button", { type: "button", class: "tag", title: `Remove ${n}`,
+          onclick: () => { names.splice(names.indexOf(n), 1); render(); } }, n, " ×"))
+      : [h("span", { class: "muted small" }, "None: plays to this zone aren't checked.")]);
+    const fresh = heard.filter((l) => !has(l.name));
+    replace(datalist, fresh.map((l) => h("option", { value: l.name })));
+    if (heard.length) {
+      replace(heardBox, "Heard now: ", ...(fresh.length
+        ? fresh.map((l) => h("button", { type: "button", class: "tag", title: `Add ${l.name} (on ${l.group})`,
+            onclick: () => add(l.name) }, "+ ", l.name))
+        : ["all of them are listed."]));
+    }
+  };
+  api("GET", "/listeners").then((list) => {
+    const seen = new Map();
+    for (const l of list ?? []) {
+      const name = l.name || l.cname;
+      if (name && !l.left && !seen.has(name.toLowerCase())) seen.set(name.toLowerCase(), { name, group: l.group });
+    }
+    heard = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+    if (!heard.length) replace(heardBox, "No receivers are reporting to the mcast server now.");
+    render();
+  }, (e) => {
+    replace(heardBox, e.status === 404
+      ? "The mcast server's monitor is off (--no-monitor), so it can't hear receivers."
+      : `Couldn't ask the mcast server who is listening: ${e.message}`);
+  });
+  render();
+
+  const el = h("fieldset", { class: "part" }, h("legend", {}, "Listeners"),
+    h("p", { class: "small muted" },
+      "Speakers that should hear this zone's pages, by the name they give (mcast receive --name). After each play the panel says which of them heard it."),
+    chips,
+    h("div", { class: "listener-add" }, input, datalist,
+      h("button", { type: "button", onclick: () => add(input.value) }, "Add")),
+    heardBox);
+  return { el, value: () => names };
 }
 
 function form(z, save, cancel) {
@@ -58,6 +119,7 @@ function form(z, save, cancel) {
 
   const render = () => replace(rowsEl, rows.map((r) => r.el));
 
+  const listeners = listenersPart(z?.listeners ?? []);
   for (const t of z?.targets ?? []) addRow(t);
   if (!rows.length) addRow();
 
@@ -74,6 +136,7 @@ function form(z, save, cancel) {
         ttl: num(r.ttl),
         interface: r.iface.value.trim() || null,
       })),
+      listeners: listeners.value(),
     });
   };
 
@@ -87,6 +150,7 @@ function form(z, save, cancel) {
       rowsEl,
       h("div", { class: "buttons", style: { marginTop: "10px" } },
         h("button", { type: "button", onclick: () => addRow() }, "Add group"))),
+    listeners.el,
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));
@@ -101,6 +165,7 @@ export function mount(el) {
       ["Name", (z) => z.name],
       ...((state.config.sites ?? []).length ? [["Site", (z) => (z.site ? siteName(z.site) : "—"), true]] : []),
       ["Groups", (z) => z.targets.map(describe).join(", "), true],
+      ["Listeners", (z) => (z.listeners?.length ? z.listeners.join(", ") : "—"), true],
     ],
     form,
   });

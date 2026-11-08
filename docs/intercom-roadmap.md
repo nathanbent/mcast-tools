@@ -1,7 +1,8 @@
 # Intercom control panel: roadmap
 
-Status: **v0.5.5 is built** (PR #38), along with the monitor page from v0.6.0.
-The rest of v0.6.0 (items 11–13) is planned below. This covers two releases,
+Status: **v0.5.5 is built** (PR #38), along with the monitor page (item 10)
+and delivery confirmation (item 11) from v0.6.0. Items 12 and 13 are planned
+below. This covers two releases,
 **v0.5.5** (integrate and polish) and **v0.6.0** (observe and harden).
 `intercom-status.md` has the current state and the next steps.
 `intercom-plan.md` is an overview of how the panel is built.
@@ -263,11 +264,18 @@ The plan:
 
 ### 11. Delivery confirmation ("probes")
 
+**Built.** `mcast serve`'s monitor lists the receivers it hears (`listeners`
+in `GET /api/v1/monitor`), and send jobs report their `ssrc`. A zone lists
+its `listeners`; every play to it is checked (while it plays and up to 12 s
+after), and the run, History, the Monitor tab's Speakers table, a toast and
+a `listener_silent` webhook say who heard it and who stayed silent. See
+*Who heard it* in the intercom's README. The plan:
+
 - Endpoints running `mcast receive` already send named RTCP receiver reports
   (loss, jitter, playout delay). `mcast serve`'s monitor collects them
-  (`Monitor::listeners()`), but doesn't expose them yet: `MonitorSnapshot`
-  in `mcast-control/src/watch.rs`, behind `GET /api/v1/monitor`, carries only
-  groups and streams. Adding a `listeners` list there is the first step.
+  (`Monitor::listeners()`), but didn't expose them: `MonitorSnapshot`
+  in `mcast-control/src/watch.rs`, behind `GET /api/v1/monitor`, carried only
+  groups and streams. Adding a `listeners` list there was the first step.
 - A zone can list the listeners it expects. After a run, the panel shows
   "3/4 listeners heard it" and flags silent endpoints. A webhook fires for
   an endpoint that stays silent.

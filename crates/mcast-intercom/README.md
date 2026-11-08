@@ -37,13 +37,13 @@ A page with a tab for each part:
 | Tab | |
 |---|---|
 | **Panel** | A **stats strip** (plays today and over the last 7 days, with failed and missed ones; groups busy or failed in the last 24 hours; and the mcast server if it's unreachable), then a big button for each announcement, under its **category**'s heading, what's playing now (with Stop) and what's next. **Tag** chips show just one tag's buttons (remembered per screen). Admins set the order of categories and buttons with *Arrange the Panel…*, for every screen, and **how it looks** in Settings → Panel (button size, tiles or a list, what's shown, asking before emergencies); categories and announcements can have a **color** (and announcements an **icon**, and "ask before playing"). Each screen can fold categories away. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
-| **Monitor** | From the history, over the last 7, 30 or 90 days: totals (plays, how many played, failed and missed, schedules on time, the mcast server's uptime), plays a day by outcome (a chart, or a table), each announcement and zone with its outcomes (busy, failed, taken over), how schedules kept time (late is over 5 s), what started plays, and when the mcast server was unreachable |
+| **Monitor** | From the history, over the last 7, 30 or 90 days: totals (plays, how many played, failed and missed, schedules on time, the mcast server's uptime), plays a day by outcome (a chart, or a table), each announcement and zone with its outcomes (busy, failed, taken over), how schedules kept time (late is over 5 s), what started plays, which **speakers** heard plays and which missed them, and when the mcast server was unreachable |
 | **History** | Every play, and how each group fared, kept on disk (a file a day in `history/` beside `intercom.json`, for 90 days or as set in Settings → History): filter by date, announcement, outcome and who started it, page back, and **download a CSV** |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
 | **Announcements** | Listed under their categories, with the **categories** themselves below. Each one in sections: General (name, audio: a sound, a playlist, chime only or live), On the Panel (category, tags), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
 | **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
-| **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
+| **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need, and the **listeners** expected to hear it (see *Who heard it* below), with the receivers the mcast server hears now offered to add |
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
 The setup tabs (Playlists, Sounds, Zones, Settings) are under **More** in
@@ -261,6 +261,8 @@ its speakers need: `encoding`, `volume_db` (added to the announcement's),
 `tos`, `ttl`, `interface`. Leave `encoding` out to use the default codec
 (`defaults.encoding`, else the mcast server's, L16), and any other option
 out to use the server's default. `site`: the site it's at, if any.
+`listeners`: the names of the speakers expected to hear its pages (see
+*Who heard it*), e.g. `["Lobby", "Office"]`; up to 100, each once.
 
 **Announcements.** `id`, `name` and `zones` (zone ids), then:
 
@@ -378,6 +380,38 @@ Each repeat tries every group again, so a group that was busy can join in
 later. A run is *done* if it played to at least one group, and *failed*
 if it played to none.
 
+### Who heard it
+
+A speaker running `mcast receive --name Lobby` (or `mcast audio recv -n
+Lobby`) sends RTCP receiver reports naming the stream it hears.
+`mcast serve`'s monitor collects them, and the panel reads them from it.
+
+When a zone lists its `listeners`, every play to it is checked:
+- **When:** while the play goes on, and for up to 12 seconds after. Receivers
+  report every 5 seconds or so, and keep naming the last stream they heard.
+  The check ends early once everyone expected has been heard.
+- **Expected:** the listeners of the zones whose groups the play reached. A
+  zone that was busy or failed doesn't expect anything.
+- **Heard:** a receiver whose reports named one of the play's streams. That
+  includes receivers no zone lists. The worst loss each reported is kept.
+- **Silent:** expected but not heard.
+
+The run's `listeners` holds `{"checking", "expected", "heard": [{"name",
+"loss_percent"}], "silent", "error"}`, and each target its `expected` and
+`heard` names.
+- **Where it shows:** run cards (History, and the Panel while playing) say
+  "Heard by 3 of 4", and name the silent ones.
+- **Toast and webhook:** a silent speaker gets a toast and the
+  `listener_silent` webhook.
+- **The Monitor tab** has a Speakers table: plays expected, heard and missed,
+  and the last one heard.
+- **History:** a checked run is written once the check ends, so it's there
+  with who heard it.
+
+If the mcast server runs with `--no-monitor`, or can't be asked, the run's
+`listeners.error` says so and nobody is called silent. Plays to zones that
+list no listeners aren't checked.
+
 ## Schedules
 
 A schedule plays when it's on, its group (if any) is on, its site (if any)
@@ -438,7 +472,7 @@ only their runs.
 | `PUT /layout/{tab}`, `DELETE /layout/{tab}` | Admins: `{"order": [section ids]}` arranges a tab's sections for everyone (kept in `intercom.json` as `layout`; sections left out follow in their usual order); `DELETE` goes back to the usual order. Returns the whole layout. So far the Settings tab (`settings`: `panel`, `defaults`, `time-zone`, `sites`, `chimes`, `tokens`, `other-systems`, `connection`), and the Panel: `panel` (category ids) and `panel-buttons` (announcement ids) |
 | `GET /history` | Plays that ended, newest first: `{"runs": [RUN...], "more", "next"}`. Filters: `from`, `to` (dates in the panel's time zone, both included), `announcement`, `state` (`done`, `stopped`, `failed`, `missed`), `by` (part of a token's name), `q` (part of the name), `limit` (default 100, up to 1000), `before` (the `next` of the page before, `started_ms:id`, for the next page). A token limited to categories sees only theirs |
 | `GET /stats` | The Panel's stats strip, from the history: `{"today": COUNTS, "week": COUNTS, "last_24h": {"busy_groups", "failed_groups"}}`, with COUNTS `{"plays", "played", "stopped", "failed", "missed"}`; today and the last 7 days are in the panel's time zone. A token limited to categories counts only theirs |
-| `GET /monitor?days=7` | The Monitor tab (1 to 366 days, today included, in the panel's time zone): `{"totals", "days": [{"date", ...COUNTS}], "announcements": [{"id", "name", ...COUNTS}], "zones": [{"id", "name", "sends", "played", "busy", "failed", "taken_over"}], "schedules": {"on_time", "late", "missed", "late_after_ms", "most_late_ms"}, "triggers": {TYPE: n}, "by": [{"name", "plays"}], "connection": {"known_ms", "up_ms", "uptime", "outages": [{"from_ms", "to_ms"}]}, "from_ms", "to_ms"}`. Zones are the ones each group is in now. Uptime counts only time the panel was running, from `history/connection.jsonl`. A token limited to categories sees only theirs |
+| `GET /monitor?days=7` | The Monitor tab (1 to 366 days, today included, in the panel's time zone): `{"totals", "days": [{"date", ...COUNTS}], "announcements": [{"id", "name", ...COUNTS}], "zones": [{"id", "name", "sends", "played", "busy", "failed", "taken_over"}], "schedules": {"on_time", "late", "missed", "late_after_ms", "most_late_ms"}, "triggers": {TYPE: n}, "by": [{"name", "plays"}], "listeners": {"checked", "with_silent", "list": [{"name", "expected", "heard", "missed", "last_heard_ms", "worst_loss_percent"}]}, "connection": {"known_ms", "up_ms", "uptime", "outages": [{"from_ms", "to_ms"}]}, "from_ms", "to_ms"}`. Zones are the ones each group is in now. Uptime counts only time the panel was running, from `history/connection.jsonl`. A token limited to categories sees only theirs |
 | `GET /history.csv` | The same as a spreadsheet: started, ended (in the panel's time zone), announcement, name, state, trigger, by, groups, played, busy, failed, error |
 | `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
 | `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off", "panel", "history_days"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
@@ -446,6 +480,7 @@ only their runs.
 | `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
+| `GET /listeners` | The receivers `mcast serve`'s monitor hears now (`[{"group", "name", "cname", "about", "loss_percent", "last_heard_ms", "left"}]`), for choosing a zone's listeners; 404 if its monitor is off |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
 | `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error", "tags"}], "folders": [{"name", "hidden"}], "tags": [{"tag", "files"}]}`; `used_by` names the announcements (and "the defaults") that use a file; `audio` is `{"codec", "rate", "channels", "duration_s"}`, or `audio_error` says why the mcast server can't play it (`null` both with an mcast server before 0.5.5) |
 | `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. An upload must be audio the mcast server can play (`422` if not, and any old file stays); it replaces a file of that name, so announcements using it play the new one. Returns `{"name", "bytes", "audio"}` (`201`). `DELETE` is refused (`409`) while something uses it |

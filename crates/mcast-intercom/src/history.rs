@@ -4,7 +4,8 @@
 //! Days older than the config's `history_days` are deleted (0 keeps them all).
 //!
 //! The runner tells [`History::observe`] about every change; a run is written
-//! once, when it's over (missed schedules included).
+//! once, when it's over (missed schedules included) and, if its zones expect
+//! listeners, once it's known who heard it.
 
 use crate::now_ms;
 use crate::runner::{Change, Run};
@@ -114,7 +115,8 @@ impl History {
     /// and note when the mcast server comes and goes.
     pub fn observe(&self, c: &Change<'_>) {
         match c {
-            Change::Run(run) if run.state.is_over() => self.write(run),
+            // Once it's known who heard it, too.
+            Change::Run(run) if run.state.is_over() && !run.checking() => self.write(run),
             Change::Backend(status) => self.connection(Some(status.connected), status.since_ms),
             _ => {}
         }
@@ -387,7 +389,8 @@ impl History {
 /// What the Monitor tab shows, from `runs` (logged runs, any order):
 /// totals; plays a day (`days`: (date, start ms, end ms), oldest first); by
 /// announcement; by zone (`zones_of` names the zones, as (id, name), a
-/// group is in); how schedules kept time; and what started plays.
+/// group is in); how schedules kept time; what started plays; and, for
+/// zones that list them, which listeners heard plays and which missed them.
 pub fn summarize(
     runs: &[Value],
     days: &[(String, u64, u64)],
@@ -410,6 +413,18 @@ pub fn summarize(
     let (mut on_time, mut late, mut missed, mut worst_late) = (0u64, 0u64, 0u64, 0u64);
     let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
     let mut by: BTreeMap<String, u64> = BTreeMap::new();
+    #[derive(Default)]
+    struct Ear {
+        name: String,
+        expected: u64,
+        heard: u64,
+        missed: u64,
+        last_heard_ms: Option<u64>,
+        worst_loss: Option<f64>,
+    }
+    // By name, any case.
+    let mut ears: BTreeMap<String, Ear> = BTreeMap::new();
+    let (mut checked, mut with_silent) = (0u64, 0u64);
     for r in runs {
         let started = r["started_ms"].as_u64().unwrap_or(0);
         totals.add(r);
@@ -471,6 +486,42 @@ pub fn summarize(
         if let Some(b) = r["trigger"]["by"].as_str() {
             *by.entry(b.to_string()).or_default() += 1;
         }
+        let l = &r["listeners"];
+        // Only checks that finished and could tell.
+        if l.is_object() && l["checking"] != true && l["error"].is_null() {
+            checked += 1;
+            if l["silent"].as_array().is_some_and(|s| !s.is_empty()) {
+                with_silent += 1;
+            }
+            fn ear<'a>(ears: &'a mut BTreeMap<String, Ear>, name: &str) -> &'a mut Ear {
+                ears.entry(name.to_lowercase()).or_insert_with(|| Ear {
+                    name: name.to_string(),
+                    ..Default::default()
+                })
+            }
+            let heard: Vec<(&str, Option<f64>)> = l["heard"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|h| Some((h["name"].as_str()?, h["loss_percent"].as_f64())))
+                .collect();
+            for e in l["expected"].as_array().into_iter().flatten() {
+                let Some(name) = e.as_str() else { continue };
+                let e = ear(&mut ears, name);
+                e.expected += 1;
+                if !heard.iter().any(|(h, _)| h.eq_ignore_ascii_case(name)) {
+                    e.missed += 1;
+                }
+            }
+            for (name, loss) in heard {
+                let e = ear(&mut ears, name);
+                e.heard += 1;
+                e.last_heard_ms = e.last_heard_ms.max(Some(started));
+                if loss > e.worst_loss {
+                    e.worst_loss = loss;
+                }
+            }
+        }
     }
     let mut anns: Vec<Value> = anns
         .into_iter()
@@ -490,6 +541,9 @@ pub fn summarize(
         })
         .collect();
     zones.sort_by_key(|v| std::cmp::Reverse(v["sends"].as_u64().unwrap_or(0)));
+    let mut ears: Vec<Ear> = ears.into_values().collect();
+    // The ones missing the most first.
+    ears.sort_by_key(|e| (std::cmp::Reverse(e.missed), e.name.to_lowercase()));
     let mut by: Vec<(String, u64)> = by.into_iter().collect();
     by.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
     by.truncate(10);
@@ -505,6 +559,14 @@ pub fn summarize(
         "schedules": { "on_time": on_time, "late": late, "missed": missed, "late_after_ms": LATE_MS, "most_late_ms": worst_late },
         "triggers": kinds,
         "by": by.into_iter().map(|(name, plays)| json!({ "name": name, "plays": plays })).collect::<Vec<_>>(),
+        "listeners": {
+            "checked": checked,
+            "with_silent": with_silent,
+            "list": ears.into_iter().map(|e| json!({
+                "name": e.name, "expected": e.expected, "heard": e.heard, "missed": e.missed,
+                "last_heard_ms": e.last_heard_ms, "worst_loss_percent": e.worst_loss,
+            })).collect::<Vec<_>>(),
+        },
     })
 }
 
@@ -643,6 +705,44 @@ mod tests {
         r.started_ms = started_ms;
         r.state = state;
         r
+    }
+
+    #[test]
+    fn waits_to_write_a_run_until_its_listeners_are_known() {
+        use crate::runner::{HeardBy, Listeners};
+        let d = dir();
+        let h = History::new(d.clone(), 0);
+        let t0 = 1_800_000_000_000;
+        let mut r = run(1, t0, RunState::Done);
+        r.listeners = Some(Box::new(Listeners {
+            checking: true,
+            expected: vec!["Lobby".into()],
+            ..Listeners::default()
+        }));
+        h.observe(&Change::Run(&r));
+        let all = |h: &History| {
+            h.query(
+                &Query {
+                    limit: 10,
+                    ..Default::default()
+                },
+                |_| true,
+            )
+            .0
+        };
+        assert!(all(&h).is_empty(), "not while still listening");
+        let l = r.listeners.as_mut().unwrap();
+        l.checking = false;
+        l.heard = vec![HeardBy {
+            name: "Lobby".into(),
+            loss_percent: Some(0.5),
+        }];
+        h.observe(&Change::Run(&r));
+        h.observe(&Change::Run(&r));
+        let runs = all(&h);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["listeners"]["heard"][0]["name"], "Lobby");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
@@ -802,6 +902,58 @@ mod tests {
         );
         assert_eq!(u["outages"], json!([{"from_ms": 600, "to_ms": 700}]));
         assert_eq!(uptime(&[], 0, 10)["uptime"], Value::Null);
+    }
+
+    #[test]
+    fn summarizes_who_heard_plays() {
+        let r = |started: u64, listeners: Value| {
+            json!({"id": started, "announcement": "a", "name": "A", "started_ms": started,
+                   "state": "done", "trigger": {"type": "manual"}, "targets": [],
+                   "listeners": listeners})
+        };
+        let runs = vec![
+            r(
+                10,
+                json!({"checking": false, "expected": ["Lobby", "Hall"],
+                       "heard": [{"name": "lobby", "loss_percent": 1.0}, {"name": "Kitchen"}],
+                       "silent": ["Hall"]}),
+            ),
+            r(
+                20,
+                json!({"checking": false, "expected": ["Lobby", "Hall"],
+                       "heard": [{"name": "Lobby", "loss_percent": 3.0}, {"name": "Hall"}],
+                       "silent": []}),
+            ),
+            // Couldn't check, or still checking: not counted.
+            r(
+                30,
+                json!({"checking": false, "expected": ["Lobby"], "heard": [], "silent": [],
+                       "error": "the mcast server's monitor is off"}),
+            ),
+            r(
+                40,
+                json!({"checking": true, "expected": ["Lobby"], "heard": [], "silent": []}),
+            ),
+            // No listeners expected.
+            r(50, Value::Null),
+        ];
+        let m = summarize(&runs, &[], &|_| vec![]);
+        let l = &m["listeners"];
+        assert_eq!(l["checked"], 2);
+        assert_eq!(l["with_silent"], 1);
+        let list = l["list"].as_array().unwrap();
+        let names: Vec<_> = list.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        // Most missed first.
+        assert_eq!(names, ["Hall", "Kitchen", "Lobby"]);
+        assert_eq!(list[0]["expected"], 2);
+        assert_eq!(list[0]["heard"], 1);
+        assert_eq!(list[0]["missed"], 1);
+        assert_eq!(list[0]["last_heard_ms"], 20);
+        assert_eq!(list[1]["expected"], 0);
+        assert_eq!(list[1]["heard"], 1);
+        assert_eq!(list[2]["heard"], 2);
+        assert_eq!(list[2]["missed"], 0);
+        assert_eq!(list[2]["worst_loss_percent"], 3.0);
     }
 
     #[test]

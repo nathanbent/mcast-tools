@@ -11,6 +11,7 @@ const EVENTS = [
   ["run_ended", "One finished or was stopped"],
   ["run_failed", "One couldn't play (all groups busy or failed)"],
   ["schedule_missed", "A schedule was missed"],
+  ["listener_silent", "A speaker expected to hear one didn't"],
   ["backend_down", "The mcast server became unreachable"],
   ["backend_up", "It's back"],
 ];

@@ -1,7 +1,9 @@
 //! A fake mcast server for tests: jobs that run until told to end, one
 //! sender per group, and events delivered synchronously.
 
-use crate::backend::{Backend, BackendError, BackendResult, Entry, Feed, FeedFn, Job, MediaFile};
+use crate::backend::{
+    Backend, BackendError, BackendResult, Entry, Feed, FeedFn, Job, Listener, MediaFile,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
@@ -25,6 +27,8 @@ pub(crate) struct FakeState {
     folders: BTreeSet<String>,
     /// Live audio streamed into each job, once its stream ended.
     pub(crate) live_bytes: HashMap<u64, usize>,
+    /// What the monitor hears; `None` is a server without one (404).
+    pub(crate) listeners: Option<Vec<Listener>>,
 }
 
 impl FakeState {
@@ -321,6 +325,7 @@ impl Backend for Fake {
                 state: "running".into(),
                 group: Some(group.clone()),
                 error: None,
+                ssrc: Some(0x5000_0000 + st.next as u32),
             };
             st.jobs.insert(job.id, (group, job.clone()));
             st.requests.push(request.clone());
@@ -349,6 +354,16 @@ impl Backend for Fake {
                 message: format!("no job {id}"),
                 job: None,
             })
+    }
+
+    fn listeners(&self) -> BackendResult<Vec<Listener>> {
+        self.reachable()?;
+        self.st
+            .lock()
+            .unwrap()
+            .listeners
+            .clone()
+            .ok_or_else(|| err(404, "the monitor is off (started with --no-monitor)".into()))
     }
 
     fn stream_live(

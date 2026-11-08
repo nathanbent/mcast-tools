@@ -3,7 +3,7 @@
 import { api, follow, setToken, token } from "./api.js";
 import { themeButton } from "./themes.js";
 import { h, replace, toast } from "./dom.js";
-import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded, can, TABS } from "./store.js";
+import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded, onRunSettled, can, TABS } from "./store.js";
 import * as panel from "./panel.js";
 import * as history from "./history.js";
 import * as monitor from "./monitor.js";
@@ -213,6 +213,13 @@ async function start() {
     if (run.state === "done") toast(`"${run.name}" played to ${played} of ${run.targets.length} groups`, "ok");
     else if (run.state === "failed") toast(`"${run.name}": ${run.error ?? "failed"}`, "error");
     else if (run.state === "missed") toast(`"${run.name}": ${run.error}`, "info");
+  });
+  // A speaker expected to hear a play didn't (seen live, not on loading).
+  onRunSettled((run, before) => {
+    const silent = run.listeners?.silent ?? [];
+    if (!before || !silent.length) return;
+    const who = silent.length === 1 ? silent[0] : `${silent.slice(0, -1).join(", ")} and ${silent.at(-1)}`;
+    toast(`"${run.name}": ${who} didn't hear it`, "error");
   });
 
   let first = true;

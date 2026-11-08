@@ -894,6 +894,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("PUT", "/media-hidden"),
     ("PUT", "/media-tags"),
     ("GET", "/phonebook"),
+    ("GET", "/listeners"),
     ("GET", "/chimes"),
     ("PUT", "/chimes"),
     ("GET", "/chimes/{name}/preview"),
@@ -2539,4 +2540,94 @@ async fn a_zone_a_part_uses_stays() {
     let (s, v) = p.call(Method::DELETE, "/zones/yard", None).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["error"].as_str().unwrap().contains("Gate"), "{v}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn says_which_listeners_heard_a_play() {
+    use crate::backend::Listener;
+    let p = panel(None);
+    p.set_up().await;
+    let heard = |name: &str, about: Option<u32>| Listener {
+        group: "239.1.1.1:5000".into(),
+        name: Some(name.into()),
+        cname: None,
+        about,
+        loss_percent: Some(0.0),
+        last_heard_ms: 500.0,
+        left: false,
+    };
+
+    // No monitor on the server: the list says so.
+    let (s, v) = p.call(Method::GET, "/listeners", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    p.fake.st.lock().unwrap().listeners = Some(vec![heard("Lobby", None)]);
+    let (s, v) = p.call(Method::GET, "/listeners", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v[0]["name"], "Lobby");
+
+    // The zone expects two; a name twice is refused.
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/zones/hall",
+            Some(
+                json!({"id": "hall", "name": "Hall", "targets": [{"group": "zone-1"}],
+                        "listeners": ["Lobby", "lobby"]}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/zones/hall",
+            Some(
+                json!({"id": "hall", "name": "Hall", "targets": [{"group": "zone-1"}],
+                        "listeners": ["Lobby", "Office"]}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["listeners"], json!(["Lobby", "Office"]));
+
+    let (_, run) = p.call(Method::POST, "/announcements/bell/play", None).await;
+    assert_eq!(run["listeners"]["checking"], true, "{run}");
+    let id = run["id"].as_u64().unwrap();
+    let job = run["targets"][0]["job"].as_u64().unwrap();
+    let ssrc = 0x5000_0000 + job as u32;
+    p.fake.st.lock().unwrap().listeners = Some(vec![heard("Lobby", Some(ssrc))]);
+    p.fake.finish_all();
+
+    // Office never reports: after the wait, it's named as silent.
+    let until = Instant::now() + Duration::from_secs(20);
+    let run = loop {
+        let (_, r) = p.call(Method::GET, &format!("/runs/{id}"), None).await;
+        if r["listeners"]["checking"] == false {
+            break r;
+        }
+        assert!(Instant::now() < until, "still checking: {r}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(run["state"], "done");
+    assert_eq!(run["listeners"]["heard"][0]["name"], "Lobby");
+    assert_eq!(run["listeners"]["silent"], json!(["Office"]));
+    assert_eq!(run["targets"][0]["heard"], json!(["Lobby"]));
+
+    // History has it, with who heard it; the monitor counts it.
+    // The run is written once its check ends.
+    let until = Instant::now() + Duration::from_secs(5);
+    let v = loop {
+        let (_, v) = p.call(Method::GET, "/history", None).await;
+        if let Some(r) = v["runs"].as_array().filter(|r| !r.is_empty()) {
+            break r.clone();
+        }
+        assert!(Instant::now() < until, "not in the history");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(v[0]["listeners"]["silent"], json!(["Office"]));
+    let (_, m) = p.call(Method::GET, "/monitor?days=7", None).await;
+    assert_eq!(m["listeners"]["checked"], 1, "{m}");
+    assert_eq!(m["listeners"]["with_silent"], 1);
+    assert_eq!(m["listeners"]["list"][0]["name"], "Office");
+    assert_eq!(m["listeners"]["list"][0]["missed"], 1);
 }

@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, replace, toast, saved } from "./dom.js";
-import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow, can, panelAnnouncements, onRunEnded } from "./store.js";
+import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow, can, panelAnnouncements, onRunSettled } from "./store.js";
 import { ordered, sortableList, saveLayouts, arrangeDialog } from "./layout.js";
 import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
@@ -225,7 +225,7 @@ export function mount(el) {
   if (look().show_stats) loadStats();
   setInterval(() => { if (look().show_stats) loadStats(); }, 60000);
   // A play that ends changes the numbers.
-  onRunEnded(() => { if (look().show_stats) loadStats(); });
+  onRunSettled(() => { if (look().show_stats) loadStats(); });
   subscribe(["server"], render);
   // A tag that's gone shows everything.
   if (filter && !state.view.tag && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";

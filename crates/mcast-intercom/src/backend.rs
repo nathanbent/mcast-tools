@@ -42,12 +42,46 @@ pub struct Job {
     pub group: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// The RTP SSRC it sends with (servers from 0.6). Listeners name it.
+    #[serde(default)]
+    pub ssrc: Option<u32>,
 }
 
 impl Job {
     /// Whether the job has ended.
     pub fn is_over(&self) -> bool {
         matches!(self.state.as_str(), "finished" | "stopped" | "failed")
+    }
+}
+
+/// A receiver heard on a watched group's RTCP port: the parts of the
+/// monitor's `listeners` the panel reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Listener {
+    pub group: String,
+    /// The name it gives (`mcast receive --name`, else its hostname).
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub cname: Option<String>,
+    /// SSRC of the stream it's hearing (the last one, once it's over).
+    #[serde(default)]
+    pub about: Option<u32>,
+    #[serde(default)]
+    pub loss_percent: Option<f64>,
+    #[serde(default)]
+    pub last_heard_ms: f64,
+    #[serde(default)]
+    pub left: bool,
+}
+
+impl Listener {
+    /// What to call it: its name, else its CNAME.
+    pub fn label(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .or(self.cname.as_deref())
+            .filter(|n| !n.trim().is_empty())
     }
 }
 
@@ -129,6 +163,9 @@ pub trait Backend: Send + Sync + 'static {
     /// Stop a job; returns once it has wound down (or the server gave up waiting).
     fn stop_job(&self, id: u64) -> BackendResult<()>;
     fn job(&self, id: u64) -> BackendResult<Job>;
+    /// Receivers the server's monitor hears reporting (404 when it was
+    /// started with `--no-monitor`; empty from servers before 0.6).
+    fn listeners(&self) -> BackendResult<Vec<Listener>>;
     /// Follow the server's events in the background until `on` returns false.
     fn follow(&self, on: FeedFn);
     /// Stream audio (16-bit little-endian PCM) into a sender with a live
@@ -268,6 +305,15 @@ impl Backend for HttpBackend {
 
     fn phonebook(&self) -> BackendResult<Vec<Entry>> {
         self.get("/phonebook")
+    }
+
+    fn listeners(&self) -> BackendResult<Vec<Listener>> {
+        #[derive(Deserialize)]
+        struct Snapshot {
+            #[serde(default)]
+            listeners: Vec<Listener>,
+        }
+        Ok(self.get::<Snapshot>("/monitor")?.listeners)
     }
 
     fn media_files(&self) -> BackendResult<Vec<MediaFile>> {

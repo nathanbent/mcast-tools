@@ -497,6 +497,18 @@ pub(super) async fn phonebook(State(s): State<AppState>) -> ApiResult<Json<Vec<E
         .map_err(bad_gateway)
 }
 
+/// Receivers the mcast server's monitor hears now, for choosing a zone's
+/// expected listeners. 404 if its monitor is off.
+pub(super) async fn listeners(
+    State(s): State<AppState>,
+) -> ApiResult<Json<Vec<crate::backend::Listener>>> {
+    let b = s.0.backend.clone();
+    tokio::task::spawn_blocking(move || b.listeners())
+        .await?
+        .map(Json)
+        .map_err(passed_on)
+}
+
 /// Errors from the mcast server: its own status for "no such chime" and
 /// "bad request", else 502.
 pub(super) fn passed_on(e: crate::BackendError) -> ApiError {

@@ -25,6 +25,11 @@ impl Drop for Server {
 }
 
 fn server() -> Server {
+    server_watching(None)
+}
+
+/// With the monitor on, watching these groups.
+fn server_watching(monitor: Option<Vec<std::net::SocketAddr>>) -> Server {
     let dir = std::env::temp_dir().join(format!(
         "mcast-intercom-server-test-{}",
         mcast_core::random_u32()
@@ -41,7 +46,7 @@ fn server() -> Server {
         media_dir: dir.join("media"),
         interface: mcast_core::Interface::Any,
         sap_groups: mcast_core::sap::default_listen_groups(),
-        monitor: None,
+        monitor,
         max_upload: 1 << 20,
         phonebook: dir.join("phonebook.conf"),
         chimes: dir.join("chimes.json"),
@@ -94,6 +99,7 @@ fn config() -> Config {
     Config {
         zones: vec![
             Zone {
+                listeners: Vec::new(),
                 site: None,
                 id: "both".into(),
                 name: "Both".into(),
@@ -105,6 +111,7 @@ fn config() -> Config {
                 ],
             },
             Zone {
+                listeners: Vec::new(),
                 site: None,
                 id: "busy".into(),
                 name: "Busy".into(),
@@ -442,4 +449,64 @@ fn plays_a_playlist_and_a_part_together() {
     let run = wait_for(&r, run.id, "both to end", |r| r.state.is_over());
     assert_eq!(run.state, RunState::Done, "{run:#?}");
     assert!(run.targets.iter().all(|t| t.played == 1), "{run:#?}");
+}
+
+#[test]
+fn says_which_receivers_heard_a_page() {
+    let group: std::net::SocketAddr = "239.255.77.74:5004".parse().unwrap();
+    let srv = server_watching(Some(vec![group]));
+    let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
+    let r = Runner::with_listen_timing(
+        backend,
+        |_| {},
+        Duration::from_millis(200),
+        Duration::from_secs(3),
+    );
+
+    // A speaker called Lobby; Hall is expected too, but isn't running.
+    let jobs = mcast_control::Jobs::new(mcast_core::Interface::Any, Arc::new(|_| {}));
+    let wav = srv.dir.join("lobby.wav");
+    let lobby = jobs
+        .start_receiver(
+            mcast_control::request::RecvRequest {
+                group: Some(group),
+                name: Some("Lobby".into()),
+                rtcp_interval_s: 0.5,
+                sink: mcast_control::request::SinkRequest::Wav { path: wav },
+                ..Default::default()
+            },
+            &[],
+        )
+        .unwrap();
+
+    let mut cfg = config();
+    cfg.zones.push(Zone {
+        listeners: vec!["Lobby".into(), "Hall".into()],
+        site: None,
+        id: "ears".into(),
+        name: "Ears".into(),
+        targets: vec![Target {
+            group: group.to_string(),
+            encoding: Some("g711u".into()),
+            ..Default::default()
+        }],
+    });
+    let mut ding = cfg.announcements[0].clone();
+    ding.id = "ears".into();
+    ding.name = "ears".into();
+    ding.zones = vec!["ears".into()];
+    cfg.announcements.push(ding);
+
+    let run = r.play(&cfg, "ears", Trigger::Manual { by: None }).unwrap();
+    assert!(run.listeners.as_ref().unwrap().checking);
+    let run = wait_for(&r, run.id, "the check to end", |r| {
+        r.state.is_over() && !r.checking()
+    });
+    assert_eq!(run.state, RunState::Done, "{run:#?}");
+    let l = run.listeners.unwrap();
+    assert!(l.error.is_none(), "{l:?}");
+    let heard: Vec<_> = l.heard.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(heard, ["Lobby"], "{l:?}");
+    assert_eq!(l.silent, ["Hall"]);
+    jobs.stop(lobby.id, Duration::from_secs(5));
 }

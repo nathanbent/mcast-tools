@@ -73,26 +73,30 @@ In this order. Each numbered step is its own PR unless it says otherwise.
 
 The docs fixes above go in first.
 
-### 1. Delivery confirmation ("probes"), roadmap item 11, in two PRs
+### 1. Delivery confirmation ("probes"), roadmap item 11: built
 
-"Probes" means speakers running `mcast receive`; the owner decided this.
+On `claude/vibrant-knuth-34bpdf`, on top of #38. "Probes" means speakers running `mcast receive --name`; the owner decided this.
 
-**Correction to the first handoff:**
-- `mcast serve`'s monitor does track listeners: `mcast_monitor::Monitor::listeners()` returns `ListenerReport`s with name, cname, loss, jitter, last heard and BYE.
-- It watches configured groups and SAP-announced streams, so the panel's sends are covered.
-- But `MonitorSnapshot` (`crates/mcast-control/src/watch.rs`) has only `groups` and `streams`, so `GET /api/v1/monitor` never shows listeners. Only the `mcast monitor` CLI prints them.
-
-**1a. Core (backwards compatible).** Built on `claude/vibrant-knuth-34bpdf`: `GET /api/v1/monitor` and the `monitor` event now carry `listeners` (`docs/api.md`), tested with a named receiver on a real stream. Audio send jobs also report their `ssrc`, which matches a listener's `about`, so the panel can tell which listeners heard its own page; no `tag` on send requests is needed.
-- Add `listeners: Vec<ListenerRow>` to `MonitorSnapshot`. Each row has the group, ssrc, from, name or cname, the ssrc it reports `about`, loss, jitter, last heard ms and `left`.
-- Test with a sender and an `mcast receive --name` on loopback.
+**1a. Core (backwards compatible):**
+- `GET /api/v1/monitor` and the `monitor` event carry `listeners`: each receiver heard on a watched group's RTCP port, with the SSRC it hears (`about`).
+- Audio send jobs report their `ssrc`, so a listener's `about` ties it to a page exactly. No `tag` on send requests was needed.
+- Documented in `docs/api.md`. Tested in `mcast-control/src/watch.rs` with a real sender and a named receiver.
 
 **1b. Panel:**
-- A zone gains `expected_listeners` (the names `mcast receive --name` sets). Edit them in the Zones tab, offering the names currently heard.
-- After each run, record per zone which expected listeners reported on that stream: `heard: {expected, heard, silent}` in the history entry.
-- "Now playing" and History show "3/4 heard it", naming the silent ones.
-- A new `listener_silent` webhook event.
-- The Monitor tab gets a listeners table (runs expected, heard and missed, and last heard).
-- The Zones tab shows each expected listener's last heard time.
+- **Zones:** a zone's `listeners` (names). The Zones tab offers the names the mcast server hears now (`GET /listeners`).
+- **Checking runs:** the runner checks every run to zones that list listeners. It asks `/monitor` every second while the run plays and for up to 12 s after it ends, stopping early once everyone expected was heard.
+- **Results:** the run gets `listeners: {checking, expected, heard [{name, loss_percent}], silent, error}`, and each target its `expected` and `heard`.
+- **Where it shows:**
+  - History waits for the check before writing the run.
+  - A `listener_silent` webhook, and a toast on the page.
+  - Run cards say "Heard by 1 of 2 · silent: Office".
+  - The Monitor tab has a Speakers table and a "Heard by every speaker" tile.
+- **The monitor off (or unreachable)** sets `listeners.error`, and nobody is called silent.
+- **Tests:**
+  - Runner, history, webhook and summary unit tests, plus an API test, against the fake.
+  - An end-to-end test in `tests/server.rs`: a real `mcast serve` with its monitor on and a real named receiver.
+  - Checked by hand in a browser with the real binaries: the zone form, the toast, History and Monitor, in light and dark, at desktop and phone widths.
+- **Not done (small):** showing each expected listener's last-heard time in the Zones list.
 
 ### 2. Backup and restore, roadmap item 13
 
@@ -132,7 +136,7 @@ Then release v0.6.0.
 
 ## Questions still open for the owner
 
-1. Probes: how much loss still counts as "heard it"? Should listeners be checked between runs, when nothing plays? `mcast receive` sends reports only while receiving, so that may need a keep-alive.
+1. Probes: how much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added. Should listeners be checked between runs too? Receivers report every few seconds even when idle (`about` is then `null`), so a "speaker offline" alert is possible.
 2. GPIO: a small ioctl wrapper of our own, or the `gpiocdev` crate?
 3. Backup: `.tar.gz` with the sounds (a new `tar` dependency), or JSON only?
 4. Text pages in playlists: displays, TTS, or both?

@@ -49,6 +49,7 @@ fn config() -> Config {
     Config {
         zones: vec![
             Zone {
+                listeners: Vec::new(),
                 site: None,
                 id: "up".into(),
                 name: "Upstairs".into(),
@@ -63,12 +64,14 @@ fn config() -> Config {
                 ],
             },
             Zone {
+                listeners: Vec::new(),
                 site: None,
                 id: "down".into(),
                 name: "Downstairs".into(),
                 targets: vec![target("239.1.1.1:5000"), target("nobody")],
             },
             Zone {
+                listeners: Vec::new(),
                 site: None,
                 id: "two".into(),
                 name: "Just two".into(),
@@ -511,4 +514,183 @@ fn saves_and_loads() {
     std::fs::write(&path, "{\"zones\": [").unwrap();
     assert!(store::load(&path).is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- who heard it ----
+
+fn heard_by(
+    group: &str,
+    name: &str,
+    about: Option<u32>,
+    loss: Option<f64>,
+) -> crate::backend::Listener {
+    crate::backend::Listener {
+        group: group.into(),
+        name: Some(name.into()),
+        cname: None,
+        about,
+        loss_percent: loss,
+        last_heard_ms: 100.0,
+        left: false,
+    }
+}
+
+/// "two" goes to a zone expecting Lobby and Hall.
+fn listening_config() -> Config {
+    let mut cfg = config();
+    cfg.zones[2].listeners = vec!["Lobby".into(), "Hall".into()];
+    cfg
+}
+
+fn listening_runner(fake: &Arc<Fake>, grace: Duration) -> Runner {
+    Runner::with_listen_timing(fake.clone(), |_| {}, Duration::from_millis(20), grace)
+}
+
+/// The SSRC the fake gives a job.
+fn ssrc_of(run: &Run, target: usize) -> u32 {
+    0x5000_0000 + run.targets[target].job.unwrap() as u32
+}
+
+#[test]
+fn says_who_heard_a_run_and_who_stayed_silent() {
+    let fake = Arc::new(Fake::default());
+    fake.st.lock().unwrap().listeners = Some(Vec::new());
+    let r = listening_runner(&fake, Duration::from_millis(300));
+    let run = r
+        .play(&listening_config(), "two", Trigger::Manual { by: None })
+        .unwrap();
+    let l = run.listeners.as_ref().expect("its zone expects listeners");
+    assert!(l.checking);
+    assert_eq!(run.targets[0].expected, ["Lobby", "Hall"]);
+    let ssrc = ssrc_of(&run, 0);
+    fake.st.lock().unwrap().listeners = Some(vec![
+        heard_by("239.1.1.2:5000", "lobby", Some(ssrc), Some(0.0)),
+        // Not expected, but it heard it.
+        heard_by("239.1.1.2:5000", "Kitchen", Some(ssrc), None),
+        // Hearing something else.
+        heard_by("239.1.1.2:5000", "Hall", Some(ssrc + 1), None),
+    ]);
+    wait_for(&r, run.id, "Lobby to be heard", |r| {
+        r.listeners.as_ref().unwrap().heard.len() == 2
+    });
+    // Worse loss later is kept.
+    fake.st.lock().unwrap().listeners = Some(vec![heard_by(
+        "239.1.1.2:5000",
+        "Lobby",
+        Some(ssrc),
+        Some(2.5),
+    )]);
+    wait_for(&r, run.id, "the loss", |r| {
+        r.listeners.as_ref().unwrap().heard[0].loss_percent == Some(2.5)
+    });
+    // Still listening while it plays, whoever is missing.
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(r.get(run.id).unwrap().checking());
+
+    fake.finish_all();
+    let done = wait_for(&r, run.id, "the check to end", |r| {
+        r.state.is_over() && !r.checking()
+    });
+    let l = done.listeners.unwrap();
+    assert_eq!(l.expected, ["Lobby", "Hall"]);
+    let names: Vec<_> = l.heard.iter().map(|h| h.name.as_str()).collect();
+    assert_eq!(names, ["lobby", "Kitchen"]);
+    assert_eq!(l.silent, ["Hall"]);
+    assert!(l.error.is_none());
+    assert_eq!(done.targets[0].heard, ["lobby", "Kitchen"]);
+    let json = serde_json::to_value(r.get(run.id).unwrap()).unwrap();
+    assert_eq!(json["listeners"]["silent"], json!(["Hall"]));
+    assert_eq!(json["targets"][0]["expected"], json!(["Lobby", "Hall"]));
+}
+
+#[test]
+fn stops_listening_once_everyone_expected_heard_it() {
+    let fake = Arc::new(Fake::default());
+    fake.st.lock().unwrap().listeners = Some(Vec::new());
+    // A long wait, which hearing everyone cuts short.
+    let r = listening_runner(&fake, Duration::from_secs(60));
+    let run = r
+        .play(&listening_config(), "two", Trigger::Manual { by: None })
+        .unwrap();
+    let ssrc = ssrc_of(&run, 0);
+    fake.finish_all();
+    fake.st.lock().unwrap().listeners = Some(vec![
+        heard_by("239.1.1.2:5000", "Lobby", Some(ssrc), None),
+        heard_by("239.1.1.2:5000", "Hall", Some(ssrc), None),
+    ]);
+    let done = wait_for(&r, run.id, "the check to end", |r| !r.checking());
+    let l = done.listeners.unwrap();
+    assert!(l.silent.is_empty());
+    assert_eq!(l.heard.len(), 2);
+}
+
+#[test]
+fn a_server_without_a_monitor_says_so() {
+    let fake = Arc::new(Fake::default());
+    let r = listening_runner(&fake, Duration::from_secs(60));
+    let run = r
+        .play(&listening_config(), "two", Trigger::Manual { by: None })
+        .unwrap();
+    let done = wait_for(&r, run.id, "the check to end", |r| !r.checking());
+    let l = done.listeners.unwrap();
+    assert!(l.error.unwrap().contains("monitor is off"));
+    // Not knowing isn't silence: nobody is flagged.
+    assert!(l.silent.is_empty() && l.heard.is_empty());
+}
+
+#[test]
+fn runs_to_zones_without_listeners_arent_checked() {
+    let fake = Arc::new(Fake::default());
+    let r = listening_runner(&fake, Duration::from_secs(60));
+    let run = r
+        .play(&listening_config(), "lunch", Trigger::Manual { by: None })
+        .unwrap();
+    assert!(run.listeners.is_none());
+    fake.finish_all();
+    let done = wait_for(&r, run.id, "it to end", |r| r.state.is_over());
+    assert!(!done.checking());
+    assert!(serde_json::to_value(&done)
+        .unwrap()
+        .get("listeners")
+        .is_none());
+}
+
+#[test]
+fn a_run_that_sent_nothing_isnt_waited_on() {
+    let fake = Arc::new(Fake::default());
+    fake.st.lock().unwrap().listeners = Some(Vec::new());
+    let r = listening_runner(&fake, Duration::from_secs(60));
+    // Something else holds the group, and "two" may not take it over.
+    let other = fake
+        .start_sender(&json!({"group": "239.1.1.2:5000"}))
+        .unwrap();
+    let run = r
+        .play(&listening_config(), "two", Trigger::Manual { by: None })
+        .unwrap();
+    let done = wait_for(&r, run.id, "the check to end", |r| {
+        r.state.is_over() && !r.checking()
+    });
+    assert_eq!(done.state, RunState::Failed);
+    let l = done.listeners.unwrap();
+    // Its speakers weren't sent anything to hear.
+    assert!(l.expected.is_empty() && l.silent.is_empty());
+    fake.end(other.id, "finished");
+}
+
+#[test]
+fn zones_check_their_listeners() {
+    let mut cfg = listening_config();
+    assert!(cfg.validate().is_ok());
+    cfg.zones[2].listeners = vec!["Lobby".into(), "LOBBY".into()];
+    assert!(cfg.validate().unwrap_err().to_string().contains("twice"));
+    cfg.zones[2].listeners = vec![" Lobby".into()];
+    assert!(cfg.validate().is_err());
+    cfg.zones[2].listeners = vec![String::new()];
+    assert!(cfg.validate().is_err());
+    cfg.zones[2].listeners = (0..101).map(|i| format!("s{i}")).collect();
+    assert!(cfg
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("more than"));
 }
