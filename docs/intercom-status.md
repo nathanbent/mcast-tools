@@ -1,8 +1,9 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, at the end of a second session. That session
-checked the first one's work, then built everything left on the v0.6.0
-roadmap. Read this first, then `intercom-roadmap.md`, which has the full plan
+Last updated 2026-11-08, late in a second session. That session checked the
+first one's work, then built everything left on the v0.6.0 roadmap, plus two
+follow-ups: last-heard times in the Zones list, and alerts when a speaker
+goes offline between plays. Read this first, then `intercom-roadmap.md`, which has the full plan
 and what each item became.
 
 ## Where things stand
@@ -14,11 +15,14 @@ only its own feature.
 | PR | Branch | What | Based on |
 |---|---|---|---|
 | nathanbent/mcast-tools#38 | `claude/intelligent-hypatia-awklrl` | v0.5.5: tokens, triggers, webhooks, sounds, files, playlists, history, monitor, Panel organizing, kiosks | `main` |
-| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play (item 11) | #38 |
+| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
 | nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
 | nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
 
-- **State:** all four are open, with no review comments, waiting on the owner. CI was green on #38, #43 and #44 at their last pushes. On #45, `shellcheck` passed and the Rust job was still running when this was written.
+- **State:** all four are open, with no merge conflicts and no review comments, waiting on the owner.
+  - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
+  - On #45 (`dadf4c0`), `shellcheck` passed and the Rust job was still running when this was written. The same checks pass locally there.
+- **Changes low in the stack are merged up:** a fix or follow-up on #43 is merged into #44's branch, then #44's into #45's, so the PRs stay consistent. Conflicts so far were neighbouring additions (routes, events, tests, docs), resolved by keeping both. After one, check every `#[tokio::test]` attribute survived: clippy's dead-code error caught one that didn't.
 - **Merging:** merge them in order (#38, then #43, #44, #45). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
 - **`main`** is at v0.5.4 and was last merged into #38 at that version. If `main` moves, merge it into #38's branch and carry it up the stack (merge each branch into the next). Conflicts so far were small, in `announcements.js` and `talk.js`.
 - **After merging:** release v0.5.5 (#38), then v0.6.0 (the rest), or all of it as v0.6.0.
@@ -27,7 +31,7 @@ only its own feature.
 ## Checked
 
 - **At the start of the session,** on #38's head (`6908d0f`): fmt, clippy (`-D warnings`) and `cargo test --workspace` all passed (271 tests), and GitHub CI was green. Every item listed below is in the code, with no TODOs left.
-- **At the top of the stack** (#45, `5157d25`), the same checks pass: 296 tests.
+- **At the top of the stack** (#45, `dadf4c0`), the same checks pass: 300 tests. #43's branch alone has 287.
 - **Docs** that had fallen behind the code were fixed in #38: the roadmap's status, item 9 (the Panel is arrangeable too), item 11 (the core didn't expose listener reports yet), and `intercom-tokens.md` (history is persisted).
 
 ## What's built
@@ -86,9 +90,17 @@ The v0.5.5 items, plus requests that came up along the way:
   - History writes a checked run once the check ends.
   - A `listener_silent` webhook, a toast, "Heard by 1 of 2 · silent: Office" on run cards, and a Speakers table on the Monitor tab.
   - If the monitor is off or unreachable, `listeners.error` says so and nobody is called silent.
-- **Tests:** unit and API tests against the fake, and an end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver. Checked in a browser with the real binaries.
-- **The Zones list** shows each expected listener's state: reporting now or offline (from `GET /speakers`), and when it last heard a page (from the history, over 30 days).
-- **Speakers going offline between plays** (`crate::presence`): the panel asks the monitor every 10 s. A speaker missing for a minute is offline: a `listener_offline` webhook, a toast and the Panel's stats strip; `listener_online` when it's back. Nothing is called offline while the monitor can't be asked.
+- **The Zones list** shows each expected listener with a dot: reporting, offline (and since when), or checking. It also says when the listener last heard a page, from the history over 30 days.
+- **Speakers going offline between plays** (`crate::presence`):
+  - The panel asks the monitor every 10 s (`POLL`).
+  - A speaker missing for a minute (`OFFLINE_AFTER`) is offline: a `listener_offline` webhook, a toast, and "Speakers: Office offline" on the Panel's stats strip.
+  - When it's back: `listener_online` and a toast.
+  - The state is at `GET /speakers` and in the `speakers` event.
+  - Nothing is called offline while the monitor can't be asked.
+- **Tests:**
+  - Unit and API tests against the fake.
+  - An end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver.
+  - Checked in a browser with the real binaries: the alerts with real receivers (one never running, one stopped and restarted) and a local webhook receiver.
 
 ### In #44: backup and restore (roadmap item 13)
 
@@ -120,7 +132,9 @@ The v0.5.5 items, plus requests that came up along the way:
 ## What's next
 
 1. **The owner reviews and merges** #38, #43, #44 and #45, in that order.
-2. **Try the hardware:** a button on a Pi (#45), and delivery confirmation with real speakers (#43).
+2. **Try the hardware:**
+   - A button on a Pi (#45).
+   - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
 3. **Release.**
 4. **Text pages in playlists:**
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
@@ -140,6 +154,7 @@ The v0.5.5 items, plus requests that came up along the way:
 4. **GPIO choices to confirm (#45):**
    - An input plays at its announcement's priority, with no per-input priority.
    - Re-pressing while it plays is ignored, not restarted.
+5. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
 
 ## How to work on it
 
@@ -157,9 +172,10 @@ The v0.5.5 items, plus requests that came up along the way:
   - Page JS builds DOM with `h()`, never `innerHTML`. The strict CSP allows no inline scripts or style attributes; set styles through `el.style`.
   - Shared page helpers:
     - `layout.js`: `arrangeable`, `sortableList`, `arrangeDialog`.
-    - `store.js`: `onRunEnded` (as a run ends), `onRunSettled` (once it's in the history, after any listener check), `panelAnnouncements`, `can`, `TABS`.
+    - `store.js`: `onRunEnded` (as a run ends), `onRunSettled` (once it's in the history, after any listener check), `onSpeakersChanged`, `panelAnnouncements`, `can`, `TABS`.
     - `editor.js`: `mountEditor`, `mediaFilter`, `colorSelect`.
 - **Test helpers:**
+  - `presence::Presence::start` takes the poll and offline times, so tests can shorten them.
   - `crate::fake::Fake` is a fake mcast server. Its `listeners` field sets what `/monitor` reports, and its jobs' `ssrc` is `0x5000_0000 + job id`.
   - `Runner::with_listen_timing` shortens the listener check's waits.
   - `inputs::FakePins` with `AppState::with_pins` presses GPIO pins.
