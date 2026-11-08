@@ -4,6 +4,7 @@ description = "Run senders, receivers, discovery and monitoring as managed jobs;
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 anyhow.workspace = true

@@ -117,9 +117,10 @@ jobs:
           mkdir dist
           dir=target/${{ matrix.target }}/release
           if [ "${{ runner.os }}" = Windows ]; then
-            7z a "dist/mcast-${{ matrix.target }}.zip" "./$dir/mcast.exe"
+            7z a "dist/mcast-${{ matrix.target }}.zip" "./$dir/mcast.exe" ./LICENSE
           else
-            tar -czf "dist/mcast-${{ matrix.target }}.tar.gz" -C "$dir" mcast
+            cp LICENSE "$dir/"
+            tar -czf "dist/mcast-${{ matrix.target }}.tar.gz" -C "$dir" mcast LICENSE
           fi
       - name: Smoke test
         if: matrix.target != 'x86_64-apple-darwin'

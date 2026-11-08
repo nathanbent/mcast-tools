@@ -4,6 +4,7 @@ description = "Intercom control panel for mcast serve: zones, announcements, pla
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # Only talks to `mcast serve` over HTTP: no dependency on the other mcast
 # crates, so it can move out of this workspace on its own.

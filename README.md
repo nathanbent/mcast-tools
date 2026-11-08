@@ -875,3 +875,7 @@ subcommand in the CLI.
 - Audio: PTP-aligned timestamps (AES67), resampling on playback, playing
   in step across receivers (using the RTCP clock mapping)
 - Other: ping/latency, relay/bridge between interfaces
+
+## License
+
+MIT: see [LICENSE](LICENSE).
