@@ -82,7 +82,7 @@ The docs fixes above go in first.
 - It watches configured groups and SAP-announced streams, so the panel's sends are covered.
 - But `MonitorSnapshot` (`crates/mcast-control/src/watch.rs`) has only `groups` and `streams`, so `GET /api/v1/monitor` never shows listeners. Only the `mcast monitor` CLI prints them.
 
-**1a. Core (backwards compatible):**
+**1a. Core (backwards compatible).** Built on `claude/vibrant-knuth-34bpdf`: `GET /api/v1/monitor` and the `monitor` event now carry `listeners` (`docs/api.md`), tested with a named receiver on a real stream.
 - Add `listeners: Vec<ListenerRow>` to `MonitorSnapshot`. Each row has the group, ssrc, from, name or cname, the ssrc it reports `about`, loss, jitter, last heard ms and `left`.
 - Test with a sender and an `mcast receive --name` on loopback.
 - A `tag` on send requests, echoed in `JobInfo`, is optional. Decide after 1a whether the group, the stream's ssrc and the run's time window match runs well enough without it.
