@@ -1,8 +1,8 @@
 // Zones: sets of multicast groups (phonebook names or addresses), each with
 // the codec and volume its speakers need.
 
-import { h, replace } from "./dom.js";
-import { state, siteName } from "./store.js";
+import { h, replace, ago } from "./dom.js";
+import { state, siteName, onRunSettled, subscribe } from "./store.js";
 import { api } from "./api.js";
 import { mountEditor, field, select, numberInput, num } from "./editor.js";
 
@@ -156,8 +156,55 @@ function form(z, save, cancel) {
       h("button", { type: "button", onclick: cancel }, "Cancel")));
 }
 
+// For the list: who is reporting to the mcast server's monitor now, and when
+// each speaker last heard a page (from the history, over HEARD_DAYS days).
+const HEARD_DAYS = 30;
+const heard = { live: null, liveError: null, lastPage: null };
+
+async function refreshHeard() {
+  const [live, monitor] = await Promise.allSettled([
+    api("GET", "/listeners"),
+    api("GET", `/monitor?days=${HEARD_DAYS}`),
+  ]);
+  if (live.status === "fulfilled") {
+    heard.live = new Set(live.value.filter((l) => !l.left).map((l) => (l.name || l.cname || "").toLowerCase()));
+    heard.liveError = null;
+  } else {
+    heard.live = null;
+    heard.liveError = live.reason.status === 404
+      ? "the mcast server's monitor is off (--no-monitor)"
+      : `can't ask the mcast server: ${live.reason.message}`;
+  }
+  if (monitor.status === "fulfilled") {
+    heard.lastPage = new Map((monitor.value.listeners?.list ?? [])
+      .filter((e) => e.last_heard_ms).map((e) => [e.name.toLowerCase(), e.last_heard_ms]));
+  }
+}
+
+// A zone's listeners, each with whether it's reporting now and when it last
+// heard a page.
+function listenersCell(z) {
+  if (!z.listeners?.length) return "—";
+  return h("ul", { class: "ears" }, z.listeners.map((name) => {
+    const key = name.toLowerCase();
+    const now = heard.live ? heard.live.has(key) : null;
+    const last = heard.lastPage?.get(key);
+    const page = heard.lastPage
+      ? last ? `heard a page ${ago(last)}` : `no page heard in ${HEARD_DAYS} days`
+      : null;
+    const live = now == null
+      ? heard.liveError ?? "checking…"
+      : now ? "reporting now" : "not reporting (off, or not running mcast receive)";
+    return h("li", { title: [live, page].filter(Boolean).join("; ") },
+      h("span", { class: `dot ${now == null ? "" : now ? "on" : "off"}`, "aria-hidden": "true" }),
+      name,
+      h("span", { class: "muted small" },
+        ` · ${now == null ? "?" : now ? "reporting" : "not reporting"}${page ? ` · ${page}` : ""}`));
+  }));
+}
+
 export function mount(el) {
-  mountEditor(el, {
+  const editor = mountEditor(el, {
     kind: "zone",
     path: "/zones",
     items: () => state.config.zones,
@@ -165,8 +212,16 @@ export function mount(el) {
       ["Name", (z) => z.name],
       ...((state.config.sites ?? []).length ? [["Site", (z) => (z.site ? siteName(z.site) : "—"), true]] : []),
       ["Groups", (z) => z.targets.map(describe).join(", "), true],
-      ["Listeners", (z) => (z.listeners?.length ? z.listeners.join(", ") : "—"), true],
+      ["Listeners", listenersCell, true],
     ],
     form,
   });
+  // Only worth asking while some zone lists listeners and the tab shows.
+  const wanted = () => state.config.zones.some((z) => z.listeners?.length) && !el.closest("[hidden]");
+  const update = () => { if (wanted()) refreshHeard().then(editor.render); };
+  update();
+  setInterval(update, 15000);
+  window.addEventListener("hashchange", () => { if (location.hash === "#zones") update(); });
+  onRunSettled(update);
+  subscribe(["config"], update);
 }

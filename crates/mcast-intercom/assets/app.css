@@ -592,3 +592,9 @@ nav.tabs .more-menu { position: fixed; z-index: 30; min-width: 170px; display: f
   padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 6px 20px rgb(0 0 0 / 0.15); }
 nav.tabs .more-menu[hidden] { display: none; }
 nav.tabs .more-menu button { text-align: left; width: 100%; }
+
+/* Zones: each expected listener, with whether it's reporting now */
+ul.ears { display: grid; gap: 2px; }
+ul.ears .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); vertical-align: middle; }
+ul.ears .dot.on { background: var(--ok); }
+ul.ears .dot.off { background: var(--bad); }

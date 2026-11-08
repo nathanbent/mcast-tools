@@ -87,7 +87,7 @@ The v0.5.5 items, plus requests that came up along the way:
   - A `listener_silent` webhook, a toast, "Heard by 1 of 2 · silent: Office" on run cards, and a Speakers table on the Monitor tab.
   - If the monitor is off or unreachable, `listeners.error` says so and nobody is called silent.
 - **Tests:** unit and API tests against the fake, and an end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver. Checked in a browser with the real binaries.
-- **Not done (small):** showing each expected listener's last-heard time in the Zones list.
+- **The Zones list** shows each expected listener's state: reporting now or not (from `GET /listeners`), and when it last heard a page (from the history, over 30 days).
 
 ### In #44: backup and restore (roadmap item 13)
 
@@ -128,7 +128,6 @@ The v0.5.5 items, plus requests that came up along the way:
    - Per-site webhook filters.
    - A webhook delivery log (the last N deliveries per hook).
    - Monitor charts per site.
-   - Last-heard times for a zone's listeners in the Zones list.
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
    - A "speaker offline" alert between plays: receivers report even when idle.
 
