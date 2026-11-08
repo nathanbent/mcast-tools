@@ -47,6 +47,8 @@ function defaults() {
     const endChime = chimeField("Chime after", d.end_chime, "end_chime", { hint: usage("end_chime") });
     const mode = select([["", "Server default"], ...MODES], d.mode ?? "");
     const volume = numberInput(d.volume_db, { placeholder: "0" });
+    const inputGain = numberInput(d.input_gain_db, { min: -40, max: 40, placeholder: "0" });
+    const normalize = select([["off", "Off"], ["on", "On"]], d.normalize ? "on" : "off");
     const leadIn = numberInput(d.lead_in_ms, { min: 0, placeholder: "0" });
     const encoding = select([["", "Server default (L16)"], ...ENCODINGS], encodingValue(d.encoding));
     const groups = state.config.zones.flatMap((z) => z.targets);
@@ -55,7 +57,9 @@ function defaults() {
       e.preventDefault();
       const body = {
         chime: chime.value(), end_chime: endChime.value(), mode: mode.value || null,
-        volume_db: num(volume), lead_in_ms: num(leadIn), encoding: encoding.value || null,
+        volume_db: num(volume), input_gain_db: num(inputGain),
+        normalize: normalize.value === "on" ? true : null,
+        lead_in_ms: num(leadIn), encoding: encoding.value || null,
       };
       for (const k of Object.keys(body)) if (body[k] == null) delete body[k];
       if (await putSettings({ defaults: body }, "Defaults saved")) dirty = false;
@@ -71,7 +75,10 @@ function defaults() {
           h("div", { class: "row" },
             field("Processing", mode, usage("mode")),
             field("Volume (dB)", volume, usage("volume_db")),
-            field("Lead-in (ms)", leadIn, "Silence first, to wake amplifiers"))),
+            field("Lead-in (ms)", leadIn, "Silence first, to wake amplifiers")),
+          h("div", { class: "row" },
+            field("Input gain (dB)", inputGain, usage("input_gain_db")),
+            field("Normalize loudness", normalize, usage("normalize")))),
         h("fieldset", { class: "part" }, h("legend", {}, "Codec"),
           h("div", { class: "row" },
             field("Codec", encoding, groups.length

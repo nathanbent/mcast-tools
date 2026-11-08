@@ -27,6 +27,8 @@ fn announcement(id: &str, zones: &[&str]) -> Announcement {
         end_chime: None,
         mode: None,
         volume_db: None,
+        input_gain_db: None,
+        normalize: None,
         lead_in_ms: None,
         repeat: 1,
         repeat_gap_s: 0.0,

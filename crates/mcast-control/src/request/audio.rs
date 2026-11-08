@@ -205,6 +205,9 @@ impl From<ChimeRequest> for ChimeJson {
     }
 }
 
+/// The largest input gain (or cut) a send request may ask for.
+pub const MAX_INPUT_GAIN_DB: f64 = 40.0;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SendRequest {
@@ -239,6 +242,12 @@ pub struct SendRequest {
     #[serde(with = "opt_str")]
     pub mode: Option<Mode>,
     pub volume_db: Option<f64>,
+    /// Gain in dB on the source before processing (not the chimes), e.g. to
+    /// lift a quiet microphone.
+    pub input_gain_db: Option<f64>,
+    /// Normalise loudness even with mode "none" (voice and music always do):
+    /// two-pass for files, a quick-settling AGC for live input.
+    pub normalize: bool,
     pub lead_in_ms: f64,
     pub tail_ms: f64,
     pub chime: Option<ChimeRequest>,
@@ -285,6 +294,8 @@ impl Default for SendRequest {
             source: SourceRequest::default(),
             mode: None,
             volume_db: None,
+            input_gain_db: None,
+            normalize: false,
             lead_in_ms: 0.0,
             tail_ms: 300.0,
             chime: None,
@@ -342,6 +353,12 @@ impl SendRequest {
         }
         if self.start_s.is_some() && !matches!(self.source, SourceRequest::File { .. }) {
             bail!("a start offset needs a file source");
+        }
+        if self
+            .input_gain_db
+            .is_some_and(|g| !g.is_finite() || g.abs() > MAX_INPUT_GAIN_DB)
+        {
+            bail!("input_gain_db must be -{MAX_INPUT_GAIN_DB} to {MAX_INPUT_GAIN_DB}");
         }
         let mode = self.mode();
         let source = match &self.source {
@@ -424,6 +441,8 @@ impl SendRequest {
             process: ProcessOptions {
                 mode,
                 volume_db: self.volume_db,
+                input_gain_db: self.input_gain_db,
+                normalize: self.normalize,
             },
             source,
             start: self.start_s.map(|s| secs(s, "start")).transpose()?,

@@ -503,7 +503,7 @@ impl Sender {
             )?),
         };
         let mut loudness_info = None;
-        let loudness = match (&cfg.source, cfg.process.mode.loudness_target()) {
+        let loudness = match (&cfg.source, cfg.process.loudness_target()) {
             (_, None) => Loudness::Dynamic, // unused
             (Source::File { .. } | Source::Files { .. }, Some(target)) => {
                 let measured = measure(&cfg, rate, source_format.1, channels, band)?;

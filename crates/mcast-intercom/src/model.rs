@@ -318,6 +318,12 @@ pub struct Defaults {
     pub mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume_db: Option<f64>,
+    /// Gain on the audio before processing, in dB (not the chimes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_gain_db: Option<f64>,
+    /// Normalise loudness even without voice or music processing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normalize: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_in_ms: Option<f64>,
     /// Codec for zone groups that don't name their own. Unset: the mcast
@@ -672,6 +678,14 @@ pub struct Announcement {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_db: Option<f64>,
+    /// Gain on the audio before processing, in dB (not the chimes): for a
+    /// live announcement, the microphone's input gain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_gain_db: Option<f64>,
+    /// Normalise loudness even without voice or music processing (which
+    /// always do): for a live announcement, levels out quiet and loud talkers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalize: Option<bool>,
     /// Silence before the chime, so speakers' amplifiers can wake up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_in_ms: Option<f64>,
@@ -724,6 +738,8 @@ impl Announcement {
             end_chime: chime_or(&self.end_chime, &d.end_chime),
             mode: self.mode.clone().or_else(|| d.mode.clone()),
             volume_db: self.volume_db.or(d.volume_db),
+            input_gain_db: self.input_gain_db.or(d.input_gain_db),
+            normalize: self.normalize.or(d.normalize),
             lead_in_ms: self.lead_in_ms.or(d.lead_in_ms),
             ..self.clone()
         }
@@ -771,6 +787,8 @@ impl Announcement {
         put("end_chime", self.end_chime.clone());
         put("mode", self.mode.clone().map(Into::into));
         put("volume_db", volume.map(Into::into));
+        put("input_gain_db", self.input_gain_db.map(Into::into));
+        put("normalize", self.normalize.filter(|n| *n).map(Into::into));
         put("lead_in_ms", self.lead_in_ms.map(Into::into));
         put("encoding", target.encoding.clone().map(Into::into));
         put("tos", target.tos.map(Into::into));
@@ -1113,12 +1131,14 @@ impl Config {
                 bail!("{what}: repeat_gap_s must be 0 to {MAX_REPEAT_GAP_S}");
             }
             check_number(&format!("{what}: volume_db"), a.volume_db)?;
+            check_input_gain(&format!("{what}: input_gain_db"), a.input_gain_db)?;
             check_number(&format!("{what}: lead_in_ms"), a.lead_in_ms)?;
             check_chime(&format!("{what}: chime"), &a.chime)?;
             check_chime(&format!("{what}: end_chime"), &a.end_chime)?;
         }
         let d = &self.defaults;
         check_number("defaults: volume_db", d.volume_db)?;
+        check_input_gain("defaults: input_gain_db", d.input_gain_db)?;
         check_number("defaults: lead_in_ms", d.lead_in_ms)?;
         check_chime("defaults: chime", &d.chime)?;
         check_chime("defaults: end_chime", &d.end_chime)?;
@@ -1341,6 +1361,17 @@ fn check_days_off(days: &[DayOff]) -> Result<()> {
     }
     Ok(())
 }
+
+fn check_input_gain(what: &str, v: Option<f64>) -> Result<()> {
+    check_number(what, v)?;
+    if v.is_some_and(|v| v.abs() > MAX_INPUT_GAIN_DB) {
+        bail!("{what} must be -{MAX_INPUT_GAIN_DB} to {MAX_INPUT_GAIN_DB} dB");
+    }
+    Ok(())
+}
+
+/// The mcast server's limit on an input gain.
+const MAX_INPUT_GAIN_DB: f64 = 40.0;
 
 fn check_number(what: &str, v: Option<f64>) -> Result<()> {
     if v.is_some_and(|v| !v.is_finite()) {
