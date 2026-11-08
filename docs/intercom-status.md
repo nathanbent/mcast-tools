@@ -4,21 +4,24 @@ Last updated 2026-11-08, at the end of a third session. The second session
 checked the first one's work, built everything left on the roadmap plus
 follow-ups, merged it all into `main`, and bumped the version to 0.5.5
 (#48). The third built **text pages in playlists** (#49, below), merged it,
-and released **v0.5.5**. Read this first,
+and released **v0.5.5**; then **v0.5.6**, with the webhook log in send order
+(#53) and the Panel's Customize mode from another session (#54). Read this first,
 then `intercom-roadmap.md` (the plan and what each item became) and
 `intercom-plan.md` (how the panel is built).
 
 ## Where things stand
 
-- **Everything is on `main` and released as v0.5.5.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+- **Everything is on `main` and released, as v0.5.6.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
   - last-heard times in the Zones list;
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
   - a webhook delivery log;
-  - text pages in playlists, spoken and shown on displays (nathanbent/mcast-tools#49).
+  - text pages in playlists, spoken and shown on displays (nathanbent/mcast-tools#49);
+  - the webhook log kept in the order deliveries were sent (nathanbent/mcast-tools#53);
+  - customizing the Panel in place, with drag and drop that works on touch screens and from the keyboard (nathanbent/mcast-tools#54, from another session).
 - **v0.5.5 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.5, tag `v0.5.5` on `7f3c8c7` (the merge of #49), with binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) and Windows. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. Pis upgrade with `sudo mcast update`.
-- **0.5.6** follows with the webhook log kept in the order deliveries were sent (nathanbent/mcast-tools#53) and customizing the Panel in place, with drag and drop on touch screens too (nathanbent/mcast-tools#54). The bump is its own PR, then the Release workflow from `main` with the tag `v0.5.6`.
-- **It was released before the hardware checks** below (What's next, 1). Their results decide whether a 0.5.6 is needed.
+- **v0.5.6 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.6, tag `v0.5.6` on `1f29642` (the merge of the bump, nathanbent/mcast-tools#55), with the same platforms. It adds #53 and #54, and #50 fixed a flaky test.
+- **Both were released before the hardware checks** below (What's next, 1). Their results decide whether a 0.5.7 is needed.
 - **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
 
 The work came as six stacked PRs, merged in order with merge commits:
@@ -221,11 +224,12 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Try the hardware** with v0.5.5 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
+1. **Try the hardware** with v0.5.6 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
-2. **Fix anything the hardware turns up,** then bump to 0.5.6 and release it the same way (Release workflow from `main`, tag `v0.5.6`).
+   - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
+2. **Fix anything the hardware turns up,** then bump to 0.5.7 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.7`).
 3. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
