@@ -22,7 +22,8 @@ pub(super) struct HistoryParams {
     by: Option<String>,
     q: Option<String>,
     limit: Option<usize>,
-    before: Option<u64>,
+    /// The `next` of the page before: `started_ms:id` (or just a time).
+    before: Option<String>,
     /// Sent by browsers for event streams; ignored here.
     #[serde(default, rename = "access_token")]
     _token: Option<String>,
@@ -65,9 +66,15 @@ async fn run_query(
         }
         None => None,
     };
-    let to_ms = match (to_ms, p.before) {
-        (Some(t), Some(b)) => Some(t.min(b)),
-        (t, b) => t.or(b),
+    let before = match p.before.as_deref().filter(|b| !b.is_empty()) {
+        None => None,
+        Some(b) => {
+            let (ms, id) = b.split_once(':').unwrap_or((b, "0"));
+            let parse = |x: &str| x.trim().parse::<u64>().ok();
+            Some((parse(ms).zip(parse(id))).ok_or_else(|| {
+                ApiError::bad(format!("before=\"{b}\" isn't a page mark (started_ms:id)"))
+            })?)
+        }
     };
     let q = Query {
         from_ms,
@@ -76,6 +83,7 @@ async fn run_query(
         state: p.state.filter(|x| !x.is_empty()),
         by: p.by.filter(|x| !x.is_empty()),
         text: p.q.filter(|x| !x.is_empty()),
+        before,
         limit: p.limit.unwrap_or(default_limit).min(MAX_LIMIT),
     };
     let history = s.0.history.clone();
@@ -90,15 +98,22 @@ async fn run_query(
     Ok((cfg, runs, more))
 }
 
-/// `{"runs": [...], "more"}`: for the next page, pass `before` = the last
-/// run's `started_ms`.
+/// `{"runs": [...], "more", "next"}`: for the next page, pass
+/// `before` = `next` (the last run's `started_ms:id`).
 pub(super) async fn list(
     State(s): State<AppState>,
     Extension(caller): Extension<Caller>,
     Params(p): Params<HistoryParams>,
 ) -> ApiResult<Json<Value>> {
     let (_, runs, more) = run_query(&s, &caller, p, 100).await?;
-    Ok(Json(json!({ "runs": runs, "more": more })))
+    let next = more.then(|| runs.last()).flatten().map(|r| {
+        format!(
+            "{}:{}",
+            r["started_ms"].as_u64().unwrap_or(0),
+            r["id"].as_u64().unwrap_or(0)
+        )
+    });
+    Ok(Json(json!({ "runs": runs, "more": more, "next": next })))
 }
 
 /// The same, as a spreadsheet (times in the panel's time zone).

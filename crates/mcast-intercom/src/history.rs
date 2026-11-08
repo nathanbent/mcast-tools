@@ -52,7 +52,18 @@ pub struct Query {
     pub by: Option<String>,
     /// Part of the announcement's name, any case.
     pub text: Option<String>,
+    /// For the next page: runs that sort after this one, as
+    /// (`started_ms`, `id`). Runs can start in the same millisecond.
+    pub before: Option<(u64, u64)>,
     pub limit: usize,
+}
+
+/// Where a run sorts: newest first, then by id.
+fn key(r: &Value) -> (u64, u64) {
+    (
+        r["started_ms"].as_u64().unwrap_or(0),
+        r["id"].as_u64().unwrap_or(0),
+    )
 }
 
 pub struct History {
@@ -168,13 +179,17 @@ impl History {
     }
 
     /// Runs that match, newest first, and whether there are more (for
-    /// another page: `to_ms` = the last one's `started_ms`). `keep` says
+    /// another page: `before` = the last one's (`started_ms`, `id`)). `keep` says
     /// which runs the caller may see.
     pub fn query(&self, q: &Query, keep: impl Fn(&Value) -> bool) -> (Vec<Value>, bool) {
         let limit = q.limit.clamp(1, MAX_LIMIT);
         let lower = |s: &Option<String>| s.as_ref().map(|t| t.to_lowercase());
         let (by, text) = (lower(&q.by), lower(&q.text));
-        let (from_day, to_day) = (q.from_ms.map(day_of), q.to_ms.map(day_of));
+        let upper = match (q.to_ms, q.before) {
+            (Some(t), Some(b)) => Some(t.min(b.0)),
+            (t, b) => t.or(b.map(|b| b.0)),
+        };
+        let (from_day, to_day) = (q.from_ms.map(day_of), upper.map(day_of));
         let mut out = Vec::new();
         for path in self.files() {
             let Some(day) = file_day(&path) else { continue };
@@ -197,6 +212,7 @@ impl History {
                     let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
                     q.from_ms.map_or(true, |f| started >= f)
                         && q.to_ms.map_or(true, |t| started < t)
+                        && q.before.map_or(true, |b| key(r) < b)
                         && q.announcement
                             .as_ref()
                             .map_or(true, |a| s("announcement") == *a)
@@ -212,7 +228,7 @@ impl History {
                         && keep(r)
                 })
                 .collect();
-            runs.sort_by_key(|r| std::cmp::Reverse(r["started_ms"].as_u64().unwrap_or(0)));
+            runs.sort_by_key(|r| std::cmp::Reverse(key(r)));
             for r in runs {
                 if out.len() == limit {
                     return (out, true);
@@ -367,6 +383,37 @@ mod tests {
             |r| r["state"] == "nope",
         );
         assert!(none.is_empty());
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn pages_dont_lose_runs_that_started_together() {
+        let d = dir();
+        let h = History::new(d.clone(), 0);
+        let t0 = 1_800_000_000_000;
+        for id in 1..=3 {
+            h.observe(&Change::Run(&run(id, t0, RunState::Done)));
+        }
+        let mut seen = Vec::new();
+        let mut before = None;
+        loop {
+            let (page, more) = h.query(
+                &Query {
+                    limit: 1,
+                    before,
+                    ..Default::default()
+                },
+                |_| true,
+            );
+            for r in &page {
+                seen.push(r["id"].as_u64().unwrap());
+                before = Some((r["started_ms"].as_u64().unwrap(), r["id"].as_u64().unwrap()));
+            }
+            if !more {
+                break;
+            }
+        }
+        assert_eq!(seen, [3, 2, 1]);
         let _ = std::fs::remove_dir_all(d);
     }
 

@@ -13,6 +13,7 @@ const OUTCOMES = [["", "Any"], ["done", "Played"], ["stopped", "Stopped"], ["fai
 
 let runs = [];
 let more = false;
+let next = null; // the server's mark for the next page
 let error = null;
 let loading = false;
 
@@ -24,14 +25,14 @@ function query(extra = {}) {
   return q.toString();
 }
 
-async function load(next = false) {
+async function load(page = false) {
   if (loading) return;
   loading = true;
   try {
-    const before = next && runs.length ? runs[runs.length - 1].started_ms : null;
-    const r = await api("GET", `/history?${query({ limit: PAGE, before })}`);
-    runs = next ? [...runs, ...r.runs] : r.runs;
+    const r = await api("GET", `/history?${query({ limit: PAGE, before: page ? next : null })}`);
+    runs = page ? [...runs, ...r.runs] : r.runs;
     more = r.more;
+    next = r.next ?? null;
     error = null;
   } catch (e) {
     error = e.message;

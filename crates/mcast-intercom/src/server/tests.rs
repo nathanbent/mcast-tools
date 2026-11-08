@@ -2322,14 +2322,10 @@ async fn history_is_kept_on_disk_and_filtered() {
         (v["runs"].as_array().unwrap().len(), v["more"].clone()),
         (2, json!(true))
     );
-    let before = v["runs"][1]["started_ms"].as_u64().unwrap();
+    // The page mark goes by time and id: these may all start in one millisecond.
+    let next = v["next"].as_str().unwrap().to_string();
     let (_, v) = p
-        .call_with(
-            Method::GET,
-            &format!("/history?before={before}"),
-            None,
-            admin,
-        )
+        .call_with(Method::GET, &format!("/history?before={next}"), None, admin)
         .await;
     assert_eq!(v["runs"].as_array().unwrap().len(), 1, "the next page");
     let (_, v) = p
