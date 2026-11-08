@@ -103,7 +103,9 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_fec` | `true` | |
 | `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
-| `volume_db` | | |
+| `volume_db` | | Volume change after processing, with a limiter; chimes too |
+| `input_gain_db` | | Gain on the source before processing (not the chimes), -40 to 40, e.g. `12` for a quiet microphone; a boost is limited |
+| `normalize` | `false` | Normalise loudness (to -16 LUFS) even with mode `none`; `voice` and `music` always do. Files are measured first; live and capture input uses an AGC that settles within about a second |
 | `chime` | | Chime before the audio: `"default"` (`rising`, or `$MCAST_CHIME`), a built-in (any name `GET /chimes` lists, such as `"ding-dong"`, `"westminster"`, `"church-bell"`, `"beep"` or `"siren-wail"`), or `{"file": "NAME"}` |
 | `chime_gap_ms` | `400` | |
 | `end_chime` | | Chime after the audio, before the tail: as `chime`, but `"default"` is `falling` (or `$MCAST_END_CHIME`) |

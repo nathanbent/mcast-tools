@@ -304,6 +304,12 @@ struct SendArgs {
     /// Volume change in dB after processing, e.g. -6 or 3 (limited to avoid clipping)
     #[arg(short, long, allow_negative_numbers = true)]
     volume: Option<f64>,
+    /// Gain in dB on the input before processing (not the chimes), e.g. 12 for a quiet microphone
+    #[arg(long, allow_negative_numbers = true)]
+    input_gain: Option<f64>,
+    /// Normalise loudness even with --mode none (voice and music always do)
+    #[arg(long)]
+    normalize: bool,
     /// Lead-in silence in ms, so the first word isn't clipped
     #[arg(short = 'L', long, default_value_t = 0.0)]
     lead_in: f64,
@@ -809,6 +815,8 @@ fn send_request(a: &SendArgs) -> Result<SendRequest> {
         source,
         mode: Some(mode),
         volume_db: a.volume,
+        input_gain_db: a.input_gain,
+        normalize: a.normalize,
         lead_in_ms: a.lead_in,
         tail_ms: a.tail,
         chime: a.chime.as_deref().map(ChimeRequest::parse_arg),
