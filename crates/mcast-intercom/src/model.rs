@@ -688,13 +688,14 @@ impl Config {
     /// Whether a schedule may play at all: it, its group and its site are
     /// on, and schedules aren't all paused (days off aside).
     pub fn schedule_on(&self, s: &Schedule) -> bool {
-        let group_on = s.group.as_deref().map_or(true, |g| {
-            self.schedule_groups.iter().any(|x| x.id == g && x.enabled)
-        });
+        let group_on = s
+            .group
+            .as_deref()
+            .is_none_or(|g| self.schedule_groups.iter().any(|x| x.id == g && x.enabled));
         let site_on = s
             .site
             .as_deref()
-            .map_or(true, |id| self.site(id).map_or(true, |x| !x.paused));
+            .is_none_or(|id| self.site(id).is_none_or(|x| !x.paused));
         s.enabled && group_on && site_on && !self.schedules_paused
     }
 
@@ -1205,7 +1206,7 @@ impl Config {
         zones
             .iter()
             .filter_map(|z| self.zone(z))
-            .filter(|z| site.map_or(true, |s| z.site.as_deref() == Some(s)))
+            .filter(|z| site.is_none_or(|s| z.site.as_deref() == Some(s)))
             .collect()
     }
 

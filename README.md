@@ -32,11 +32,31 @@ On Debian/Ubuntu install the build dependencies first (ALSA for audio devices, l
 sudo apt-get install build-essential pkg-config libasound2-dev libopus-dev
 ```
 
+You also need Rust 1.89 or newer. The `cargo` and `rustc` packages in Debian
+and Ubuntu are too old (Ubuntu 24.04 has 1.75, which fails with `feature
+edition2024 is required`), so install Rust with [rustup](https://rustup.rs)
+instead:
+
+```bash
+sudo apt-get remove cargo rustc
+```
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+```bash
+source "$HOME/.cargo/env"
+```
+
 Then install the `mcast` command into `~/.cargo/bin`:
 
 ```bash
-cargo install --path crates/mcast
+cargo install --locked --path crates/mcast
 ```
+
+`--locked` builds with the dependency versions in `Cargo.lock`, the ones CI
+tests (and what `mcast update` uses).
 
 If the shell then says `Command 'mcast' not found`, `~/.cargo/bin` is not on your
 `PATH` (rustup normally adds it; open a new shell, or run `source "$HOME/.cargo/env"`).

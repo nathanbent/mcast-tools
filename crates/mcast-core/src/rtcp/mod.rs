@@ -184,7 +184,7 @@ fn begin(out: &mut Vec<u8>, count: u8, packet_type: u8) -> usize {
 
 /// Pad to a 32-bit boundary and fill in the length field.
 fn end(out: &mut Vec<u8>, at: usize) {
-    while (out.len() - at) % 4 != 0 {
+    while !(out.len() - at).is_multiple_of(4) {
         out.push(0);
     }
     let words = ((out.len() - at) / 4 - 1) as u16;
@@ -240,7 +240,7 @@ impl Packet {
                     }
                     // End of items: at least one null octet, then pad the chunk.
                     out.push(0);
-                    while (out.len() - start) % 4 != 0 {
+                    while !(out.len() - start).is_multiple_of(4) {
                         out.push(0);
                     }
                 }

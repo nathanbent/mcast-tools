@@ -901,7 +901,7 @@ mod tests {
             event: event.into(),
             about: Some(format!("Bell {n}")),
             at_ms: n,
-            ok: n % 2 == 0,
+            ok: n.is_multiple_of(2),
             status: Some(204),
             ..Default::default()
         };

@@ -211,14 +211,9 @@ fn kernel(half: usize, cutoff: f64, x: f64) -> f64 {
 /// keep in SIMD registers (NEON on a Raspberry Pi, SSE/AVX on x86).
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     let mut acc = [0.0f32; 8];
-    let (ac, bc) = (a.chunks_exact(8), b.chunks_exact(8));
-    let tail: f32 = ac
-        .remainder()
-        .iter()
-        .zip(bc.remainder())
-        .map(|(x, y)| x * y)
-        .sum();
-    for (x, y) in ac.zip(bc) {
+    let ((ac, at), (bc, bt)) = (a.as_chunks::<8>(), b.as_chunks::<8>());
+    let tail: f32 = at.iter().zip(bt).map(|(x, y)| x * y).sum();
+    for (x, y) in ac.iter().zip(bc) {
         for i in 0..8 {
             acc[i] += x[i] * y[i];
         }
@@ -303,7 +298,8 @@ mod tests {
         let mut out = Vec::new();
         c.process(&input, &mut out);
         c.flush(&mut out);
-        let (l, r): (Vec<f32>, Vec<f32>) = out.chunks_exact(2).map(|f| (f[0], f[1])).unzip();
+        let (l, r): (Vec<f32>, Vec<f32>) =
+            out.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
         assert!(rms(&l[2_400..21_600]) > 0.3);
         assert!(r.iter().all(|&x| x == 0.0));
     }

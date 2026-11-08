@@ -382,7 +382,8 @@ else
   PREP_IN=("${SRC_IN[@]}")
 fi
 
-DESC="v${VERSION} | $([[ -n "$PAD" ]] && echo "pad" || basename "$FILE") | ${CODEC} | ${MODE}${VOL:+ | ${VOL} dB}${TONE_DESC:+ | ${TONE_DESC}}"
+if [[ -n "$PAD" ]]; then SRC_DESC="pad"; else SRC_DESC=$(basename "$FILE"); fi
+DESC="v${VERSION} | ${SRC_DESC} | ${CODEC} | ${MODE}${VOL:+ | ${VOL} dB}${TONE_DESC:+ | ${TONE_DESC}}"
 [[ "$LEAD" != 0 || "$TAIL" != 300 ]] && DESC+=" | dead air ${LEAD}/${TAIL} ms"
 
 # Stage 1 for both paths: build the finished audio (tone, processing, dead air) into a temp WAV,

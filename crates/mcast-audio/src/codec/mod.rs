@@ -424,7 +424,7 @@ struct PcmDecoder(AudioFormat);
 
 impl Decoder for PcmDecoder {
     fn decode(&mut self, payload: &[u8], out: &mut Vec<f32>) -> Result<(), String> {
-        if payload.len() % self.0.frame_bytes() != 0 {
+        if !payload.len().is_multiple_of(self.0.frame_bytes()) {
             return Err(format!(
                 "{}-byte payload doesn't fit {}",
                 payload.len(),

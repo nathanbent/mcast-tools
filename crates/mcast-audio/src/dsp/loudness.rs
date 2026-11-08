@@ -209,7 +209,7 @@ mod tests {
             .flat_map(|i| {
                 let v = (amp * (2.0 * std::f64::consts::PI * freq * i as f64 / rate as f64).sin())
                     as f32;
-                std::iter::repeat(v).take(channels)
+                std::iter::repeat_n(v, channels)
             })
             .collect()
     }

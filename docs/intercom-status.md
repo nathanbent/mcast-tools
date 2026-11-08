@@ -254,7 +254,7 @@ The v0.5.5 items, plus requests that came up along the way:
 - **Releasing:** bump `version` in `Cargo.toml` (the lockfile follows on the next build), merge, then run the Release workflow from `main` with the matching tag.
 - **Build:** `cargo build -p mcast`. Needs `libasound2-dev`, `libopus-dev` and `pkg-config` (apt).
 - **Checks** (CI runs the same): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-- **MSRV is 1.75** (`rust-version` in `Cargo.toml`): avoid newer std APIs (for example, use `map_or(true, …)`, not `is_none_or`). CI only builds on stable. Some dependencies already in `main`'s lockfile need more than 1.75 (`thiserror` 2.0.21 needs 1.77), so the declared MSRV isn't really checked.
+- **MSRV is 1.89** (`rust-version` in `Cargo.toml`), the oldest Rust that builds the workspace: `raptorq` uses AVX-512 intrinsics, stable since 1.89, and other dependencies need 1.88. CI's `msrv` job checks it with exactly 1.89, so keep that job and `rust-version` in step when a dependency needs more.
 - **Run it by hand:**
   - `mcast serve --media-dir DIR --no-monitor`
   - `mcast intercom serve --config DIR/intercom.json --no-tls --web-dir crates/mcast-intercom/assets`. `--web-dir` serves the page from disk, so a reload picks up JS and CSS edits.

@@ -103,7 +103,9 @@ impl LiveFeed {
         joined.extend(self.lock().odd_byte.take());
         joined.extend_from_slice(bytes);
         let samples: Vec<f32> = joined
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
             .collect();
         if joined.len() % 2 == 1 {

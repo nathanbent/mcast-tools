@@ -338,7 +338,7 @@ impl Inner {
                     w.status.error = None;
                     changed = true;
                 }
-                let retry = w.failed_at.map_or(true, |t| t.elapsed() >= RETRY);
+                let retry = w.failed_at.is_none_or(|t| t.elapsed() >= RETRY);
                 if i.enabled && w.watch.is_none() && retry {
                     open.push((*i).clone());
                 }

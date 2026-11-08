@@ -139,7 +139,7 @@ impl G722Encoder {
 
     /// Encode 16 kHz samples (an even count); every two samples yield one byte.
     pub fn encode_into(&mut self, samples: &[i16], out: &mut Vec<u8>) {
-        for pair in samples.chunks_exact(2) {
+        for pair in samples.as_chunks::<2>().0 {
             // Transmit QMF: split into low and high bands at 8 kHz each.
             self.x.copy_within(2.., 0);
             self.x[22] = pair[0] as i32;

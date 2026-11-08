@@ -107,7 +107,7 @@ impl Displays {
         {
             let mut board = self.board.lock().unwrap();
             let now = now_ms();
-            board.retain(|p| p.until_ms.map_or(true, |u| u > now));
+            board.retain(|p| p.until_ms.is_none_or(|u| u > now));
             board.push(page.clone());
             let over = board.len().saturating_sub(KEEP);
             board.drain(..over);
@@ -129,8 +129,8 @@ impl Displays {
         board
             .iter()
             .rev()
-            .filter(|p| p.until_ms.map_or(true, |u| u > now))
-            .filter(|p| zones.map_or(true, |z| p.zones.iter().any(|pz| z.contains(pz))))
+            .filter(|p| p.until_ms.is_none_or(|u| u > now))
+            .filter(|p| zones.is_none_or(|z| p.zones.iter().any(|pz| z.contains(pz))))
             .cloned()
             .collect()
     }

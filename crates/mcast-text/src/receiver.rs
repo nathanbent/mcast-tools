@@ -201,7 +201,7 @@ pub fn run(
     let mut warned = Vec::new();
     let mut buf = vec![0u8; 65_536];
 
-    while !stop.load(Ordering::Relaxed) && cfg.duration.map_or(true, |d| start.elapsed() < d) {
+    while !stop.load(Ordering::Relaxed) && cfg.duration.is_none_or(|d| start.elapsed() < d) {
         on_event(Event::Tick);
         drain_rtcp(
             &rtcp,

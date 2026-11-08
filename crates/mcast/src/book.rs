@@ -65,7 +65,7 @@ pub fn run(c: Option<BookCommand>) -> Result<()> {
             let shown: Vec<&Entry> = book
                 .entries
                 .iter()
-                .filter(|e| filter.as_deref().map_or(true, |f| matches(e, f)))
+                .filter(|e| filter.as_deref().is_none_or(|f| matches(e, f)))
                 .collect();
             if shown.is_empty() {
                 if book.entries.is_empty() {
