@@ -16,7 +16,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - per-site webhooks and monitor;
   - a webhook delivery log.
 - **Text pages** are on `claude/intelligent-ramanujan-9guf2i`, pushed, with no PR yet (see *Text pages*, below).
-- **The version is 0.5.5** in `Cargo.toml`, and nathanbent/mcast-tools#48 (the bump) is merged. v0.5.5 isn't released yet (the newest tag is v0.5.4), so text pages would ship in it too unless the owner wants another bump. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0.
+- **The version is 0.5.5** in `Cargo.toml`, and nathanbent/mcast-tools#48 (the bump) is merged. v0.5.5 isn't released yet (the newest tag is v0.5.4); the owner chose to ship text pages in it too. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0.
 - **New work** branches from `main`.
 
 The work came as six stacked PRs, merged in order with merge commits:
@@ -236,7 +236,6 @@ The v0.5.5 items, plus requests that came up along the way:
    - A page stays on the display page for 30 s after its run ends (`displays::HOLD`).
    - A page only shown appears with the next item heard, not on its own timer.
    - The default Piper voice on a Pi is `en_US-lessac-medium`.
-   - Ship it in v0.5.5 (not released yet), or bump first?
 4. **GPIO choices to confirm (#45):**
    - An input plays at its announcement's priority, with no per-input priority.
    - Re-pressing while it plays is ignored, not restarted.
