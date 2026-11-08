@@ -5,7 +5,7 @@
 
 import { api } from "./api.js";
 import { h, replace, saved } from "./dom.js";
-import { onRunSettled } from "./store.js";
+import { onRunSettled, state, subscribe } from "./store.js";
 
 // Outcomes, in stacking order, with their status colors (see app.css).
 const OUTCOMES = [
@@ -16,6 +16,9 @@ const OUTCOMES = [
 ];
 
 let days = saved.get("monitor.days", 7);
+// One site's plays, zones and speakers ("" for all), remembered per screen.
+let site = saved.get("monitor.site", "");
+const sites = () => state.config.sites ?? [];
 let data = null;
 let error = null;
 let asTable = saved.get("monitor.table", false);
@@ -23,7 +26,9 @@ let el = null;
 
 async function load() {
   try {
-    data = await api("GET", `/monitor?days=${days}`);
+    // A site that's gone: all of them again.
+    if (site && !sites().some((s) => s.id === site)) site = "";
+    data = await api("GET", `/monitor?days=${days}${site ? `&site=${encodeURIComponent(site)}` : ""}`);
     error = null;
   } catch (e) {
     error = e.message;
@@ -112,6 +117,11 @@ function render() {
     class: `tag${n === days ? " on" : ""}`, "aria-pressed": String(n === days),
     onclick: () => { days = n; saved.set("monitor.days", n); load(); },
   }, `Last ${n} days`));
+  if (sites().length) {
+    const pick = h("select", { "aria-label": "Monitor: site", onchange: (e) => { site = e.target.value; saved.set("monitor.site", site); load(); } },
+      [["", "All sites"], ...sites().map((s) => [s.id, s.name])].map(([v, label]) => h("option", { value: v, selected: v === site }, label)));
+    periods.push(pick);
+  }
   if (!data) {
     replace(el, h("div", { class: "tag-bar" }, periods), error ? h("p", { class: "error" }, error) : h("p", { class: "muted" }, "Loading…"));
     return;
@@ -222,6 +232,8 @@ export function mount(target) {
     if (showing()) { stale = false; clearTimeout(soon); soon = setTimeout(load, 1000); } else stale = true;
   };
   onRunSettled(refresh);
+  // Sites added or removed: the picker changes.
+  subscribe(["config"], render);
   window.addEventListener("hashchange", () => { if (stale && location.hash === "#monitor") refresh(); });
   setInterval(refresh, 5 * 60 * 1000);
 }

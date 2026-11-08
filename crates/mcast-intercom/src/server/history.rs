@@ -4,7 +4,7 @@
 use super::{ApiError, ApiResult, AppState, Caller};
 use crate::history::{csv_row, Query, CSV_HEADER, MAX_LIMIT};
 use axum::extract::{Query as Params, State};
-use axum::http::header;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -183,6 +183,8 @@ pub(super) async fn stats(
 pub(super) struct MonitorParams {
     /// How many days back, today included (1 to 366; default 7).
     days: Option<u32>,
+    /// Only plays at this site (id), and its zones and speakers.
+    site: Option<String>,
 }
 
 /// The Monitor tab: what [`crate::history::summarize`] makes of the last
@@ -199,6 +201,15 @@ pub(super) async fn monitor(
         return Err(ApiError::bad("days must be 1 to 366"));
     }
     let cfg = s.load().await?;
+    let site = p.site.filter(|x| !x.is_empty());
+    if let Some(id) = &site {
+        if cfg.site(id).is_none() {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no site \"{id}\""),
+            ));
+        }
+    }
     let tz = cfg.tz().unwrap_or_else(|_| jiff::tz::TimeZone::system());
     let now = jiff::Timestamp::now();
     let today = now.to_zoned(tz.clone()).date();
@@ -223,14 +234,39 @@ pub(super) async fn monitor(
     let v = tokio::task::spawn_blocking(move || {
         let mut runs = Vec::new();
         history.scan(from_ms, |r| {
-            if caller.may_play(&cfg, r["announcement"].as_str().unwrap_or("")) {
+            if caller.may_play(&cfg, r["announcement"].as_str().unwrap_or(""))
+                && site
+                    .as_deref()
+                    .map_or(true, |id| crate::history::at_site(r, id, &cfg))
+            {
                 runs.push(r.clone());
             }
         });
-        // The zones a group (as written in a zone) is in now.
+        if let Some(id) = &site {
+            // Count only its own groups: a play to two sites sent to the
+            // other site's too.
+            let ours = |group: &str| {
+                cfg.zones
+                    .iter()
+                    .filter(|z| z.site.as_deref() == Some(id.as_str()))
+                    .any(|z| {
+                        z.targets
+                            .iter()
+                            .any(|t| t.group.trim().eq_ignore_ascii_case(group.trim()))
+                    })
+            };
+            for r in &mut runs {
+                if let Some(targets) = r["targets"].as_array_mut() {
+                    targets.retain(|t| ours(t["group"].as_str().unwrap_or("")));
+                }
+            }
+        }
+        // The zones a group (as written in a zone) is in now; with a site,
+        // only its zones.
         let zones_of = |group: &str| -> Vec<(String, String)> {
             cfg.zones
                 .iter()
+                .filter(|z| site.is_none() || z.site == site)
                 .filter(|z| {
                     z.targets
                         .iter()
@@ -240,6 +276,23 @@ pub(super) async fn monitor(
                 .collect()
         };
         let mut v = crate::history::summarize(&runs, &days, &zones_of);
+        if let Some(id) = &site {
+            // Speakers its zones expect (those heard elsewhere aren't its).
+            let ears: Vec<String> = cfg
+                .zones
+                .iter()
+                .filter(|z| z.site.as_deref() == Some(id.as_str()))
+                .flat_map(|z| z.listeners.iter().map(|l| l.to_lowercase()))
+                .collect();
+            if let Some(list) = v["listeners"]["list"].as_array_mut() {
+                list.retain(|e| {
+                    e["name"]
+                        .as_str()
+                        .is_some_and(|n| ears.contains(&n.to_lowercase()))
+                });
+            }
+            v["site"] = id.clone().into();
+        }
         v["from_ms"] = from_ms.into();
         v["to_ms"] = now_ms.into();
         v["connection"] = crate::history::uptime(&history.connection_log(), from_ms, now_ms);

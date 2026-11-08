@@ -18,7 +18,7 @@ one before so its diff shows only its own feature.
 | nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
 | nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
 | nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
-| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Webhooks limited to sites (a follow-up) | #45 |
+| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site (follow-ups) | #45 |
 
 - **State:** all are open, with no merge conflicts and no review comments, waiting on the owner.
   - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
@@ -104,7 +104,7 @@ The v0.5.5 items, plus requests that came up along the way:
   - An end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver.
   - Checked in a browser with the real binaries: the alerts with real receivers (one never running, one stopped and restarted) and a local webhook receiver.
 
-### In #46: webhooks limited to sites (a follow-up)
+### In #46: per-site webhooks and monitor (follow-ups)
 
 - **The setting:** a webhook's `sites` (Settings → Other systems, ticked per site) limits it to plays that reached a zone at one of those sites, and to speakers expected by such zones.
 - **No sites set:** the hook gets everything, as before. Plays to zones at no site go only to such hooks.
@@ -112,6 +112,11 @@ The v0.5.5 items, plus requests that came up along the way:
 - **What runs and speakers record:** each run has `sites` (its zones' sites, or the schedule's site), and each speaker has `sites`.
 - **Validation:** unknown sites are refused when a hook is saved. A filter on a site deleted later is kept, and shows as "(deleted)".
 - **Tests:** a unit test of the filter, and an API test with three receivers (North, South, all) and plays to one site and to both. The form was checked in a browser.
+- **The Monitor tab for one site:** a site picker (remembered per screen), backed by `GET /monitor?site=ID`.
+  - It keeps plays at that site: by a run's `sites`, or for older runs, by the zones its groups are in now.
+  - It counts only that site's groups (a play to two sites counts once in each), and lists only its zones and expected speakers.
+  - The mcast server's uptime stays panel-wide.
+  - Tested by unit and API tests, and in a browser with real plays.
 
 ### In #44: backup and restore (roadmap item 13)
 
@@ -152,7 +157,6 @@ The v0.5.5 items, plus requests that came up along the way:
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
 5. **Smaller follow-ups:**
    - A webhook delivery log (the last N deliveries per hook).
-   - Monitor charts per site.
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner
