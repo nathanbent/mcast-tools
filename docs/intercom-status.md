@@ -1,16 +1,30 @@
 # Intercom: where things stand (handoff)
 
-Written 2026-11-08 at the end of a long working session, for the next one.
-Read this first, then `intercom-roadmap.md`, which has the full plan and what
-each item became.
+Last updated 2026-11-08, in a second session that checked the first one's work
+and planned what's left. Read this first, then `intercom-roadmap.md`, which has
+the full plan and what each item became.
 
 ## The branch and PR
 
-- Branch `claude/intelligent-hypatia-awklrl`, open as **nathanbent/mcast-tools#38**, not merged yet.
-- CI was green on the last push (`b26a2da`), and `main` (v0.5.4) was merged in.
-- There were no review comments. It's waiting on the owner's review.
-- `main` keeps moving (v0.5.1 → v0.5.4 came from other threads). Merge `origin/main` into the branch before pushing more. Conflicts so far were small, in `announcements.js` and `talk.js`.
+- Branch `claude/intelligent-hypatia-awklrl`, open as **nathanbent/mcast-tools#38**, not merged yet. It's waiting on the owner's review; there are no review comments.
+- `main` (v0.5.4) is merged in. `main` keeps moving (v0.5.1 → v0.5.4 came from other threads), so merge `origin/main` into the branch before pushing more. Conflicts so far were small, in `announcements.js` and `talk.js`.
 - The PR description lists everything in detail.
+- The docs fixes and this plan were made on `claude/vibrant-knuth-34bpdf`, branched from #38's head (`6908d0f`), to go into #38 before it merges.
+
+## Checked (2026-11-08)
+
+On #38's head (`6908d0f`), locally:
+- `cargo fmt --all --check` passes.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
+- `cargo test --workspace --locked` passes: 271 tests, none failing or ignored.
+
+GitHub CI was green on the same commit. Every item listed below is in the code, with no TODOs left. The Home Assistant and Node-RED examples promised for item 2 are in `intercom-triggers.md`.
+
+Docs that had fallen behind the code, now fixed:
+- The roadmap's status line still said "planning".
+- Item 9 said only Settings was arrangeable; the Panel is too.
+- Item 11 said the core monitor already exposes listener reports. It doesn't (see below).
+- `intercom-tokens.md` described persisted history as future work.
 
 ## What's built (all in #38)
 
@@ -51,31 +65,79 @@ The v0.5.5 items, plus requests that came up along the way:
     - Theme icons.
     - `docs/intercom-plan.md` rewritten as an overview.
 
-## What's next
+## What's next (the plan)
 
-From `intercom-roadmap.md` (v0.6), in a sensible order:
+In this order. Each numbered step is its own PR unless it says otherwise.
 
-1. **Delivery confirmation ("probes"), item 11.** "Probes" means speakers running `mcast receive`; the owner decided this.
-   - Their named RTCP receiver reports are already collected by `mcast serve`'s monitor (`GET /api/v1/monitor`).
-   - A zone lists the listeners it expects. After a run, the panel shows "3/4 heard it", flags silent ones, and fires a webhook.
-   - It probably wants the optional core change: a free-form `tag` on send requests, echoed in `JobInfo`, to match jobs to runs.
-   - It would also feed the Monitor tab.
-2. **Triggers from the room (GPIO), item 12.** Pi GPIO or contact-closure inputs mapped to announcements, with debounce and a priority per input.
-3. **Backup and restore, item 13.**
-   - Export and import `intercom.json`, optionally as a zip with the sounds.
-   - Never include `tokens.json` or `webhooks.json`, which hold secrets.
-   - Validate before importing and show what would change.
-4. **Text pages in playlists.** The `PlaylistItem` enum is ready for a new kind of item. Still waiting on the owner to say what a text page does: show on displays through `mcast text`, be read aloud (TTS), or something else.
-5. **Smaller ideas noted but not done:**
-   - Per-site webhook filters.
-   - A webhook delivery log.
-   - Editing a zone's expected listeners (with item 1).
-   - Showing Monitor charts per site.
+### 0. Merge #38 and release v0.5.5
+
+The docs fixes above go in first.
+
+### 1. Delivery confirmation ("probes"), roadmap item 11, in two PRs
+
+"Probes" means speakers running `mcast receive`; the owner decided this.
+
+**Correction to the first handoff:**
+- `mcast serve`'s monitor does track listeners: `mcast_monitor::Monitor::listeners()` returns `ListenerReport`s with name, cname, loss, jitter, last heard and BYE.
+- It watches configured groups and SAP-announced streams, so the panel's sends are covered.
+- But `MonitorSnapshot` (`crates/mcast-control/src/watch.rs`) has only `groups` and `streams`, so `GET /api/v1/monitor` never shows listeners. Only the `mcast monitor` CLI prints them.
+
+**1a. Core (backwards compatible):**
+- Add `listeners: Vec<ListenerRow>` to `MonitorSnapshot`. Each row has the group, ssrc, from, name or cname, the ssrc it reports `about`, loss, jitter, last heard ms and `left`.
+- Test with a sender and an `mcast receive --name` on loopback.
+- A `tag` on send requests, echoed in `JobInfo`, is optional. Decide after 1a whether the group, the stream's ssrc and the run's time window match runs well enough without it.
+
+**1b. Panel:**
+- A zone gains `expected_listeners` (the names `mcast receive --name` sets). Edit them in the Zones tab, offering the names currently heard.
+- After each run, record per zone which expected listeners reported on that stream: `heard: {expected, heard, silent}` in the history entry.
+- "Now playing" and History show "3/4 heard it", naming the silent ones.
+- A new `listener_silent` webhook event.
+- The Monitor tab gets a listeners table (runs expected, heard and missed, and last heard).
+- The Zones tab shows each expected listener's last heard time.
+
+### 2. Backup and restore, roadmap item 13
+
+- `GET /backup` (admin) downloads `intercom.json` with a version and date. With `?sounds=1` it's an archive with the media folder.
+- Never include `tokens.json`, `webhooks.json` or history.
+- `POST /restore?dry_run=1` validates with the same checks as `mcast intercom check`. It returns what would change (announcements, zones, schedules and playlists added, changed or removed, and missing sounds).
+- Without `dry_run`, it applies atomically and keeps the old file as `intercom.json.bak`.
+- `mcast intercom backup` and `mcast intercom restore [--dry-run]`.
+- Settings → Backup: download, and an upload that shows the dry run before applying.
+- The workspace has `flate2` but no zip or tar crate. The recommendation is `.tar.gz` (adding `tar`); the other choice is JSON only.
+
+### 3. Triggers from the room (GPIO), roadmap item 12
+
+- An optional `inputs` list in `intercom.json`, read by `mcast intercom serve`. Each input has:
+  - a pin (BCM number), `active_low`, `debounce_ms` (default 50) and a priority;
+  - an announcement, and `on`: press, release, or both (play on close, stop on open).
+- Read through the Linux GPIO character device (`/dev/gpiochip0`, v2 uAPI), not the deprecated sysfs. Use either a small ioctl wrapper or the `gpiocdev` crate, if its MSRV fits 1.75.
+- Linux only. Elsewhere `check` refuses `inputs` with a clear message.
+- Settings → Inputs shows each pin's live state and has a test button.
+- Runs record `trigger: {type: "input", pin, name}`.
+- Pi image: add the `mcast` user to the `gpio` group, and document the wiring (pull-ups, a contact closure to GND).
+- Test debounce and the edge-to-action logic against a fake pin source; check the real device by hand on a Pi.
+
+### 4. Text pages in playlists
+
+- `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
+- Blocked on the owner: show text on displays through `mcast text`, read it aloud (TTS, listed as out of scope), or both.
+
+### 5. Smaller follow-ups
+
+- Per-site webhook filters.
+- A webhook delivery log (the last N deliveries per hook).
+- Monitor charts per site.
+- "Arrange this page" on more tabs (Schedules), if the owner wants it.
+
+Then release v0.6.0.
 
 ## Questions still open for the owner
 
-- What text pages in playlists should do.
-- Whether to roll "Arrange this page" out to more tabs (Schedules and others). It's on Settings and the Panel now.
+1. Probes: how much loss still counts as "heard it"? Should listeners be checked between runs, when nothing plays? `mcast receive` sends reports only while receiving, so that may need a keep-alive.
+2. GPIO: a small ioctl wrapper of our own, or the `gpiocdev` crate?
+3. Backup: `.tar.gz` with the sounds (a new `tar` dependency), or JSON only?
+4. Text pages in playlists: displays, TTS, or both?
+5. Roll "Arrange this page" out to more tabs?
 
 ## How to work on it
 

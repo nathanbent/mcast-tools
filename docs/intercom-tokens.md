@@ -159,8 +159,8 @@ pub enum Trigger {
 }
 ```
 
-The History tab shows "by Doorbell". When history is persisted (roadmap
-item 6), this goes into the log as well.
+The History tab shows "by Doorbell", and the persisted history log (roadmap
+item 6) records it too.
 
 ## Web page
 

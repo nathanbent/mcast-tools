@@ -1,10 +1,12 @@
 # Intercom control panel: roadmap
 
-Status: planning. v0.5.0 is released; this covers the next two releases,
+Status: **v0.5.5 is built** (PR #38), along with the monitor page from v0.6.0.
+The rest of v0.6.0 (items 11–13) is planned below. This covers two releases,
 **v0.5.5** (integrate and polish) and **v0.6.0** (observe and harden).
+`intercom-status.md` has the current state and the next steps.
 `intercom-plan.md` is an overview of how the panel is built.
 
-## Where it stands (v0.5.0)
+## Where it stood (v0.5.0, before this roadmap)
 
 | Area | Today |
 |---|---|
@@ -189,12 +191,13 @@ To design before building:
 
 ### 9. Arrangeable layout (requested)
 
-**Started: the Settings tab.**
+**Built: the Settings tab and the Panel** (see 9a).
 - The layout is kept in `intercom.json` (`layout`: tab → section ids).
 - `PUT` and `DELETE /layout/{tab}` set and reset it; admins only.
 - A reusable `arrangeable(tab, sections)` in the page adds *Arrange this page…*: a dialog to drag sections (or use the arrows), with a way back to the usual order.
 - Sections are moved, not rebuilt, so what's typed in them stays.
-- **Next, if it works well:** the Panel's buttons, then other tabs with several sections (Schedules).
+- The Panel uses it too, for categories and the buttons in each (`panel`, `panel-buttons`).
+- **Open:** whether to roll it out to other tabs with several sections (Schedules).
 
 The plan:
 
@@ -261,12 +264,16 @@ The plan:
 ### 11. Delivery confirmation ("probes")
 
 - Endpoints running `mcast receive` already send named RTCP receiver reports
-  (loss, jitter, playout delay), which the core monitor collects.
+  (loss, jitter, playout delay). `mcast serve`'s monitor collects them
+  (`Monitor::listeners()`), but doesn't expose them yet: `MonitorSnapshot`
+  in `mcast-control/src/watch.rs`, behind `GET /api/v1/monitor`, carries only
+  groups and streams. Adding a `listeners` list there is the first step.
 - A zone can list the listeners it expects. After a run, the panel shows
   "3/4 listeners heard it" and flags silent endpoints. A webhook fires for
   an endpoint that stays silent.
-- This needs an optional core change: a free-form
-  `tag` on send requests, echoed in `JobInfo`, to match jobs reliably.
+- Maybe an optional core change: a free-form `tag` on send requests, echoed
+  in `JobInfo`, to match jobs to runs. The group, the stream's SSRC and the
+  run's time window may be enough; decide once listeners are exposed.
 - Decided: "probes" means these `mcast receive` endpoints, not separate
   listening devices.
 
@@ -277,7 +284,8 @@ The plan:
 
 ### 13. Backup and restore
 
-- Export and import `intercom.json`, optionally as a zip with the sounds.
+- Export and import `intercom.json`, optionally as an archive with the sounds.
+  Never include `tokens.json`, `webhooks.json` or history.
 - Import validates first and shows what would change.
 
 ## Later / out of scope
