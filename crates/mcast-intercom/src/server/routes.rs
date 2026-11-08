@@ -287,6 +287,7 @@ pub(super) async fn change<R: Send + 'static>(
     .await??;
     s.0.scheduler.poke();
     s.0.inputs.poke();
+    s.0.presence.poke();
     let _ = s.0.events.send(Event::ConfigChanged);
     Ok(r)
 }
@@ -556,6 +557,13 @@ pub(super) async fn listeners(
         .await?
         .map(Json)
         .map_err(passed_on)
+}
+
+/// Whether each speaker zones expect is reporting between plays:
+/// `{"known", "error", "speakers": [{"name", "zones", "online", "since_ms",
+/// "last_seen_ms"}]}`.
+pub(super) async fn speakers(State(s): State<AppState>) -> Json<crate::presence::Speakers> {
+    Json(s.0.presence.status())
 }
 
 /// Errors from the mcast server: its own status for "no such chime" and

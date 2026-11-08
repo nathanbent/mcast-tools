@@ -36,6 +36,9 @@ export const state = {
   siteUpcoming: {},
   // GPIO inputs' states (admins): [{ id, name, enabled, pressed, error, changed_ms, run }].
   inputs: [],
+  // Expected speakers between plays (GET /speakers): { known, error,
+  // speakers: [{ name, zones, online, since_ms, last_seen_ms }] }.
+  speakers: { known: false, error: null, speakers: [] },
 };
 
 // What the signed-in token may do (the server checks too).
@@ -76,6 +79,9 @@ function changed(part) {
 
 const endedListeners = [];
 export function onRunEnded(fn) { endedListeners.push(fn); }
+const speakerListeners = [];
+// Speakers that went offline or came back: `fn([{ speaker, online }])`.
+export function onSpeakersChanged(fn) { speakerListeners.push(fn); }
 const settledListeners = [];
 // Once a run is in the history: when it ends, or for one whose listeners
 // are checked, a few seconds later. `fn(run, before)`: `before` is its last
@@ -118,6 +124,11 @@ export async function refreshInputs() {
   changed("inputs");
 }
 
+export async function refreshSpeakers() {
+  try { state.speakers = await api("GET", "/speakers"); } catch {}
+  changed("speakers");
+}
+
 export async function refreshChimes() {
   try { state.chimes = await api("GET", "/chimes"); } catch {}
 }
@@ -156,7 +167,7 @@ export function refreshAll() {
   // A media token sees only the Sounds tab.
   if (!can.operate()) return refreshLibrary();
   // What's coming up depends on the sites in the config.
-  return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary()]);
+  return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary(), refreshSpeakers()]);
 }
 
 export function apply(ev) {
@@ -200,6 +211,11 @@ export function apply(ev) {
     case "inputs":
       state.inputs = ev.inputs;
       changed("inputs");
+      break;
+    case "speakers":
+      state.speakers = ev.status;
+      changed("speakers");
+      if (ev.changes.length) for (const fn of speakerListeners) fn(ev.changes);
       break;
     case "lagged":
       refreshAll();

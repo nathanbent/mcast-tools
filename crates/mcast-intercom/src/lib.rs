@@ -14,6 +14,7 @@ pub mod cli;
 pub mod history;
 pub mod inputs;
 pub mod model;
+pub mod presence;
 pub mod runner;
 pub mod scheduler;
 pub mod server;

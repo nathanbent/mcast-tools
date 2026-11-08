@@ -87,7 +87,8 @@ The v0.5.5 items, plus requests that came up along the way:
   - A `listener_silent` webhook, a toast, "Heard by 1 of 2 · silent: Office" on run cards, and a Speakers table on the Monitor tab.
   - If the monitor is off or unreachable, `listeners.error` says so and nobody is called silent.
 - **Tests:** unit and API tests against the fake, and an end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver. Checked in a browser with the real binaries.
-- **The Zones list** shows each expected listener's state: reporting now or not (from `GET /listeners`), and when it last heard a page (from the history, over 30 days).
+- **The Zones list** shows each expected listener's state: reporting now or offline (from `GET /speakers`), and when it last heard a page (from the history, over 30 days).
+- **Speakers going offline between plays** (`crate::presence`): the panel asks the monitor every 10 s. A speaker missing for a minute is offline: a `listener_offline` webhook, a toast and the Panel's stats strip; `listener_online` when it's back. Nothing is called offline while the monitor can't be asked.
 
 ### In #44: backup and restore (roadmap item 13)
 
@@ -129,13 +130,11 @@ The v0.5.5 items, plus requests that came up along the way:
    - A webhook delivery log (the last N deliveries per hook).
    - Monitor charts per site.
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
-   - A "speaker offline" alert between plays: receivers report even when idle.
 
 ## Questions still open for the owner
 
 1. **Delivery confirmation:**
    - How much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
-   - Should speakers be checked between plays too, for a "speaker offline" alert?
 2. **Text pages in playlists:** displays, TTS, or both?
 3. **Arrange this page:** roll it out to more tabs?
 4. **GPIO choices to confirm (#45):**

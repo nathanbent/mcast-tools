@@ -78,6 +78,12 @@ pub enum Event {
     Inputs {
         inputs: Vec<crate::inputs::InputStatus>,
     },
+    /// Expected speakers' states changed (as `GET /speakers`), with any
+    /// that went offline or came back.
+    Speakers {
+        status: crate::presence::Speakers,
+        changes: Vec<crate::presence::SpeakerChange>,
+    },
 }
 
 pub(crate) struct Inner {
@@ -97,6 +103,8 @@ pub(crate) struct Inner {
     pub(crate) history: Arc<crate::history::History>,
     /// Buttons and contacts on GPIO pins.
     pub(crate) inputs: crate::inputs::Inputs,
+    /// Whether expected speakers are there between plays.
+    pub(crate) presence: crate::presence::Presence,
     closing: watch::Receiver<bool>,
 }
 
@@ -190,6 +198,22 @@ impl AppState {
                 let _ = tx.send(Event::Inputs { inputs });
             })
         };
+        let presence = {
+            let (tx, hooks) = (events.clone(), webhooks.clone());
+            crate::presence::Presence::start(
+                config.clone(),
+                backend.clone(),
+                crate::presence::POLL,
+                crate::presence::OFFLINE_AFTER,
+                move |status, changes| {
+                    hooks.speakers(changes);
+                    let _ = tx.send(Event::Speakers {
+                        status: status.clone(),
+                        changes: changes.to_vec(),
+                    });
+                },
+            )
+        };
         Self(Arc::new(Inner {
             scheduler,
             runner,
@@ -202,6 +226,7 @@ impl AppState {
             webhooks,
             history,
             inputs,
+            presence,
             closing,
         }))
     }
@@ -433,6 +458,7 @@ pub fn router(state: AppState) -> Router {
         .route("/input-status", get(routes::input_status))
         .route("/backup", get(backup::download))
         .route("/restore", post(backup::restore))
+        .route("/speakers", get(routes::speakers))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))
         .route("/events", get(events))

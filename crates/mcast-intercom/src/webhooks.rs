@@ -4,7 +4,8 @@
 //! Hooks are kept in `webhooks.json` beside `intercom.json`, readable by its
 //! owner only, since each may hold a signing secret. [`Webhooks`] turns the
 //! runner's changes into events (`run_started`, `run_ended`, `run_failed`,
-//! `schedule_missed`, `listener_silent`, `backend_down`, `backend_up`) and delivers each to the
+//! `schedule_missed`, `listener_silent`, `listener_offline`, `listener_online`,
+//! `backend_down`, `backend_up`) and delivers each to the
 //! hooks that want it, off the caller's thread: a short timeout, one retry,
 //! and the outcome kept for the Settings page. A slow or dead receiver
 //! never holds up the panel.
@@ -24,12 +25,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 /// Every event a hook can ask for.
-pub const EVENTS: [&str; 7] = [
+pub const EVENTS: [&str; 9] = [
     "run_started",
     "run_ended",
     "run_failed",
     "schedule_missed",
     "listener_silent",
+    "listener_offline",
+    "listener_online",
     "backend_down",
     "backend_up",
 ];
@@ -363,6 +366,19 @@ impl Webhooks {
         };
         for (event, data) in events {
             self.send(event, data);
+        }
+    }
+
+    /// Speakers that went offline or came back between plays:
+    /// `listener_offline` / `listener_online`, `{"speaker"}`.
+    pub fn speakers(&self, changes: &[crate::presence::SpeakerChange]) {
+        for c in changes {
+            let event = if c.online {
+                "listener_online"
+            } else {
+                "listener_offline"
+            };
+            self.send(event, json!({ "speaker": c.speaker }));
         }
     }
 

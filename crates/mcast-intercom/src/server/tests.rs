@@ -904,6 +904,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("POST", "/inputs/{id}/test"),
     ("GET", "/input-status"),
     ("POST", "/restore"),
+    ("GET", "/speakers"),
     ("GET", "/chimes"),
     ("PUT", "/chimes"),
     ("GET", "/chimes/{name}/preview"),
@@ -2871,4 +2872,49 @@ async fn gpio_inputs_play_announcements() {
         assert!(Instant::now() < until, "still watched");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn says_which_speakers_are_reporting_between_plays() {
+    use crate::backend::Listener;
+    let p = panel(None);
+    p.fake.st.lock().unwrap().listeners = Some(vec![Listener {
+        group: "239.1.1.1:5000".into(),
+        name: Some("Lobby".into()),
+        cname: None,
+        about: None,
+        loss_percent: None,
+        last_heard_ms: 500.0,
+        left: false,
+    }]);
+    let (s, v) = p.call(Method::GET, "/speakers", None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["speakers"], json!([]), "no zone expects any yet: {v}");
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/zones",
+            Some(json!({"name": "Hall", "targets": [{"group": "zone-1"}], "listeners": ["Lobby", "Office"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    // Editing the config makes it look at once.
+    let until = Instant::now() + Duration::from_secs(5);
+    let v = loop {
+        let (_, v) = p.call(Method::GET, "/speakers", None).await;
+        if v["speakers"].as_array().is_some_and(|s| s.len() == 2)
+            && v["speakers"][0]["online"] == true
+        {
+            break v;
+        }
+        assert!(Instant::now() < until, "{v}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(v["known"], true);
+    assert_eq!(v["speakers"][0]["name"], "Lobby");
+    assert_eq!(v["speakers"][0]["zones"], json!(["Hall"]));
+    // Office isn't offline yet: it gets a minute.
+    assert!(v["speakers"][1]["online"].is_null(), "{v}");
+    assert!(crate::webhooks::EVENTS.contains(&"listener_offline"));
+    assert!(crate::webhooks::EVENTS.contains(&"listener_online"));
 }
