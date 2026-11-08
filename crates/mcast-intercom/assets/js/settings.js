@@ -13,6 +13,7 @@ import { ENCODINGS, encodingValue } from "./zones.js";
 import * as tokens from "./tokens.js";
 import * as webhooks from "./webhooks.js";
 import { arrangeable } from "./layout.js";
+import { LOOK_DEFAULTS } from "./panel.js";
 
 export async function putSettings(body, done) {
   try {
@@ -88,11 +89,10 @@ function defaults() {
 // How the Panel looks, for every screen.
 function panelLook() {
   const el = h("div");
-  const DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, show_stats: true, confirm_emergency: false };
   let dirty = false;
   const draw = () => {
     dirty = false;
-    const l = { ...DEFAULTS, ...(state.config.panel ?? {}) };
+    const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
     const size = select(SIZES, l.size);
     const mode = select([["tiles", "Tiles"], ["list", "List: one row each"]], l.mode);
     const box = (on, label) => {

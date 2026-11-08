@@ -57,7 +57,7 @@
 /* A theme chosen on this browser (js/theme.js) wins over the system's. */
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
-#theme { font-size: 16px; padding: 2px 8px; }
+#theme { display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; line-height: 0; }
 
 * { box-sizing: border-box; }
 
@@ -581,3 +581,11 @@ body.kiosk main { max-width: none; }
 .two-col > .panel-group { margin-top: 0; }
 .two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; margin-top: 18px; }
 @media (max-width: 520px) { .two-col { grid-template-columns: 1fr; } }
+
+/* The header's More menu (the setup tabs) */
+nav.tabs .more { position: relative; }
+nav.tabs .more-toggle.current { color: var(--text); border-color: var(--line); background: var(--bg); font-weight: 600; }
+nav.tabs .more-menu { position: fixed; z-index: 30; min-width: 170px; display: flex; flex-direction: column;
+  padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 6px 20px rgb(0 0 0 / 0.15); }
+nav.tabs .more-menu[hidden] { display: none; }
+nav.tabs .more-menu button { text-align: left; width: 100%; }

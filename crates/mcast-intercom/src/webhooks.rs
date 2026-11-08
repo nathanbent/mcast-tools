@@ -12,6 +12,7 @@
 use crate::now_ms;
 use crate::runner::{BackendStatus, Change, Run, RunId, RunState};
 use crate::store::stamp;
+use crate::tokens::{hex, random};
 use anyhow::{bail, Context, Result};
 use ring::hmac;
 use serde::{Deserialize, Serialize};
@@ -195,19 +196,6 @@ impl WebhookFile {
         }
         Ok(())
     }
-}
-
-fn random<const N: usize>() -> Result<[u8; N]> {
-    use ring::rand::SecureRandom;
-    let mut b = [0u8; N];
-    ring::rand::SystemRandom::new()
-        .fill(&mut b)
-        .map_err(|_| anyhow::anyhow!("no random numbers from the system"))?;
-    Ok(b)
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// `whsec_` and 32 random bytes in hex.

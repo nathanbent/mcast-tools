@@ -53,6 +53,50 @@ function kiosk() {
   void lock;
 }
 
+// The setup tabs, in a "More" menu when there are many tabs.
+const MORE = ["playlists", "sounds", "zones", "settings"];
+
+function moreMenu(buttons) {
+  const inMore = buttons.length > 6 ? buttons.filter((b) => MORE.includes(b.dataset.tab)) : [];
+  if (!inMore.length) return null;
+  const toggle = h("button", { class: "more-toggle", "aria-haspopup": "menu", "aria-expanded": "false" }, "More ▾");
+  const menu = h("div", { class: "more-menu", role: "menu", hidden: true });
+  for (const b of inMore) {
+    b.setAttribute("role", "menuitem");
+    menu.append(b);
+  }
+  const close = () => { menu.hidden = true; toggle.setAttribute("aria-expanded", "false"); };
+  const open = () => {
+    // Fixed under the button: the tab row may scroll sideways (phones), which would clip it.
+    const r = toggle.getBoundingClientRect();
+    menu.style.top = `${r.bottom + 4}px`;
+    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 190))}px`;
+    menu.hidden = false;
+    toggle.setAttribute("aria-expanded", "true");
+    inMore[0].focus();
+  };
+  window.addEventListener("resize", () => close());
+  window.addEventListener("scroll", () => close(), { passive: true });
+  toggle.onclick = (e) => { e.stopPropagation(); menu.hidden ? open() : close(); };
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) close(); });
+  menu.addEventListener("keydown", (e) => {
+    const i = inMore.indexOf(document.activeElement);
+    if (e.key === "Escape") { close(); toggle.focus(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); inMore[(i + 1) % inMore.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); inMore[(i - 1 + inMore.length) % inMore.length].focus(); }
+  });
+  document.querySelector("nav.tabs").append(h("div", { class: "more" }, toggle, menu));
+  return {
+    close,
+    // Say which of its tabs is showing, if one is.
+    showing(name) {
+      const b = inMore.find((x) => x.dataset.tab === name);
+      toggle.textContent = b ? `${b.textContent} ▾` : "More ▾";
+      toggle.classList.toggle("current", !!b);
+    },
+  };
+}
+
 function tabs() {
   const allowed = (TABS[state.me.role] ?? []).filter((t) => !state.view.kiosk || t === "panel");
   const all = [...document.querySelectorAll("nav.tabs button")];
@@ -63,6 +107,7 @@ function tabs() {
     }
   }
   const buttons = all.filter((b) => allowed.includes(b.dataset.tab));
+  const more = moreMenu(buttons);
   const show = (name) => {
     if (!buttons.some((b) => b.dataset.tab === name)) name = buttons[0]?.dataset.tab;
     for (const b of buttons) {
@@ -70,8 +115,9 @@ function tabs() {
       b.setAttribute("aria-selected", String(on));
       $(`tab-${b.dataset.tab}`).hidden = !on;
     }
+    more?.showing(name);
   };
-  for (const b of buttons) b.onclick = () => { location.hash = b.dataset.tab; };
+  for (const b of buttons) b.onclick = () => { location.hash = b.dataset.tab; more?.close(); };
   window.addEventListener("hashchange", () => show(location.hash.slice(1)));
   show(location.hash.slice(1));
 }

@@ -55,7 +55,7 @@
 /* A theme chosen on this browser (js/theme.js) wins over the system's. */
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
-#theme { font-size: 16px; padding: 2px 8px; }
+#theme { display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; line-height: 0; }
 
 * { box-sizing: border-box; }
 

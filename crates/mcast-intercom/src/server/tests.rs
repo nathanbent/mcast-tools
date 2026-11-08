@@ -2468,3 +2468,75 @@ async fn history_is_kept_on_disk_and_filtered() {
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn limited_tokens_hear_only_their_runs_live() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    p.set_up_two(admin).await;
+    p.call_with(
+        Method::POST,
+        "/categories",
+        Some(json!({"name": "Gates"})),
+        admin,
+    )
+    .await;
+    let (_, mut gate) = p
+        .call_with(Method::GET, "/announcements/gate", None, admin)
+        .await;
+    gate["category"] = json!("gates");
+    p.call_with(Method::PUT, "/announcements/gate", Some(gate), admin)
+        .await;
+    let desk = p
+        .token(
+            admin,
+            json!({"name": "Desk", "role": "operator", "categories": ["gates"]}),
+        )
+        .await;
+    let req = Request::builder()
+        .uri(format!("{API_PREFIX}/events"))
+        .header(header::AUTHORIZATION, format!("Bearer {desk}"))
+        .body(Body::empty())
+        .unwrap();
+    let mut body = p
+        .app
+        .clone()
+        .oneshot(req)
+        .await
+        .unwrap()
+        .into_body()
+        .into_data_stream();
+    // Bell (not its category) first, then Gate.
+    p.call_with(Method::POST, "/announcements/bell/play", None, admin)
+        .await;
+    p.call_with(Method::POST, "/announcements/gate/play", None, admin)
+        .await;
+    let mut seen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !seen.contains(r#""announcement":"gate""#) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "events so far: {seen}");
+        if let Ok(Some(Ok(chunk))) = tokio::time::timeout(left, body.next()).await {
+            seen.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    }
+    assert!(!seen.contains(r#""announcement":"bell""#), "{seen}");
+}
+
+#[tokio::test]
+async fn a_zone_a_part_uses_stays() {
+    let p = panel(None);
+    p.set_up_two(None).await;
+    // Gate plays to Yard only through a part.
+    let (_, mut gate) = p.call(Method::GET, "/announcements/gate", None).await;
+    gate["zones"] = json!(["hall"]);
+    gate["parts"] = json!([{"zones": ["yard"], "audio": "chime_only"}]);
+    let (s, v) = p.call(Method::PUT, "/announcements/gate", Some(gate)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, mut bell) = p.call(Method::GET, "/announcements/bell", None).await;
+    bell["zones"] = json!(["hall"]);
+    p.call(Method::PUT, "/announcements/bell", Some(bell)).await;
+    let (s, v) = p.call(Method::DELETE, "/zones/yard", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("Gate"), "{v}");
+}

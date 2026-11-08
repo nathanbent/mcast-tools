@@ -411,25 +411,48 @@ pub fn router(state: AppState) -> Router {
 
 // ---- events ----
 
+/// Server-sent events. A token limited to some announcements hears only
+/// their runs, as `/runs` lists only them.
 async fn events(
     State(s): State<AppState>,
+    axum::Extension(caller): axum::Extension<Caller>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let rx = s.0.events.subscribe();
     let mut closing = s.0.closing.clone();
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        let e = match rx.recv().await {
-            Ok(e) => {
-                let value = serde_json::to_value(&e).unwrap_or_default();
-                let kind = value["type"].as_str().unwrap_or("event").to_string();
-                SseEvent::default().event(kind).data(value.to_string())
+    // The config the filter uses: read once, and again when it changes.
+    let cfg = if caller.is_limited() {
+        Some(s.load().await.unwrap_or_default())
+    } else {
+        None
+    };
+    let state = (rx, cfg, s, caller);
+    let stream = futures_util::stream::unfold(state, |(mut rx, mut cfg, s, caller)| async move {
+        let e = loop {
+            match rx.recv().await {
+                Ok(e) => {
+                    if let Some(c) = cfg.as_mut() {
+                        match &e {
+                            Event::ConfigChanged => *c = s.load().await.unwrap_or_default(),
+                            Event::Run { run } if !caller.may_play(c, &run.announcement) => {
+                                continue
+                            }
+                            _ => {}
+                        }
+                    }
+                    let value = serde_json::to_value(&e).unwrap_or_default();
+                    let kind = value["type"].as_str().unwrap_or("event").to_string();
+                    break SseEvent::default().event(kind).data(value.to_string());
+                }
+                // A slow client missed some; tell it so it can refetch.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    break SseEvent::default()
+                        .event("lagged")
+                        .data(json!({ "type": "lagged", "missed": n }).to_string())
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
             }
-            // A slow client missed some; tell it so it can refetch.
-            Err(broadcast::error::RecvError::Lagged(n)) => SseEvent::default()
-                .event("lagged")
-                .data(json!({ "type": "lagged", "missed": n }).to_string()),
-            Err(broadcast::error::RecvError::Closed) => return None,
         };
-        Some((Ok(e), rx))
+        Some((Ok(e), (rx, cfg, s, caller)))
     })
     .take_until(async move {
         // End on shutdown only: a dropped sender (no shutdown wired up) isn't one.

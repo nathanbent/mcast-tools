@@ -6,7 +6,7 @@
 //!
 //! This crate is a client of that API and nothing else: it doesn't link the
 //! other mcast crates, so it can be split out on its own. See
-//! `docs/intercom-plan.md` for where it's going.
+//! `docs/intercom-plan.md` for an overview, `docs/intercom-roadmap.md` for what's next.
 
 pub mod backend;
 pub mod cli;

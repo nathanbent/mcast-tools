@@ -4,7 +4,7 @@
 
 import { api, download } from "./api.js";
 import { h, replace, toast, saved } from "./dom.js";
-import { state, subscribe, isOver, panelAnnouncements } from "./store.js";
+import { state, subscribe, isOver, panelAnnouncements, onRunEnded } from "./store.js";
 import { runCard } from "./runs.js";
 import { field, select } from "./editor.js";
 
@@ -94,15 +94,11 @@ export function mount(target) {
   el.replaceChildren(bar, list);
   draw();
   load();
-  // A run that ends is in the log now: read the first page again.
-  let ended = new Set([...state.runs.values()].filter(isOver).map((r) => r.id));
-  subscribe(["runs"], () => {
-    const now = new Set([...state.runs.values()].filter(isOver).map((r) => r.id));
-    const fresh = [...now].some((id) => !ended.has(id));
-    ended = now;
-    if (fresh) load();
-    else render();
-  });
+  // A run that ends is in the log now: read the first page again (once for
+  // several ending together).
+  let soon = null;
+  onRunEnded(() => { clearTimeout(soon); soon = setTimeout(load, 300); });
+  subscribe(["runs"], render);
   subscribe(["config"], draw);
   // "5 min ago" moves on by itself.
   setInterval(render, 30000);

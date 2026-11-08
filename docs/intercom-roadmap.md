@@ -2,7 +2,7 @@
 
 Status: planning. v0.5.0 is released; this covers the next two releases,
 **v0.5.5** (integrate and polish) and **v0.6.0** (observe and harden).
-`intercom-plan.md` covers the original four phases, all built.
+`intercom-plan.md` is an overview of how the panel is built.
 
 ## Where it stands (v0.5.0)
 
@@ -265,7 +265,7 @@ The plan:
 - A zone can list the listeners it expects. After a run, the panel shows
   "3/4 listeners heard it" and flags silent endpoints. A webhook fires for
   an endpoint that stays silent.
-- This needs the optional core change from `intercom-plan.md`: a free-form
+- This needs an optional core change: a free-form
   `tag` on send requests, echoed in `JobInfo`, to match jobs reliably.
 - Decided: "probes" means these `mcast receive` endpoints, not separate
   listening devices.

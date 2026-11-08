@@ -58,7 +58,12 @@ impl Item for Zone {
         let users: Vec<&str> = c
             .announcements
             .iter()
-            .filter(|a| a.zones.iter().any(|z| z == id))
+            // Its own zones, or a part's.
+            .filter(|a| {
+                a.sections()
+                    .iter()
+                    .any(|(_, zs)| zs.iter().any(|z| z == id))
+            })
             .map(|a| a.name.as_str())
             .collect();
         (!users.is_empty()).then(|| {
@@ -414,8 +419,10 @@ pub(super) async fn list_runs(
     Extension(caller): Extension<Caller>,
 ) -> Json<Vec<Run>> {
     let mut runs = s.0.runner.list();
-    let cfg = s.load().await.unwrap_or_default();
-    runs.retain(|r| caller.may_play(&cfg, &r.announcement));
+    if caller.is_limited() {
+        let cfg = s.load().await.unwrap_or_default();
+        runs.retain(|r| caller.may_play(&cfg, &r.announcement));
+    }
     Json(runs)
 }
 
@@ -426,7 +433,7 @@ fn no_run(id: u64) -> ApiError {
 /// A run the caller may see and stop.
 async fn their_run(s: &AppState, caller: &Caller, id: u64) -> ApiResult<Run> {
     let run = s.0.runner.get(id).ok_or_else(|| no_run(id))?;
-    if !caller.may_play(&s.load().await?, &run.announcement) {
+    if caller.is_limited() && !caller.may_play(&s.load().await?, &run.announcement) {
         return Err(caller.cant(&format!("see or stop runs of \"{}\"", run.name)));
     }
     Ok(run)

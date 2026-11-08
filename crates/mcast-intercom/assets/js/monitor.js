@@ -5,7 +5,7 @@
 
 import { api } from "./api.js";
 import { h, replace, saved } from "./dom.js";
-import { subscribe } from "./store.js";
+import { onRunEnded } from "./store.js";
 
 // Outcomes, in stacking order, with their status colors (see app.css).
 const OUTCOMES = [
@@ -196,7 +196,15 @@ export function mount(target) {
   el = target;
   render();
   load();
-  // New plays show up when they end.
-  subscribe(["runs"], () => { clearTimeout(mount.t); mount.t = setTimeout(load, 1500); });
-  setInterval(load, 5 * 60 * 1000);
+  // New plays count once they end: read again then, if the tab is showing,
+  // or when it's next shown.
+  let stale = false;
+  const showing = () => !el.closest("[hidden]");
+  let soon = null;
+  const refresh = () => {
+    if (showing()) { stale = false; clearTimeout(soon); soon = setTimeout(load, 1000); } else stale = true;
+  };
+  onRunEnded(refresh);
+  window.addEventListener("hashchange", () => { if (stale && location.hash === "#monitor") refresh(); });
+  setInterval(refresh, 5 * 60 * 1000);
 }

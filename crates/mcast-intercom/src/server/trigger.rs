@@ -42,7 +42,7 @@ fn overrides(query: Option<&str>, body: &[u8]) -> ApiResult<Overrides> {
     let mut o = Overrides::default();
     for kv in query.unwrap_or("").split('&') {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        let v = decode(v);
+        let v = super::auth::url_decode(v);
         match k {
             "zones" | "zone" => {
                 let list = o.zones.get_or_insert_with(Vec::new);
@@ -74,35 +74,6 @@ fn overrides(query: Option<&str>, body: &[u8]) -> ApiResult<Overrides> {
         }
     }
     Ok(o)
-}
-
-/// `+` and `%XX` in a query value.
-fn decode(v: &str) -> String {
-    let b = v.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        let hex = |c: u8| (c as char).to_digit(16);
-        match (
-            b[i],
-            b.get(i + 1).copied().and_then(hex),
-            b.get(i + 2).copied().and_then(hex),
-        ) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            (b'+', _, _) => {
-                out.push(b' ');
-                i += 1;
-            }
-            (c, _, _) => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The announcement `which` (id or name) if the caller may play it.
@@ -268,6 +239,6 @@ mod tests {
         );
         assert!(overrides(Some("repeat=lots"), b"").is_err());
         assert!(overrides(None, br#"{"volume": 3}"#).is_err());
-        assert_eq!(decode("a%2Cb%20c"), "a,b c");
+        assert_eq!(super::super::auth::url_decode("a%2Cb%20c+d"), "a,b c d");
     }
 }

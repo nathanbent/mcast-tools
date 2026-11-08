@@ -78,6 +78,16 @@ impl Caller {
         }
     }
 
+    /// Whether it sees only some announcements' runs (so filtering them
+    /// needs the config).
+    pub fn is_limited(&self) -> bool {
+        match self.role {
+            Role::Trigger => !self.announcements.is_empty(),
+            Role::Operator => !self.categories.is_empty(),
+            _ => false,
+        }
+    }
+
     /// What runs it starts record.
     pub fn trigger(&self) -> Trigger {
         match (&self.name, self.role) {
@@ -157,7 +167,7 @@ pub(super) async fn authenticate(
         .query()
         .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("access_token=")))
         .filter(|t| !t.is_empty())
-        .map(percent_decode);
+        .map(url_decode);
     let in_url = bearer.is_none() && query.is_some();
     let caller = match bearer.or(query) {
         None if s.0.auth.open => Caller::open(),
@@ -207,9 +217,9 @@ impl Caller {
     }
 }
 
-/// `%2B` → `+`: tokens are base64url, but a hand-typed one may be encoded.
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
+/// A query value decoded: `%XX`, and `+` as a space.
+pub(super) fn url_decode(v: &str) -> String {
+    let b = v.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
@@ -222,6 +232,10 @@ fn percent_decode(s: &str) -> String {
             (b'%', Some(h), Some(l)) => {
                 out.push((h * 16 + l) as u8);
                 i += 3;
+            }
+            (b'+', _, _) => {
+                out.push(b' ');
+                i += 1;
             }
             (c, _, _) => {
                 out.push(c);

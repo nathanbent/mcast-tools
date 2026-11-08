@@ -324,7 +324,8 @@ fn expiry(date: Option<&str>, cfg: &Config, now_ms: u64) -> Result<(Option<Strin
     Ok((Some(day.to_string()), Some(ms)))
 }
 
-fn random<const N: usize>() -> Result<[u8; N]> {
+/// `N` random bytes from the system.
+pub(crate) fn random<const N: usize>() -> Result<[u8; N]> {
     let mut b = [0u8; N];
     SystemRandom::new()
         .fill(&mut b)
@@ -343,7 +344,8 @@ pub fn hash(secret: &str) -> String {
     format!("sha256:{}", hex(d.as_ref()))
 }
 
-fn hex(b: &[u8]) -> String {
+/// Bytes as lowercase hex.
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
