@@ -9,7 +9,7 @@ and what each item became.
 ## Where things stand
 
 Every item on the roadmap for v0.5.5 and v0.6.0 is built, plus some
-follow-ups. Nothing is merged yet: the work is five PRs, each stacked on the
+follow-ups. Nothing is merged yet: the work is six PRs, each stacked on the
 one before so its diff shows only its own feature.
 
 | PR | Branch | What | Based on |
@@ -19,17 +19,17 @@ one before so its diff shows only its own feature.
 | nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
 | nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
 | nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site (follow-ups) | #45 |
-| (this one) | `claude/intercom-webhook-log` | A delivery log for each webhook (a follow-up) | #46 |
+| nathanbent/mcast-tools#47 | `claude/intercom-webhook-log` | A delivery log for each webhook (a follow-up) | #46 |
 
 - **State:** all are open, with no merge conflicts and no review comments, waiting on the owner.
   - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
   - CI was green on #45's code too (`dadf4c0`); its later commits only change this file.
-  - #46 was just opened when this was written; the same checks pass locally there (302 tests).
+  - CI was green on #46 too (`ad069d8`). #47 was just opened when this was written; the same checks pass locally there (306 tests).
 - **Changes low in the stack are merged up:** a fix or follow-up on #43 is merged into #44's branch, then #44's into #45's, so the PRs stay consistent. Conflicts so far were neighbouring additions (routes, events, tests, docs), resolved by keeping both. After one, check every `#[tokio::test]` attribute survived: clippy's dead-code error caught one that didn't.
-- **Merging:** merge them in order (#38, then #43, #44, #45, #46). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
+- **Merging:** merge them in order (#38, then #43, #44, #45, #46, #47). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
 - **`main`** is at v0.5.4 and was last merged into #38 at that version. If `main` moves, merge it into #38's branch and carry it up the stack (merge each branch into the next). Conflicts so far were small, in `announcements.js` and `talk.js`.
 - **After merging:** release v0.5.5 (#38), then v0.6.0 (the rest), or all of it as v0.6.0.
-- **A Claude session was watching all five PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
+- **A Claude session was watching all six PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
 
 ## Checked
 
@@ -119,7 +119,7 @@ The v0.5.5 items, plus requests that came up along the way:
   - The mcast server's uptime stays panel-wide.
   - Tested by unit and API tests, and in a browser with real plays.
 
-### Webhook delivery log (a follow-up, the PR after #46)
+### In #47: webhook delivery log (a follow-up)
 
 - **What's kept:** each hook's last 50 deliveries (`LOG_PER_HOOK`): its number, event, what it was about, when, the result (status and error), attempts and time taken.
 - **Where:** `GET /webhooks/{id}/deliveries` (admin), and a *Log* button on each hook in Settings → Other systems.
@@ -155,7 +155,7 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **The owner reviews and merges** #38, #43, #44, #45 and #46, in that order.
+1. **The owner reviews and merges** #38, #43, #44, #45, #46 and #47, in that order.
 2. **Try the hardware:**
    - A button on a Pi (#45).
    - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
