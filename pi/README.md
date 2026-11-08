@@ -114,11 +114,29 @@ panic button, a door contact or a bell push plays an announcement.
   or use an opto-isolated input board.
 - **Never** put more than 3.3 V on a pin.
 
+### Text pages: speech and displays
+
+Text pages in intercom playlists are spoken by `mcast serve`. `install.sh`
+installs eSpeak NG by default (`TEXT_TO_SPEECH=espeak`: small, robotic).
+`TEXT_TO_SPEECH=piper` adds Piper with one natural voice (`PIPER_VOICE`,
+`en_US-lessac-medium` by default, about 60 MB), fine on a Pi 4 or 5:
+- Piper goes in `/opt/piper`, its voices in `/usr/local/share/mcast/voices`
+  (`NAME.onnx` with `NAME.onnx.json`). Add more there and restart `mcast`;
+  the panel's voice list follows.
+- What's spoken is kept in `/var/lib/mcast/tts-cache`, so the same words are
+  only synthesized once.
+- `journalctl -u mcast` says at start which engine it found.
+
+To show text pages on a screen: run `mcast text recv -g GROUP` on any Linux
+box by the screen, and add `GROUP` to the zone's Text displays. Or open the
+panel's display page (Settings → Panel → Display page) in a browser on a TV
+or tablet.
+
 Setting `ENABLE_INTERCOM=no` again stops and removes the service, but keeps
 `intercom.json` and the token.
 
 The intercom needs mcast 0.4.0 or later, HTTPS (for push to talk) 0.5.0 or
-later, and playlists, delivery confirmation and GPIO buttons 0.5.5 or later. With an older binary, `install.sh` skips the intercom, or serves it
+later, and playlists, text pages, delivery confirmation and GPIO buttons 0.5.5 or later. With an older binary, `install.sh` skips the intercom, or serves it
 over plain HTTP, and says so: run `sudo mcast update`, then re-run
 `install.sh`.
 

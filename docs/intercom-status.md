@@ -1,20 +1,22 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, at the end of a second session. That session checked
+Last updated 2026-11-08, in a third session. The second session checked
 the first one's work, built everything left on the roadmap plus follow-ups,
-merged it all into `main`, and bumped the version to 0.5.5. Read this first,
+merged it all into `main`, and bumped the version to 0.5.5 (#48, merged).
+The third built **text pages in playlists** (below), on
+`claude/intelligent-ramanujan-9guf2i`, not merged yet. Read this first,
 then `intercom-roadmap.md` (the plan and what each item became) and
 `intercom-plan.md` (how the panel is built).
 
 ## Where things stand
 
-- **Everything is on `main`.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+- **Everything but text pages is on `main`.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
   - last-heard times in the Zones list;
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
   - a webhook delivery log.
-- **No intercom feature PRs are open;** only the version bump (#48).
-- **The version is 0.5.5** in `Cargo.toml`. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. The bump is in nathanbent/mcast-tools#48 (`claude/vibrant-knuth-34bpdf`). Once that's merged, the release is ready to cut (see What's next).
+- **Text pages** are on `claude/intelligent-ramanujan-9guf2i`, pushed, with no PR yet (see *Text pages*, below).
+- **The version is 0.5.5** in `Cargo.toml`, and nathanbent/mcast-tools#48 (the bump) is merged. v0.5.5 isn't released yet (the newest tag is v0.5.4), so text pages would ship in it too unless the owner wants another bump. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0.
 - **New work** branches from `main`.
 
 The work came as six stacked PRs, merged in order with merge commits:
@@ -37,6 +39,66 @@ The work came as six stacked PRs, merged in order with merge commits:
 - **At the start of the session,** on #38's head (`6908d0f`): fmt, clippy (`-D warnings`) and `cargo test --workspace` all passed (271 tests), and GitHub CI was green. Every item listed below is in the code, with no TODOs left.
 - **On `main` after the merges** (`c1c6ec7`), the same checks pass: 306 tests. They pass again with the version bump.
 - **Docs** that had fallen behind the code were fixed in #38: the roadmap's status, item 9 (the Panel is arrangeable too), item 11 (the core didn't expose listener reports yet), and `intercom-tokens.md` (history is persisted).
+
+## Text pages (third session)
+
+The owner answered the open question: text pages are **both** spoken and
+shown, chosen per page (both by default), with Piper for speech (eSpeak NG
+as the fallback), shown **in step** with the audio, on **both** kinds of
+display.
+
+- **Core (`mcast serve`), general, not panel-specific:**
+  - `mcast_audio::tts`: Piper (if `piper` is on the `PATH` with a voice in
+    `--tts-voices`, default `/usr/local/share/mcast/voices`), else eSpeak NG,
+    or `--tts-command` (text on stdin, WAV on stdout). WAVs are cached by
+    engine, voice and text (`--tts-cache`, `MCAST_TTS_CACHE`; owner-only
+    directory, 500 files kept). `mcast serve` says at start which it found.
+  - A `files` source's items can be `{"say": TEXT, "voice"}`; the server
+    speaks them before starting the sender. `GET /api/v1/voices`.
+  - Senders report `stats.item` (the item playing), with an immediate
+    `job_updated` as each starts. `FileList` reports a file when it's first
+    read, after the gap before it; the sender reads a packet at a time, so
+    this is within a packet of when it's sent.
+  - Documented in `docs/api.md` (*Text to speech*).
+- **Panel:**
+  - `PlaylistItem::Text { text, speak, show, voice }`. Spoken pages go to
+    the server as `say` items; pages only shown don't go in the stream.
+    `Playlist::texts_by_item` maps each item heard to the pages to show as
+    it starts: a page only shown waits for the next item heard (or goes
+    with the last). A playlist needs something heard to be played.
+  - Zones have `displays` (groups, up to 20).
+  - The runner follows `Feed::JobItem` (from `job_started`/`job_updated`
+    events with `stats.item`); items that arrive before the job is ours wait
+    in `early_items`. It records `run.shown` once per (part, round, item)
+    and emits `Change::Shown`.
+  - `crate::displays`: the board (`GET /display?zones=`, `display` event)
+    keeps a page up while its run plays and `HOLD` (30 s) after; a stopped
+    run's pages come down at once. A worker thread sends pages to display
+    groups on a text channel per group (`POST /texts`, named "Intercom",
+    SAP on), reopened if it went away, closed after 5 idle minutes.
+  - `GET /voices` passes on the server's. Limited tokens see only their
+    categories' pages.
+  - Page: text pages in the Playlists editor (Speak, Show on displays, a
+    voice), Text displays on zones, `?display=1&zones=a,b` (a full-screen
+    sign with a clock in between; Settings → Panel builds the link), and
+    "Shown: ..." on run cards.
+- **Pi:** `TEXT_TO_SPEECH=espeak|piper|none` (espeak by default) and
+  `PIPER_VOICE` in `pi.conf`. Piper is the 2023.11.14-2 release binary in
+  `/opt/piper` with a wrapper in `/usr/local/bin`, its voice from Hugging
+  Face. `mcast.env` sets `MCAST_TTS_CACHE=/var/lib/mcast/tts-cache`.
+- **Tests:** TTS unit tests (a fake command; eSpeak NG as an ignored test),
+  item reporting in the sender, an API test in `mcast-server` (speaking,
+  caching, items in order, an engine that fails), panel unit and API
+  tests, and an end-to-end test (`tests/server.rs`) with a real
+  `mcast serve`: speech by command, items in step, and the text arriving
+  on the display group through a real text channel.
+- **Checked by hand** with the real binaries and real eSpeak NG: the
+  editor, the zone form, the display page (text up 1.3 s after play, as the
+  spoken page started) and `mcast text recv` showing "Intercom: ...".
+- **Not checked:** Piper with a real voice. Hugging Face was blocked from
+  that container. `piper` 1.8's flags were checked (`-m`, `-f`, text on
+  stdin), and the C++ release takes the same. **Try `TEXT_TO_SPEECH=piper`
+  on a Pi.**
 
 ## What's built
 
@@ -156,23 +218,25 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Merge the version bump:** nathanbent/mcast-tools#48 (0.5.4 → 0.5.5, with these docs), the only one open. Once it's merged, this step is done.
+1. **Text pages:** open a PR from `claude/intelligent-ramanujan-9guf2i` and merge it, if the owner is happy with it.
 2. **Try the hardware before releasing.** Nothing here has run on real hardware:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
+   - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
 3. **Release v0.5.5:** run the Release workflow (Actions tab) from `main` with the tag `v0.5.5`. It must match `Cargo.toml`, and the workflow refuses a tag or release that already exists. It builds the binaries and publishes the release.
-4. **Text pages in playlists:**
-   - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
-   - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
-5. **Smaller follow-ups:**
+4. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner
 
 1. **Delivery confirmation:**
    - How much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
-2. **Text pages in playlists:** displays, TTS, or both?
-3. **Arrange this page:** roll it out to more tabs?
+2. **Arrange this page:** roll it out to more tabs?
+3. **Text pages, choices to confirm:**
+   - A page stays on the display page for 30 s after its run ends (`displays::HOLD`).
+   - A page only shown appears with the next item heard, not on its own timer.
+   - The default Piper voice on a Pi is `en_US-lessac-medium`.
+   - Ship it in v0.5.5 (not released yet), or bump first?
 4. **GPIO choices to confirm (#45):**
    - An input plays at its announcement's priority, with no per-input priority.
    - Re-pressing while it plays is ignored, not restarted.

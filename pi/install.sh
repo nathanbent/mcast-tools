@@ -24,6 +24,8 @@ MCAST_LISTEN="0.0.0.0:8650"
 MCAST_TOKEN=""
 MCAST_IFACE="any"
 MCAST_EXTRA_ARGS=""
+TEXT_TO_SPEECH=espeak
+PIPER_VOICE="en_US-lessac-medium"
 ENABLE_INTERCOM=no
 INTERCOM_LISTEN="0.0.0.0:8651"
 INTERCOM_TOKEN=""
@@ -201,6 +203,8 @@ MCAST_LISTEN=$MCAST_LISTEN
 MCAST_TOKEN=$MCAST_TOKEN
 MCAST_IFACE=$MCAST_IFACE
 MCAST_EXTRA_ARGS="$MCAST_EXTRA_ARGS"
+# Spoken text is kept here, so the same words are only synthesized once.
+MCAST_TTS_CACHE=/var/lib/mcast/tts-cache
 EOF
     umask 022
     chown root:mcast "$env"
@@ -211,6 +215,69 @@ EOF
     systemctl enable mcast.service
     systemctl restart mcast.service
     note "mcast web GUI: http://$(hostname).local:$MCAST_PORT/   (sudo mcast update to upgrade)"
+}
+
+# Text to speech for mcast serve (spoken text pages in intercom playlists):
+# eSpeak NG from apt, or Piper (natural voices) with one voice. mcast serve
+# uses Piper when it has a voice, else eSpeak NG.
+install_tts() {
+    on "$INSTALL_MCAST" || return 0
+    case ${TEXT_TO_SPEECH,,} in
+        none | no | "") return 0 ;;
+        espeak | piper) ;;
+        *)
+            echo "TEXT_TO_SPEECH must be espeak, piper or none, not \"$TEXT_TO_SPEECH\"" >&2
+            exit 1
+            ;;
+    esac
+    step "Text to speech"
+    # eSpeak NG either way: it's what speaks without a Piper voice.
+    apt_install espeak-ng
+    [ "${TEXT_TO_SPEECH,,}" = piper ] || return 0
+
+    local arch voices=/usr/local/share/mcast/voices
+    arch=$(dpkg --print-architecture)
+    case $arch in
+        arm64) arch=aarch64 ;;
+        amd64) arch=x86_64 ;;
+        *)
+            note "Piper NOT installed: there's no build for $arch. eSpeak NG speaks instead."
+            return 0
+            ;;
+    esac
+    if [ ! -x /opt/piper/piper ]; then
+        local tmp
+        tmp=$(mktemp -d)
+        curl -fsSL -o "$tmp/piper.tar.gz" \
+            "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_$arch.tar.gz"
+        tar -xzf "$tmp/piper.tar.gz" -C /opt
+        rm -r "${tmp:?}"
+    fi
+    # A wrapper, so Piper finds its libraries and data beside itself.
+    printf '#!/bin/sh\nexec /opt/piper/piper "$@"\n' >/usr/local/bin/piper
+    chmod 0755 /usr/local/bin/piper
+
+    # en_US-lessac-medium lives at en/en_US/lessac/medium/ on Hugging Face.
+    local v=$PIPER_VOICE lang region name quality
+    region=${v%%-*}
+    lang=${region%%_*}
+    name=${v#*-}
+    quality=${name##*-}
+    name=${name%-*}
+    install -d -m 0755 "$voices"
+    local onnx="${voices:?}/${v:?}.onnx"
+    if [ ! -f "$onnx" ] || [ ! -f "$onnx.json" ]; then
+        local url="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/$lang/$region/$name/$quality/$v.onnx"
+        if curl -fsSL -o "$onnx.part" "$url" && curl -fsSL -o "$onnx.json" "$url.json"; then
+            mv "$onnx.part" "$onnx"
+        else
+            rm -f "${onnx:?}.part" "${onnx:?}.json"
+            note "Piper voice \"$v\" NOT downloaded (see https://huggingface.co/rhasspy/piper-voices). eSpeak NG speaks until a voice is in $voices."
+            return 0
+        fi
+    fi
+    note "Text to speech: Piper, voice $v (more voices go in $voices; restart mcast after adding one)"
+    systemctl restart mcast.service 2>/dev/null || true
 }
 
 install_intercom() {
@@ -418,6 +485,7 @@ set_timezone
 install_base
 setup_sysctl
 install_mcast
+install_tts
 install_intercom
 setup_lldp
 setup_ssh

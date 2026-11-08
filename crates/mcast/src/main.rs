@@ -518,7 +518,7 @@ struct ServeArgs {
     #[arg(long, value_name = "COMMAND", env = "MCAST_TTS_COMMAND")]
     tts_command: Option<String>,
     /// Where spoken text is kept, so it's synthesized once [default: under the temporary directory]
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", env = "MCAST_TTS_CACHE")]
     tts_cache: Option<PathBuf>,
 }
 
