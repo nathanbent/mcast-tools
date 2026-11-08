@@ -1,23 +1,24 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, in a third session. The second session checked
-the first one's work, built everything left on the roadmap plus follow-ups,
-merged it all into `main`, and bumped the version to 0.5.5 (#48, merged).
-The third built **text pages in playlists** (below), on
-`claude/intelligent-ramanujan-9guf2i`, not merged yet. Read this first,
+Last updated 2026-11-08, at the end of a third session. The second session
+checked the first one's work, built everything left on the roadmap plus
+follow-ups, merged it all into `main`, and bumped the version to 0.5.5
+(#48). The third built **text pages in playlists** (#49, below), merged it,
+and released **v0.5.5**. Read this first,
 then `intercom-roadmap.md` (the plan and what each item became) and
 `intercom-plan.md` (how the panel is built).
 
 ## Where things stand
 
-- **Everything but text pages is on `main`.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+- **Everything is on `main` and released as v0.5.5.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
   - last-heard times in the Zones list;
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
-  - a webhook delivery log.
-- **Text pages** are on `claude/intelligent-ramanujan-9guf2i`, pushed, with no PR yet (see *Text pages*, below).
-- **The version is 0.5.5** in `Cargo.toml`, and nathanbent/mcast-tools#48 (the bump) is merged. v0.5.5 isn't released yet (the newest tag is v0.5.4); the owner chose to ship text pages in it too. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0.
-- **New work** branches from `main`.
+  - a webhook delivery log;
+  - text pages in playlists, spoken and shown on displays (nathanbent/mcast-tools#49).
+- **v0.5.5 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.5, tag `v0.5.5` on `7f3c8c7` (the merge of #49), with binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) and Windows. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. Pis upgrade with `sudo mcast update`.
+- **It was released before the hardware checks** below (What's next, 1). Their results decide whether a 0.5.6 is needed.
+- **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
 
 The work came as six stacked PRs, merged in order with merge commits:
 
@@ -214,18 +215,18 @@ The v0.5.5 items, plus requests that came up along the way:
 - **API (admin):** `/inputs`, `/input-status`, `/inputs/{id}/test`, and an `inputs` event.
 - **Page:** Settings → Buttons and contacts: each pin's state, with its header pin on a Pi, and a Test button.
 - **Pi:** `install.sh` adds `mcast` to `gpio`; `pi/README.md` has a wiring section.
-- **Not checked on real hardware:** this machine had no GPIO. The `gpiocdev` code ran and reported the missing chip, and everything after the pin is tested with fake pins. `install.sh` passed `shellcheck` in #45's CI. **Press a real button on a Pi before releasing.**
+- **Not checked on real hardware:** this machine had no GPIO. The `gpiocdev` code ran and reported the missing chip, and everything after the pin is tested with fake pins. `install.sh` passed `shellcheck` in #45's CI. **Press a real button on a Pi** (not done before v0.5.5 went out).
 
 ## What's next
 
-1. **Text pages:** open a PR from `claude/intelligent-ramanujan-9guf2i` and merge it, if the owner is happy with it.
-2. **Try the hardware before releasing.** Nothing here has run on real hardware:
+1. **Try the hardware** with v0.5.5 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
-3. **Release v0.5.5:** run the Release workflow (Actions tab) from `main` with the tag `v0.5.5`. It must match `Cargo.toml`, and the workflow refuses a tag or release that already exists. It builds the binaries and publishes the release.
-4. **Smaller follow-ups:**
+2. **Fix anything the hardware turns up,** then bump to 0.5.6 and release it the same way (Release workflow from `main`, tag `v0.5.6`).
+3. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
+   - `server::tests::webhooks_keep_a_log_of_their_deliveries` failed once under a full parallel test run and passed on every rerun: it looks like a race in the order deliveries are logged. Make it deterministic without weakening it.
 
 ## Questions still open for the owner
 
