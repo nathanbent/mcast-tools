@@ -259,7 +259,7 @@ event.
 ```json
 {
   "id": 1, "kind": "send", "state": "running",
-  "group": "239.192.2.1:10000", "name": "Lobby page",
+  "group": "239.192.2.1:10000", "name": "Lobby page", "ssrc": 2864434397,
   "summary": "PCMU/8000/1 sending to 239.192.2.1:10000 (pt 0, 20 ms packets, voice processing, rising chime)",
   "notes": ["loudness: measured -11.0 LUFS after processing; -5.0 dB to reach -16 LUFS"],
   "created_ms": 1794022911066, "ended_ms": null, "error": null,
@@ -270,7 +270,9 @@ event.
 
 `kind` is `send` (audio), `recv` (audio), `text`, `file_send` or
 `file_recv`. `state` is `starting`, `running`, `stopping`, `finished` (source ended),
-`stopped` (on request) or `failed` (see `error`). Receive jobs' `stats` are
+`stopped` (on request) or `failed` (see `error`). `ssrc` is set on audio
+send jobs once they start: the RTP SSRC of the stream, which listeners'
+reports in the monitor name as `about`. It's `null` on other jobs. Receive jobs' `stats` are
 `packets`, `lost`, `concealed`, `late`, `invalid`, `underruns`, `overflows`,
 `buffered_ms`, and `transit_ms` (from the sender's RTCP: time from the
 sender's clock to arrival, `null` until a report arrives; only a true delay
@@ -301,11 +303,22 @@ name.
 
 ## Monitor
 
-`{"groups": [...], "streams": [...]}`. Each stream row: `group`, `name`,
-`source`, `ssrc`, `payload_type`, `codec`, `packets`, `bytes`,
+`{"groups": [...], "streams": [...], "listeners": [...]}`. Each stream row:
+`group`, `name`, `source`, `ssrc`, `payload_type`, `codec`, `packets`, `bytes`,
 `packets_per_sec`, `kbit_per_sec`, `lost`, `late`, `loss_percent`,
 `jitter_ms`, `max_gap_ms`, `ptime_ms`, `ttl`, `tos`, `peak_dbfs`, `rms_dbfs`
 (`null` when silent), `idle_ms`. Rates and levels cover the last second.
+
+`listeners` are receivers heard sending RTCP receiver reports on a watched
+group, such as speakers running `mcast receive --name Lobby`. Each row:
+`group`, `ssrc`, `from`, `name` (its `--name`, else its hostname), `cname`,
+`about` (the `ssrc` of the stream it's hearing, matching a stream row's, or
+`null` when it hears nothing), `last_heard_ms`, `left` (it said BYE),
+`loss_percent` (since its previous report), `cumulative_lost`, `jitter_ms`,
+and for mcast-tools receivers `transit_ms`, `buffered_ms` and `latency_ms`
+(how far behind the sender it plays). A listener is dropped after about 30 s
+without a report. Receivers send reports every few seconds (5 s by default)
+while they're running, so a listener's `about` shows which page it heard.
 
 ## Events
 

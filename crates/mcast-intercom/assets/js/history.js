@@ -4,7 +4,7 @@
 
 import { api, download } from "./api.js";
 import { h, replace, toast, saved } from "./dom.js";
-import { state, subscribe, isOver, panelAnnouncements, onRunEnded } from "./store.js";
+import { state, subscribe, isOver, panelAnnouncements, onRunSettled } from "./store.js";
 import { runCard } from "./runs.js";
 import { field, select } from "./editor.js";
 
@@ -46,8 +46,9 @@ let list = null;
 
 function render() {
   if (!list) return;
-  // Still going: from memory, above what's ended.
-  const going = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
+  // Still going, or listening for who heard it: from memory, above what's
+  // logged (a run is logged once that's known).
+  const going = [...state.runs.values()].filter((r) => !isOver(r) || r.listeners?.checking).sort((a, b) => b.id - a.id);
   replace(list,
     error && h("p", { class: "error" }, `Couldn't read the history: ${error}`),
     going.length > 0 && [h("h3", {}, "Playing now"), h("ul", { class: "runs" }, going.map(runCard))],
@@ -97,7 +98,7 @@ export function mount(target) {
   // A run that ends is in the log now: read the first page again (once for
   // several ending together).
   let soon = null;
-  onRunEnded(() => { clearTimeout(soon); soon = setTimeout(load, 300); });
+  onRunSettled(() => { clearTimeout(soon); soon = setTimeout(load, 300); });
   subscribe(["runs"], render);
   subscribe(["config"], draw);
   // "5 min ago" moves on by itself.

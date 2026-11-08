@@ -659,6 +659,12 @@ impl Sender {
         self.packetizer.frames_per_packet()
     }
 
+    /// RTP SSRC of the stream (also in its RTCP sender reports). Receivers'
+    /// reports name it, so it ties them to this send.
+    pub fn ssrc(&self) -> u32 {
+        self.packetizer.ssrc()
+    }
+
     /// SDP describing this stream (usable with ffplay/VLC as a .sdp file).
     pub fn sdp(&self) -> &SessionDescription {
         &self.sdp

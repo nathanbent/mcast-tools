@@ -4,12 +4,12 @@
 //! The runner never holds its lock while calling the backend, so backends
 //! may report events from inside their own calls.
 
-use crate::backend::{Backend, Feed, Job};
+use crate::backend::{Backend, Feed, Job, Listener};
 use crate::model::{Announcement, Config, Priority};
 use crate::now_ms;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -23,6 +23,13 @@ const KEEP_EARLY: usize = 64;
 /// After taking a group over, how often to try it again while the old job winds down.
 const TAKEOVER_TRIES: usize = 10;
 const TAKEOVER_WAIT: Duration = Duration::from_millis(200);
+/// How often to ask the mcast server's monitor who is listening, while a
+/// run's listeners are being checked.
+const LISTEN_POLL: Duration = Duration::from_secs(1);
+/// How long after a run ends to keep listening for reports. Receivers
+/// report every 5 s or so (jittered up to 7.5 s), and keep naming the last
+/// stream they heard, so a short page is still caught.
+const LISTEN_GRACE: Duration = Duration::from_secs(12);
 
 /// What started a run.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -105,6 +112,15 @@ pub struct TargetRun {
     pub error: Option<String>,
     /// Rounds that played to the end.
     pub played: u32,
+    /// Listeners its zones expect to hear it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub expected: Vec<String>,
+    /// Who reported hearing it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub heard: Vec<String>,
+    /// The SSRC of each round's stream, as listeners name it.
+    #[serde(skip)]
+    ssrcs: Vec<u32>,
     #[serde(skip)]
     request: Option<Value>,
     #[serde(skip)]
@@ -129,8 +145,61 @@ pub struct Run {
     /// Why it failed.
     pub error: Option<String>,
     pub targets: Vec<TargetRun>,
+    /// Who heard it, when its zones list the listeners they expect.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub listeners: Option<Box<Listeners>>,
     #[serde(skip)]
     gap: Duration,
+}
+
+impl Run {
+    /// Still listening for who heard it, after it has ended.
+    pub fn checking(&self) -> bool {
+        self.listeners.as_ref().is_some_and(|l| l.checking)
+    }
+}
+
+/// Who heard a run: reports from receivers (`mcast receive --name`) on its
+/// groups, heard through the mcast server's monitor.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Listeners {
+    /// Still listening: while the run plays, and for a few seconds after.
+    pub checking: bool,
+    /// The listeners expected: those of the zones whose groups it played to.
+    pub expected: Vec<String>,
+    /// Everyone who reported hearing it, expected or not.
+    pub heard: Vec<HeardBy>,
+    /// Expected but not heard, once the check is over (empty if it
+    /// couldn't check: see `error`).
+    pub silent: Vec<String>,
+    /// Why it couldn't be checked, e.g. the server's monitor is off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HeardBy {
+    pub name: String,
+    /// The worst loss it reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_percent: Option<f64>,
+}
+
+impl Listeners {
+    fn has_heard(&self, name: &str) -> bool {
+        self.heard.iter().any(|h| h.name.eq_ignore_ascii_case(name))
+    }
+
+    fn all_heard(&self) -> bool {
+        self.expected.iter().all(|e| self.has_heard(e))
+    }
+}
+
+/// Add `name` to `names` unless it's there, in any case.
+fn add_name(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        names.push(name.to_string());
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +219,7 @@ impl Run {
             ended_ms: None,
             error: None,
             targets: Vec::new(),
+            listeners: None,
             gap: Duration::ZERO,
         }
     }
@@ -160,6 +230,8 @@ struct State {
     runs: BTreeMap<RunId, Run>,
     /// Server job id → run and target index.
     jobs: HashMap<u64, (RunId, usize)>,
+    /// Asking the monitor who is listening, for runs being checked.
+    listening: bool,
     /// Ended jobs that weren't (yet) ours.
     early: VecDeque<Job>,
 }
@@ -207,6 +279,8 @@ type OnChange = Box<dyn Fn(Change) + Send + Sync>;
 
 struct Inner {
     backend: Arc<dyn Backend>,
+    listen_poll: Duration,
+    listen_grace: Duration,
     state: Mutex<State>,
     status: Mutex<BackendStatus>,
     on_change: OnChange,
@@ -224,12 +298,27 @@ impl Runner {
         backend: Arc<dyn Backend>,
         on_change: impl Fn(Change) + Send + Sync + 'static,
     ) -> Self {
+        Self::with_listen_timing(backend, on_change, LISTEN_POLL, LISTEN_GRACE)
+    }
+
+    /// Like [`Runner::new`], asking who is listening every `poll`, until
+    /// `grace` after a run ends (for tests).
+    #[doc(hidden)]
+    pub fn with_listen_timing(
+        backend: Arc<dyn Backend>,
+        on_change: impl Fn(Change) + Send + Sync + 'static,
+        poll: Duration,
+        grace: Duration,
+    ) -> Self {
         let inner = Arc::new(Inner {
             backend,
+            listen_poll: poll,
+            listen_grace: grace,
             state: Mutex::new(State {
                 next_id: 0,
                 runs: BTreeMap::new(),
                 jobs: HashMap::new(),
+                listening: false,
                 early: VecDeque::new(),
             }),
             status: Mutex::new(BackendStatus {
@@ -296,6 +385,12 @@ impl Runner {
                     started_ms: now_ms(),
                     ended_ms: None,
                     error: None,
+                    listeners: targets.iter().any(|t| !t.expected.is_empty()).then(|| {
+                        Box::new(Listeners {
+                            checking: true,
+                            ..Listeners::default()
+                        })
+                    }),
                     targets,
                     gap: Duration::from_secs_f64(a.repeat_gap_s.max(0.0)),
                 },
@@ -304,6 +399,7 @@ impl Runner {
             id
         };
         self.0.start_round(id);
+        self.0.listen();
         self.get(id)
             .ok_or_else(|| PlayError::Server(format!("run {id} vanished")))
     }
@@ -337,6 +433,7 @@ impl Runner {
                     ended_ms: Some(now),
                     error: Some(error),
                     targets: Vec::new(),
+                    listeners: None,
                     gap: Duration::ZERO,
                 },
             );
@@ -431,20 +528,27 @@ impl Inner {
         site: Option<&str>,
     ) -> Result<Vec<TargetRun>, PlayError> {
         // Each group with the audio its section plays there.
-        let wanted: Vec<(&crate::model::Audio, Option<usize>, &crate::model::Target)> = a
+        type Wanted<'a> = (
+            &'a crate::model::Audio,
+            Option<usize>,
+            &'a crate::model::Target,
+            &'a [String],
+        );
+        let wanted: Vec<Wanted> = a
             .sections()
             .into_iter()
             .enumerate()
             .flat_map(|(i, (audio, zones))| {
-                cfg.zones_in(zones, site)
-                    .into_iter()
-                    .flat_map(|z| &z.targets)
-                    .map(move |t| (audio, (i > 0).then_some(i), t))
+                cfg.zones_in(zones, site).into_iter().flat_map(move |z| {
+                    z.targets
+                        .iter()
+                        .map(move |t| (audio, (i > 0).then_some(i), t, z.listeners.as_slice()))
+                })
             })
             .collect();
         let book = if wanted
             .iter()
-            .any(|(_, _, t)| t.group.trim().parse::<SocketAddr>().is_err())
+            .any(|(_, _, t, _)| t.group.trim().parse::<SocketAddr>().is_err())
         {
             self.backend
                 .phonebook()
@@ -452,9 +556,10 @@ impl Inner {
         } else {
             Vec::new()
         };
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        for (audio, part, t) in wanted {
+        // Group key → its index in `out`.
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        let mut out: Vec<TargetRun> = Vec::new();
+        for (audio, part, t, listeners) in wanted {
             let name = t.group.trim();
             let address = match name.parse::<SocketAddr>() {
                 Ok(a) => Some(a.to_string()),
@@ -465,8 +570,17 @@ impl Inner {
             };
             // The same group through two zones, or by name and address, plays once.
             let key = address.clone().unwrap_or_else(|| name.to_lowercase());
-            if !seen.insert(key) {
+            if let Some(&at) = seen.get(&key) {
+                // Its speakers hear it through the zone kept.
+                for l in listeners {
+                    add_name(&mut out[at].expected, l);
+                }
                 continue;
+            }
+            seen.insert(key, out.len());
+            let mut expected = Vec::new();
+            for l in listeners {
+                add_name(&mut expected, l);
             }
             let target = cfg.defaults.target(t);
             let request = address
@@ -486,6 +600,9 @@ impl Inner {
                 address,
                 job: None,
                 played: 0,
+                expected,
+                heard: Vec::new(),
+                ssrcs: Vec::new(),
                 request,
                 preempted: false,
             });
@@ -593,6 +710,12 @@ impl Inner {
                     if let Some(t) = run.targets.get_mut(i) {
                         t.job = Some(job.id);
                         t.state = TargetState::Playing;
+                        t.ssrcs.extend(job.ssrc);
+                        if let Some(l) = run.listeners.as_mut() {
+                            for e in &t.expected {
+                                add_name(&mut l.expected, e);
+                            }
+                        }
                     }
                     run.state == RunState::Stopping
                 }
@@ -738,6 +861,98 @@ impl Inner {
         }
     }
 
+    /// Ask the monitor who is listening, every [`LISTEN_POLL`], while any
+    /// run's listeners are being checked. One thread at a time.
+    fn listen(self: &Arc<Self>) {
+        {
+            let mut st = self.lock();
+            if st.listening || !st.runs.values().any(Run::checking) {
+                return;
+            }
+            st.listening = true;
+        }
+        let weak = Arc::downgrade(self);
+        let poll = self.listen_poll;
+        let spawned = std::thread::Builder::new()
+            .name("intercom-listeners".into())
+            .spawn(move || loop {
+                std::thread::sleep(poll);
+                let Some(me) = weak.upgrade() else {
+                    return;
+                };
+                if !me.listen_once() {
+                    return;
+                }
+            });
+        if spawned.is_err() {
+            self.lock().listening = false;
+        }
+    }
+
+    /// One look at the listeners: note who heard what, and end the checks
+    /// that are done. False once nothing is left to check.
+    fn listen_once(self: &Arc<Self>) -> bool {
+        {
+            let mut st = self.lock();
+            if !st.runs.values().any(Run::checking) {
+                st.listening = false;
+                return false;
+            }
+        }
+        let heard = self.backend.listeners();
+        let now = now_ms();
+        let grace = self.listen_grace.as_millis() as u64;
+        let changed: Vec<RunId> = {
+            let mut st = self.lock();
+            let mut changed = Vec::new();
+            for run in st.runs.values_mut().filter(|r| r.checking()) {
+                let mut news = false;
+                match &heard {
+                    Ok(listeners) => news |= note_heard(run, listeners),
+                    // No monitor on the server: nothing will be heard.
+                    Err(e) if e.status == 404 => {
+                        let l = run.listeners.as_mut().expect("checking");
+                        l.error = Some("the mcast server's monitor is off".into());
+                        l.checking = false;
+                        news = true;
+                    }
+                    Err(_) => {}
+                }
+                let over = run.state.is_over();
+                let waited = run.ended_ms.is_some_and(|e| now >= e + grace);
+                let nothing_sent = run.targets.iter().all(|t| t.ssrcs.is_empty());
+                let l = run.listeners.as_mut().expect("listeners");
+                let all_heard = !l.expected.is_empty() && l.all_heard();
+                if l.checking && over && (waited || all_heard || nothing_sent) {
+                    l.checking = false;
+                    if waited && l.heard.is_empty() {
+                        if let Err(e) = &heard {
+                            l.error = Some(format!("couldn't ask the mcast server: {e}"));
+                        }
+                    }
+                    news = true;
+                }
+                // Not knowing isn't silence: no alarm when it couldn't check.
+                if !l.checking && l.error.is_none() {
+                    l.silent = l
+                        .expected
+                        .iter()
+                        .filter(|e| !l.has_heard(e))
+                        .cloned()
+                        .collect();
+                }
+                if news {
+                    changed.push(run.id);
+                }
+            }
+            changed
+        };
+        for id in changed {
+            self.emit(id);
+        }
+        true
+    }
+
     fn reconcile(self: &Arc<Self>) {
         let jobs: Vec<u64> = self.lock().jobs.keys().copied().collect();
         for id in jobs {
@@ -748,6 +963,7 @@ impl Inner {
                     state: "failed".into(),
                     group: None,
                     error: Some("the mcast server no longer has this job".into()),
+                    ssrc: None,
                 }),
                 Err(_) => None,
             };
@@ -758,6 +974,52 @@ impl Inner {
             }
         }
     }
+}
+
+/// Note the listeners reporting on one of the run's streams. True if
+/// anyone new was heard.
+fn note_heard(run: &mut Run, listeners: &[Listener]) -> bool {
+    let mut news = false;
+    let Run {
+        targets,
+        listeners: Some(l),
+        ..
+    } = run
+    else {
+        return false;
+    };
+    for li in listeners {
+        let (Some(about), Some(name)) = (li.about, li.label()) else {
+            continue;
+        };
+        let Some(t) = targets.iter_mut().find(|t| t.ssrcs.contains(&about)) else {
+            continue;
+        };
+        if !t.heard.iter().any(|h| h.eq_ignore_ascii_case(name)) {
+            t.heard.push(name.to_string());
+        }
+        let loss = li.loss_percent.filter(|v| v.is_finite());
+        match l
+            .heard
+            .iter_mut()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+        {
+            Some(h) => {
+                if loss > h.loss_percent {
+                    h.loss_percent = loss;
+                    news = true;
+                }
+            }
+            None => {
+                l.heard.push(HeardBy {
+                    name: name.to_string(),
+                    loss_percent: loss,
+                });
+                news = true;
+            }
+        }
+    }
+    news
 }
 
 fn finish(run: &mut Run, state: RunState) {

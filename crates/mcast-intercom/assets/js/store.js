@@ -34,6 +34,9 @@ export const state = {
   // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
   upcoming: { time_zone: null, fires: [] },
   siteUpcoming: {},
+  // Expected speakers between plays (GET /speakers): { known, error,
+  // speakers: [{ name, zones, online, since_ms, last_seen_ms }] }.
+  speakers: { known: false, error: null, speakers: [] },
 };
 
 // What the signed-in token may do (the server checks too).
@@ -74,6 +77,14 @@ function changed(part) {
 
 const endedListeners = [];
 export function onRunEnded(fn) { endedListeners.push(fn); }
+const speakerListeners = [];
+// Speakers that went offline or came back: `fn([{ speaker, online }])`.
+export function onSpeakersChanged(fn) { speakerListeners.push(fn); }
+const settledListeners = [];
+// Once a run is in the history: when it ends, or for one whose listeners
+// are checked, a few seconds later. `fn(run, before)`: `before` is its last
+// state seen, if any.
+export function onRunSettled(fn) { settledListeners.push(fn); }
 
 export const isOver = (run) => ["done", "stopped", "failed", "missed"].includes(run.state);
 
@@ -104,6 +115,11 @@ export async function refreshRuns() {
   const runs = await api("GET", "/runs");
   state.runs = new Map(runs.map((r) => [r.id, r]));
   changed("runs");
+}
+
+export async function refreshSpeakers() {
+  try { state.speakers = await api("GET", "/speakers"); } catch {}
+  changed("speakers");
 }
 
 export async function refreshChimes() {
@@ -144,7 +160,7 @@ export function refreshAll() {
   // A media token sees only the Sounds tab.
   if (!can.operate()) return refreshLibrary();
   // What's coming up depends on the sites in the config.
-  return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary()]);
+  return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary(), refreshSpeakers()]);
 }
 
 export function apply(ev) {
@@ -156,6 +172,12 @@ export function apply(ev) {
       // Ended now, or recorded already over (a missed schedule).
       if (isOver(ev.run) && (!before || !isOver(before))) {
         for (const fn of endedListeners) fn(ev.run);
+      }
+      // In the history now: it's over and, if its zones list listeners,
+      // it's known who heard it.
+      const settled = (r) => r && isOver(r) && !r.listeners?.checking;
+      if (settled(ev.run) && !settled(before)) {
+        for (const fn of settledListeners) fn(ev.run, before);
       }
       // A schedule played: what's next has moved on.
       if (!before && ev.run.trigger.type === "schedule") refreshUpcoming();
@@ -179,6 +201,11 @@ export function apply(ev) {
       if (ev.status.connected && !wasUp) { if (can.operate()) refreshServer(); refreshLibrary(); }
       break;
     }
+    case "speakers":
+      state.speakers = ev.status;
+      changed("speakers");
+      if (ev.changes.length) for (const fn of speakerListeners) fn(ev.changes);
+      break;
     case "lagged":
       refreshAll();
       break;

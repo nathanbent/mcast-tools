@@ -571,7 +571,15 @@ pub struct Zone {
     /// Site id, for zones that belong to one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
+    /// The speakers expected to hear its pages: the names they give in RTCP
+    /// (`mcast receive --name Lobby`, else their hostname). After a play,
+    /// the panel says which of them heard it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listeners: Vec<String>,
 }
+
+/// Most expected listeners a zone can have.
+pub const MAX_LISTENERS: usize = 100;
 
 /// One multicast group, with the send options its speakers need.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1043,6 +1051,22 @@ impl Config {
             }
             if z.targets.is_empty() {
                 bail!("zone \"{}\" has no targets", z.id);
+            }
+            if z.listeners.len() > MAX_LISTENERS {
+                bail!("zone \"{}\" has more than {MAX_LISTENERS} listeners", z.id);
+            }
+            let mut heard_by = HashSet::new();
+            for l in &z.listeners {
+                check_name(&format!("zone \"{}\": listener", z.id), l)?;
+                if l.trim() != l {
+                    bail!(
+                        "zone \"{}\": listener \"{l}\" starts or ends with a space",
+                        z.id
+                    );
+                }
+                if !heard_by.insert(l.to_lowercase()) {
+                    bail!("zone \"{}\" lists the listener \"{l}\" twice", z.id);
+                }
             }
             for t in &z.targets {
                 if t.group.trim().is_empty() {

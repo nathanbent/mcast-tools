@@ -4,7 +4,8 @@
 //! Hooks are kept in `webhooks.json` beside `intercom.json`, readable by its
 //! owner only, since each may hold a signing secret. [`Webhooks`] turns the
 //! runner's changes into events (`run_started`, `run_ended`, `run_failed`,
-//! `schedule_missed`, `backend_down`, `backend_up`) and delivers each to the
+//! `schedule_missed`, `listener_silent`, `listener_offline`, `listener_online`,
+//! `backend_down`, `backend_up`) and delivers each to the
 //! hooks that want it, off the caller's thread: a short timeout, one retry,
 //! and the outcome kept for the Settings page. A slow or dead receiver
 //! never holds up the panel.
@@ -24,11 +25,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 /// Every event a hook can ask for.
-pub const EVENTS: [&str; 6] = [
+pub const EVENTS: [&str; 9] = [
     "run_started",
     "run_ended",
     "run_failed",
     "schedule_missed",
+    "listener_silent",
+    "listener_offline",
+    "listener_online",
     "backend_down",
     "backend_up",
 ];
@@ -269,6 +273,8 @@ struct State {
     going: HashSet<RunId>,
     /// Runs already reported over, so a late update doesn't report it twice.
     ended: VecDeque<RunId>,
+    /// Runs whose listener check has been reported on.
+    checked: VecDeque<RunId>,
     /// The connection, as last seen.
     connected: Option<bool>,
 }
@@ -360,6 +366,19 @@ impl Webhooks {
         };
         for (event, data) in events {
             self.send(event, data);
+        }
+    }
+
+    /// Speakers that went offline or came back between plays:
+    /// `listener_offline` / `listener_online`, `{"speaker"}`.
+    pub fn speakers(&self, changes: &[crate::presence::SpeakerChange]) {
+        for c in changes {
+            let event = if c.online {
+                "listener_online"
+            } else {
+                "listener_offline"
+            };
+            self.send(event, json!({ "speaker": c.speaker }));
         }
     }
 
@@ -488,11 +507,12 @@ impl Webhooks {
 
 /// What a run's change means for hooks: started, and over (how).
 fn run_events(st: &mut State, run: &Run) -> Vec<(&'static str, Value)> {
-    if st.ended.contains(&run.id) {
-        return Vec::new();
-    }
     let data = || json!({ "run": run });
     let mut out = Vec::new();
+    if st.ended.contains(&run.id) {
+        listener_events(st, run, &mut out);
+        return out;
+    }
     let over = run.state.is_over();
     let first = !st.going.contains(&run.id);
     if first && !over {
@@ -511,8 +531,27 @@ fn run_events(st: &mut State, run: &Run) -> Vec<(&'static str, Value)> {
             _ => "run_ended",
         };
         out.push((event, data()));
+        listener_events(st, run, &mut out);
     }
     out
+}
+
+/// Once a run's listener check is over: `listener_silent` if anyone
+/// expected didn't hear it. Its `run.listeners.silent` names them.
+fn listener_events(st: &mut State, run: &Run, out: &mut Vec<(&'static str, Value)>) {
+    let Some(l) = &run.listeners else {
+        return;
+    };
+    if l.checking || st.checked.contains(&run.id) {
+        return;
+    }
+    st.checked.push_back(run.id);
+    if st.checked.len() > 256 {
+        st.checked.pop_front();
+    }
+    if !l.silent.is_empty() {
+        out.push(("listener_silent", json!({ "run": run })));
+    }
 }
 
 /// The connection going down (or not coming up at the start), and back.
@@ -573,6 +612,46 @@ mod tests {
         let mut r = Run::for_tests(id);
         r.state = state;
         r
+    }
+
+    #[test]
+    fn a_silent_listener_is_reported_once_its_check_ends() {
+        use crate::runner::Listeners;
+        let mut st = State::default();
+        let names =
+            |v: Vec<(&'static str, Value)>| v.into_iter().map(|(e, _)| e).collect::<Vec<_>>();
+        let with = |checking: bool, silent: &[&str]| {
+            let mut r = run(1, RunState::Done);
+            r.listeners = Some(Box::new(Listeners {
+                checking,
+                expected: vec!["Lobby".into(), "Hall".into()],
+                silent: silent.iter().map(|s| s.to_string()).collect(),
+                ..Listeners::default()
+            }));
+            r
+        };
+        // Over, still listening: only that it ended.
+        assert_eq!(names(run_events(&mut st, &with(true, &[]))), ["run_ended"]);
+        assert!(run_events(&mut st, &with(true, &[])).is_empty());
+        let events = run_events(&mut st, &with(false, &["Hall"]));
+        assert_eq!(names(events.clone()), ["listener_silent"]);
+        assert_eq!(events[0].1["run"]["listeners"]["silent"], json!(["Hall"]));
+        assert!(
+            run_events(&mut st, &with(false, &["Hall"])).is_empty(),
+            "once only"
+        );
+
+        // Everyone heard it: nothing more. Checked as it ends: both at once.
+        let mut st = State::default();
+        let mut quiet = with(false, &[]);
+        quiet.id = 2;
+        assert_eq!(names(run_events(&mut st, &quiet)), ["run_ended"]);
+        let mut both = with(false, &["Hall"]);
+        both.id = 3;
+        assert_eq!(
+            names(run_events(&mut st, &both)),
+            ["run_ended", "listener_silent"]
+        );
     }
 
     #[test]

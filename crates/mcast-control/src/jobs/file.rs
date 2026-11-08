@@ -110,6 +110,7 @@ impl Jobs {
             state: JobState::Running,
             group: Some(req.group),
             name: cfg.announce.as_ref().map(|a| a.name.clone()),
+            ssrc: None,
             summary: Some(format!(
                 "sending {count} file{} to {} at {} kbit/s",
                 if count == 1 { "" } else { "s" },
@@ -213,6 +214,7 @@ impl Jobs {
             state: JobState::Running,
             group: Some(group),
             name: announced,
+            ssrc: None,
             summary: Some(format!(
                 "receiving files from {group} (up to {} MB each)",
                 req.max_size_mb()

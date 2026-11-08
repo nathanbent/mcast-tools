@@ -28,3 +28,4 @@ tower.workspace = true
 tokio-tungstenite = "0.29"
 mcast-core.workspace = true
 mcast-server.workspace = true
+mcast-control.workspace = true

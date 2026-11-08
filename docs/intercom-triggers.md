@@ -45,6 +45,9 @@ The panel POSTs JSON to each enabled hook that wants the event:
 | `run_ended` | It finished, or was stopped | `run` |
 | `run_failed` | It couldn't play (all groups busy or failed, or the mcast server unreachable) | `run` |
 | `schedule_missed` | A schedule's time passed while it couldn't play | `run` |
+| `listener_silent` | A speaker its zones expect didn't report hearing it: `run.listeners.silent` names them. Sent once the check ends, up to 12 s after the run | `run` |
+| `listener_offline` | Between plays, a speaker zones expect hasn't reported for a minute | `speaker`: `{"name", "zones", "online", "since_ms", "last_seen_ms"}` |
+| `listener_online` | It's reporting again | `speaker` |
 | `backend_down` | The mcast server became unreachable (or was at start-up) | `status` |
 | `backend_up` | It's back | `status` |
 | `test` | The Test button | `message` |
@@ -53,6 +56,7 @@ Each body has `event`, `at_ms` and `delivery` (a number, new for each
 delivery), plus the extra fields. A run is as in `GET /runs`. Each run gets
 one `run_started` and one ending event (`run_ended`, `run_failed` or
 `schedule_missed`); a run that fails before starting gets only `run_failed`.
+A run to zones that list listeners can also get one `listener_silent`.
 
 Headers: `Content-Type: application/json`, `User-Agent:
 mcast-intercom/VERSION`, `X-Mcast-Event`, `X-Mcast-Delivery`,

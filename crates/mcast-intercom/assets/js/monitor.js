@@ -5,7 +5,7 @@
 
 import { api } from "./api.js";
 import { h, replace, saved } from "./dom.js";
-import { onRunEnded } from "./store.js";
+import { onRunSettled } from "./store.js";
 
 // Outcomes, in stacking order, with their status colors (see app.css).
 const OUTCOMES = [
@@ -120,6 +120,7 @@ function render() {
   const sch = data.schedules;
   const scheduled = sch.on_time + sch.late + sch.missed;
   const c = data.connection;
+  const ears = data.listeners ?? { checked: 0, with_silent: 0, list: [] };
   replace(el,
     h("div", { class: "tag-bar" }, periods,
       h("span", { class: "spacer" }),
@@ -133,7 +134,10 @@ function render() {
       tile("Schedules on time", pct(sch.on_time, scheduled), scheduled ? `${sch.on_time} of ${scheduled}` : "none scheduled"),
       tile("mcast server up", c.uptime == null ? "—" : `${(c.uptime * 100).toFixed(c.uptime < 1 ? 1 : 0)}%`,
         c.uptime == null ? "not seen yet" : c.outages.length ? plural(c.outages.length, "outage") : "no outages",
-        c.uptime != null && c.uptime < 0.99 ? "bad" : "")),
+        c.uptime != null && c.uptime < 0.99 ? "bad" : ""),
+      ears.checked > 0 && tile("Heard by every speaker", pct(ears.checked - ears.with_silent, ears.checked),
+        ears.with_silent ? `${ears.with_silent} of ${ears.checked} checked plays missed someone` : `all ${ears.checked} checked plays`,
+        ears.with_silent ? "warn" : "")),
     h("section", { class: "panel-group" },
       h("div", { class: "chart-head" }, h("h3", { class: "group-head" }, "Plays a day"), legend(),
         h("span", { class: "spacer" }),
@@ -162,6 +166,19 @@ function render() {
                 h("td", { class: "wide" }, outcomeBar([[z.played, "s-good"], [z.taken_over, "s-neutral"], [z.busy, "s-warn"], [z.failed, "s-critical"]])),
                 h("td", { class: z.busy ? "warn" : "" }, String(z.busy)), h("td", { class: z.failed ? "bad" : "" }, String(z.failed)), h("td", {}, String(z.taken_over)))))))
           : h("p", { class: "muted" }, "Nothing sent in this time."))),
+    ears.list.length > 0 && h("section", { class: "panel-group" },
+      h("h3", { class: "group-head" }, "Speakers"),
+      h("p", { class: "muted small" }, "Plays to zones that list their speakers: which ones reported hearing each play (mcast receive --name)."),
+      h("div", { class: "scroll" }, h("table", { class: "items" },
+        h("thead", {}, h("tr", {}, h("th", {}, "Speaker"), h("th", {}, "Expected"), h("th", {}, "Heard"), h("th", { class: "wide" }, "Outcome"),
+          h("th", {}, "Missed"), h("th", {}, "Last heard one"), h("th", {}, "Worst loss"))),
+        h("tbody", {}, ears.list.map((e) => h("tr", {},
+          h("td", {}, e.name), h("td", {}, e.expected ? String(e.expected) : "not expected"),
+          h("td", {}, String(e.heard)),
+          h("td", { class: "wide" }, outcomeBar([[e.expected - e.missed, "s-good"], [e.missed, "s-critical"]])),
+          h("td", { class: e.missed ? "bad" : "" }, String(e.missed)),
+          h("td", {}, e.last_heard_ms ? when(e.last_heard_ms) : "—"),
+          h("td", {}, e.worst_loss_percent != null ? `${e.worst_loss_percent.toFixed(1)}%` : "—"))))))),
     h("div", { class: "two-col" },
       h("section", { class: "panel-group" },
         h("h3", { class: "group-head" }, "Schedules"),
@@ -204,7 +221,7 @@ export function mount(target) {
   const refresh = () => {
     if (showing()) { stale = false; clearTimeout(soon); soon = setTimeout(load, 1000); } else stale = true;
   };
-  onRunEnded(refresh);
+  onRunSettled(refresh);
   window.addEventListener("hashchange", () => { if (stale && location.hash === "#monitor") refresh(); });
   setInterval(refresh, 5 * 60 * 1000);
 }

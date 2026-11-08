@@ -238,6 +238,7 @@ pub(super) async fn change<R: Send + 'static>(
     })
     .await??;
     s.0.scheduler.poke();
+    s.0.presence.poke();
     let _ = s.0.events.send(Event::ConfigChanged);
     Ok(r)
 }
@@ -495,6 +496,25 @@ pub(super) async fn phonebook(State(s): State<AppState>) -> ApiResult<Json<Vec<E
         .await?
         .map(Json)
         .map_err(bad_gateway)
+}
+
+/// Receivers the mcast server's monitor hears now, for choosing a zone's
+/// expected listeners. 404 if its monitor is off.
+pub(super) async fn listeners(
+    State(s): State<AppState>,
+) -> ApiResult<Json<Vec<crate::backend::Listener>>> {
+    let b = s.0.backend.clone();
+    tokio::task::spawn_blocking(move || b.listeners())
+        .await?
+        .map(Json)
+        .map_err(passed_on)
+}
+
+/// Whether each speaker zones expect is reporting between plays:
+/// `{"known", "error", "speakers": [{"name", "zones", "online", "since_ms",
+/// "last_seen_ms"}]}`.
+pub(super) async fn speakers(State(s): State<AppState>) -> Json<crate::presence::Speakers> {
+    Json(s.0.presence.status())
 }
 
 /// Errors from the mcast server: its own status for "no such chime" and

@@ -421,6 +421,7 @@ mod tests {
     fn config(schedules: Vec<Schedule>) -> Config {
         Config {
             zones: vec![Zone {
+                listeners: Vec::new(),
                 id: "z".into(),
                 name: "Z".into(),
                 targets: vec![Target {
@@ -582,6 +583,7 @@ mod tests {
         // Zone z is at London; zone ny at New York. Announcement "a" goes to both.
         cfg.zones[0].site = Some("ldn".into());
         cfg.zones.push(Zone {
+            listeners: Vec::new(),
             id: "ny".into(),
             name: "NY".into(),
             targets: vec![Target {
@@ -755,6 +757,7 @@ mod tests {
             let z = format!("z{i}");
             a.zones = vec![z.clone()];
             cfg.zones.push(Zone {
+                listeners: Vec::new(),
                 site: None,
                 id: z.clone(),
                 name: z,
