@@ -334,7 +334,8 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/playlists"
         | "/playlists/{id}"
         | "/categories"
-        | "/categories/{id}" => {
+        | "/categories/{id}"
+        | "/panel-layout" => {
             if get {
                 Read
             } else {

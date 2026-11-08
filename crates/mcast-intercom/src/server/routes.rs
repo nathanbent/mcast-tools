@@ -303,6 +303,12 @@ fn parse<T: Item>(v: Value) -> ApiResult<T> {
 
 /// An id made from a name: "Lunch bell" → "lunch-bell", then "lunch-bell-2"...
 fn new_id<T: Item>(name: &str, c: &Config) -> String {
+    slug_id(name, T::KIND, |id| T::all(c).iter().any(|x| x.id() == id))
+}
+
+/// An id made from a name, `kind` if the name has no letters or digits, and
+/// not one that's `taken`.
+pub(super) fn slug_id(name: &str, kind: &str, taken: impl Fn(&str) -> bool) -> String {
     let mut base = String::new();
     for ch in name.trim().chars().flat_map(char::to_lowercase) {
         if ch.is_ascii_alphanumeric() {
@@ -313,9 +319,8 @@ fn new_id<T: Item>(name: &str, c: &Config) -> String {
     }
     let mut base: String = base.trim_end_matches('-').chars().take(48).collect();
     if base.is_empty() {
-        base = T::KIND.to_string();
+        base = kind.to_string();
     }
-    let taken = |id: &str| T::all(c).iter().any(|x| x.id() == id);
     if !taken(&base) {
         return base;
     }

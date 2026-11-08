@@ -4,6 +4,7 @@
 //! It runs as its own process with its own token, and reaches the mcast
 //! server only through a [`Backend`].
 
+mod arrange;
 mod auth;
 mod backup;
 mod history;
@@ -434,6 +435,10 @@ pub fn router(state: AppState) -> Router {
             get(get_one::<Playlist>)
                 .put(put::<Playlist>)
                 .delete(delete::<Playlist>),
+        )
+        .route(
+            "/panel-layout",
+            get(arrange::get_layout).put(arrange::put_layout),
         )
         .route(
             "/layout/{tab}",

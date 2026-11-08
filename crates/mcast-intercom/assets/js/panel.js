@@ -3,7 +3,8 @@
 import { api } from "./api.js";
 import { h, replace, toast, saved } from "./dom.js";
 import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow, can, panelAnnouncements, onRunSettled } from "./store.js";
-import { ordered, sortableList, saveLayouts, arrangeDialog } from "./layout.js";
+import { ordered } from "./layout.js";
+import * as customize from "./customize.js";
 import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
 
@@ -113,30 +114,13 @@ function groups(anns) {
   return out;
 }
 
-function arrangePanel() {
-  const all = state.config.announcements;
-  const gs = groups(all);
-  const catOrder = gs.filter((g) => g.id !== OTHER).map((g) => g.id);
-  const buttonOrders = Object.fromEntries(gs.map((g) => [g.id, g.anns.map((a) => a.id)]));
-  const name = (id) => all.find((a) => a.id === id)?.name ?? id;
-  const catName = (id) => (state.config.categories ?? []).find((c) => c.id === id)?.name ?? id;
-  arrangeDialog("Arrange the Panel",
-    "Drag (or use the arrows) to order the categories, and the buttons in each. Everyone using the panel sees this. Choose an announcement's category in its editor.",
-    h("div", {},
-      catOrder.length > 1 && [h("h3", {}, "Categories"), sortableList(catOrder, catName)],
-      gs.filter((g) => g.anns.length > 1).map((g) => [
-        h("h3", {}, g.name ?? "Buttons"), sortableList(buttonOrders[g.id], name)])),
-    () => saveLayouts({ panel: catOrder, "panel-buttons": gs.flatMap((g) => buttonOrders[g.id]) }, "Saved the Panel's arrangement"),
-    () => saveLayouts({ panel: null, "panel-buttons": null }, "The Panel is back to the usual order"));
-}
-
 function tagBar(anns) {
   // A screen whose URL picks the tag shows no chips.
   if (state.view.tag) return null;
-  const arrangeLink = can.edit() && !state.view.kiosk;
+  const customizeLink = can.edit() && !state.view.kiosk;
   const tags = [...new Map(anns.flatMap((a) => a.tags ?? []).map((t) => [t.toLowerCase(), t])).values()]
     .sort((a, b) => a.localeCompare(b));
-  if (!tags.length && !arrangeLink) return null;
+  if (!tags.length && !customizeLink) return null;
   const chip = (label, value) => h("button", {
     class: `tag${filter.toLowerCase() === value.toLowerCase() ? " on" : ""}`,
     onclick: () => { filter = value; saved.set("panel.tag", value); renderPanel(); },
@@ -144,10 +128,15 @@ function tagBar(anns) {
   return h("div", { class: "tag-bar panel-bar" },
     tags.length > 0 && [chip("All", ""), tags.map((t) => chip(t, t))],
     h("span", { class: "spacer" }),
-    arrangeLink && h("button", { class: "link", onclick: arrangePanel }, "Arrange the Panel…"));
+    customizeLink && h("button", {
+      class: "customize-open",
+      title: "Make groups, and drag buttons and groups into place, for every screen",
+      onclick: () => customize.begin(panelEl, { look, onDone: () => renderPanel() }),
+    }, "✎ Customize"));
 }
 
 let renderPanel = () => {};
+let panelEl = null;
 
 // The stats strip (GET /stats), refreshed as plays end and every minute.
 let stats = null;
@@ -185,7 +174,10 @@ function statsStrip(next) {
 }
 
 export function mount(el) {
+  panelEl = el;
   const render = () => {
+    // Customizing draws its own page, and leaves it alone meanwhile.
+    if (customize.editing()) return;
     if (state.configError) {
       replace(el, h("p", { class: "error" }, `The intercom config has a problem: ${state.configError}`));
       return;
@@ -232,6 +224,7 @@ export function mount(el) {
   // A tag that's gone shows everything.
   if (filter && !state.view.tag && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";
   subscribe(["config", "runs", "upcoming", "speakers"], render);
+  subscribe(["config"], () => customize.configChanged());
   onTalk((t) => {
     const changed = t?.id !== talkState?.id || t?.phase !== talkState?.phase || t?.latched !== talkState?.latched;
     talkState = t;

@@ -125,7 +125,7 @@ The v0.5.5 items, plus requests that came up along the way:
    - A core `files` source plays a list of files as one stream.
    - Playlists tab; an announcement's audio can be a playlist.
    - Parts send other audio to other zones in the same run.
-9. **Arrangeable layout:** admins order sections (Settings, and the Panel's categories and buttons), shared by every screen.
+9. **Arrangeable layout:** admins order sections (Settings), and customize the Panel in place: groups made, renamed, colored and deleted, buttons dragged between them, saved at once (`PUT /panel-layout`) for every screen.
 10. **Organizing the Panel:**
     - Categories, and tags as filter chips.
     - Settings → Panel: button size, tiles or a list, what's shown, confirm emergencies.
@@ -261,6 +261,8 @@ The v0.5.5 items, plus requests that came up along the way:
   - Page JS builds DOM with `h()`, never `innerHTML`. The strict CSP allows no inline scripts or style attributes; set styles through `el.style`.
   - Shared page helpers:
     - `layout.js`: `arrangeable`, `sortableList`, `arrangeDialog`.
+    - `drag.js`: dragging into order with pointer events (mouse, touch with a long press or a handle, pen), used by `sortableList` and the Panel's Customize mode.
+    - `customize.js`: the Panel's Customize mode.
     - `store.js`: `onRunEnded` (as a run ends), `onRunSettled` (once it's in the history, after any listener check), `onSpeakersChanged`, `panelAnnouncements`, `can`, `TABS`.
     - `editor.js`: `mountEditor`, `mediaFilter`, `colorSelect`.
 - **Test helpers:**

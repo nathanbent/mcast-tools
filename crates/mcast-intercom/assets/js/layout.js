@@ -10,6 +10,7 @@
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, subscribe, can } from "./store.js";
+import { sortable } from "./drag.js";
 
 // The ids in the order to show them.
 export function ordered(tab, ids) {
@@ -17,33 +18,32 @@ export function ordered(tab, ids) {
   return [...saved, ...ids.filter((id) => !saved.includes(id))];
 }
 
-// A list to put in order by dragging or with arrows. `order` (ids) is
-// changed in place; `title(id)` names each.
+// A list to put in order by dragging (mouse or touch) or with arrows.
+// `order` (ids) is changed in place; `title(id)` names each.
 export function sortableList(order, title) {
   const list = h("ol", { class: "playlist-items arrange" });
-  let dragging = null;
-  const draw = () => replace(list, order.map((id, i) => {
-    const move = (to) => { order.splice(to, 0, ...order.splice(i, 1)); draw(); };
-    const li = h("li", {
-      draggable: "true",
-      ondragstart: (e) => { e.stopPropagation(); dragging = i; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id); },
-      ondragover: (e) => { if (dragging != null) { e.preventDefault(); e.stopPropagation(); li.classList.add("drop-here"); } },
-      ondragleave: () => li.classList.remove("drop-here"),
-      ondrop: (e) => {
-        if (dragging == null) return;
-        e.preventDefault();
-        e.stopPropagation();
-        li.classList.remove("drop-here");
-        if (dragging !== i) { const from = dragging; dragging = null; order.splice(i, 0, ...order.splice(from, 1)); draw(); }
-      },
-      ondragend: () => { dragging = null; },
-    },
-      h("span", { class: "handle", "aria-hidden": "true" }, "⠿"),
-      h("span", { class: "grow" }, title(id)),
-      h("button", { type: "button", class: "icon", "aria-label": `Move ${title(id)} up`, disabled: i === 0, onclick: () => move(i - 1) }, "↑"),
-      h("button", { type: "button", class: "icon", "aria-label": `Move ${title(id)} down`, disabled: i === order.length - 1, onclick: () => move(i + 1) }, "↓"));
-    return li;
-  }));
+  const draw = (focus) => {
+    replace(list, order.map((id, i) => {
+      const move = (to) => { order.splice(to, 0, ...order.splice(i, 1)); draw({ id, dir: to > i ? "down" : "up" }); };
+      return h("li", { "data-i": String(i), "data-id": id },
+        h("span", { class: "handle drag-handle", "aria-hidden": "true" }, "⠿"),
+        h("span", { class: "grow" }, title(id)),
+        h("button", { type: "button", class: "icon", "data-no-drag": "", "data-move": "up", "aria-label": `Move ${title(id)} up`, disabled: i === 0, onclick: () => move(i - 1) }, "↑"),
+        h("button", { type: "button", class: "icon", "data-no-drag": "", "data-move": "down", "aria-label": `Move ${title(id)} down`, disabled: i === order.length - 1, onclick: () => move(i + 1) }, "↓"));
+    }));
+    // Keep the keyboard on the moved row's arrow (the other one at an end).
+    if (focus) {
+      const row = [...list.children].find((li) => li.dataset.id === focus.id);
+      (row?.querySelector(`[data-move="${focus.dir}"]:not(:disabled)`) ?? row?.querySelector("[data-move]:not(:disabled)"))?.focus();
+    }
+  };
+  sortable(list, {
+    item: "li",
+    containers: "ol.arrange",
+    axis: "y",
+    onDrop: (li, _c, to) => { order.splice(to, 0, ...order.splice(Number(li.dataset.i), 1)); draw(); },
+    onCancel: () => draw(),
+  });
   draw();
   return list;
 }

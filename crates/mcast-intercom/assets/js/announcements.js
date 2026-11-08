@@ -211,7 +211,7 @@ export function mount(el) {
     plural: "categories",
     path: "/categories",
     items: () => state.config.categories ?? [],
-    before: () => h("p", { class: "muted" }, "Categories are the headings on the Panel. Put an announcement in one from its editor, and set their order with Arrange the Panel."),
+    before: () => h("p", { class: "muted" }, "Categories are the headings on the Panel. Put an announcement in one from its editor, or drag it there with Customize on the Panel, which also sets their order."),
     columns: [
       ["Name", (c) => c.name],
       ["Announcements", (c) => String(state.config.announcements.filter((a) => a.category === c.id).length)],
