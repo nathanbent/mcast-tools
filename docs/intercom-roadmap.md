@@ -1,8 +1,8 @@
 # Intercom control panel: roadmap
 
-Status: **v0.5.5 is built** (PR #38), along with the monitor page (item 10)
-and delivery confirmation (item 11) from v0.6.0. Items 12 and 13 are planned
-below. This covers two releases,
+Status: **v0.5.5 is built** (PR #38), along with the monitor page (item 10),
+delivery confirmation (item 11) and backup and restore (item 13) from v0.6.0.
+Item 12 (GPIO triggers) is planned below. This covers two releases,
 **v0.5.5** (integrate and polish) and **v0.6.0** (observe and harden).
 `intercom-status.md` has the current state and the next steps.
 `intercom-plan.md` is an overview of how the panel is built.
@@ -291,6 +291,13 @@ a `listener_silent` webhook say who heard it and who stayed silent. See
   a door contact), with debounce and per-input priority.
 
 ### 13. Backup and restore
+
+**Built.** Settings → Backup and restore, `mcast intercom backup|restore`,
+and `GET /backup` / `POST /restore`: the config alone, or a `.tar.gz` with
+every sound (the owner chose that, adding the small `tar` crate). A restore
+first says what it adds, changes and removes, which sounds it uploads and
+which would be missing; it keeps the config before as `intercom.json.bak`.
+Tokens, webhooks and history are never in a backup. The plan:
 
 - Export and import `intercom.json`, optionally as an archive with the sounds.
   Never include `tokens.json`, `webhooks.json` or history.

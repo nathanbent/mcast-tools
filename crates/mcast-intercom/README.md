@@ -19,6 +19,8 @@ mcast intercom list            # zones and announcements
 mcast intercom check           # the config, and its media files and phonebook names on the server
 mcast intercom upcoming        # what the schedules play next
 mcast intercom play lunch      # by id or name; Ctrl-C stops it
+mcast intercom backup --sounds # intercom-DATE.tar.gz: the config and every sound
+mcast intercom restore intercom-2026-11-08.tar.gz --dry-run
 ```
 
 ### The panel
@@ -44,7 +46,7 @@ A page with a tab for each part:
 | **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need, and the **listeners** expected to hear it (see *Who heard it* below), with the receivers the mcast server hears now offered to add |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), **backup and restore**, and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
 The setup tabs (Playlists, Sounds, Zones, Settings) are under **More** in
 the header. The header's theme button picks the theme: the system's, light or dark,
@@ -216,6 +218,30 @@ announcements can't be scheduled, and play once.
 
 `--web-dir crates/mcast-intercom/assets` serves the page from disk, so a
 reload picks up edits; `--no-web` serves the API alone.
+
+### Backup and restore
+
+A backup is the config (`intercom.json`) on its own, or a `.tar.gz` with
+every sound on the mcast server too. Access tokens, webhooks and the play
+history are never in it: tokens and webhooks hold secrets.
+- **Making one:** Settings → Backup and restore, `mcast intercom backup
+  [--sounds] [-o FILE]`, or `GET /backup[?sounds=1]`.
+- **What a restore says first:**
+  - which zones, announcements, schedules, playlists, categories, sites and
+    schedule groups it adds, changes or removes;
+  - which other settings change;
+  - which sounds it would upload;
+  - which sounds the restored config uses that are neither on the mcast
+    server nor in the backup.
+- **Restoring:** it uploads the backup's sounds the mcast server doesn't
+  have, or has at another size, and the server checks they're audio. Then
+  it replaces the whole config, keeping the one before as
+  `intercom.json.bak`. If a sound can't be uploaded, the config isn't
+  changed.
+- **Where:** in Settings, or with `mcast intercom restore FILE
+  [--dry-run]`. A running panel picks up a restore made from the command
+  line.
+- **Size:** a backup holds up to 1 GiB.
 
 ## Config
 
@@ -480,6 +506,8 @@ only their runs.
 | `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
+| `GET /backup` | The config as `intercom.json` (admin); `?sounds=1`: a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history |
+| `POST /restore` | Put a backup back (admin): the raw body is a `.tar.gz` or an `intercom.json`. `?dry_run=1` only says what would change. Returns `{"plan": {"lists": {LIST: {"added", "changed", "removed"}}, "settings", "sounds_in_backup", "upload", "missing", "same"}, "applied", "uploaded", "kept", "server_error"}`; the config before is kept as `intercom.json.bak` |
 | `GET /listeners` | The receivers `mcast serve`'s monitor hears now (`[{"group", "name", "cname", "about", "loss_percent", "last_heard_ms", "left"}]`), for choosing a zone's listeners; 404 if its monitor is off |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
 | `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error", "tags"}], "folders": [{"name", "hidden"}], "tags": [{"tag", "files"}]}`; `used_by` names the announcements (and "the defaults") that use a file; `audio` is `{"codec", "rate", "channels", "duration_s"}`, or `audio_error` says why the mcast server can't play it (`null` both with an mcast server before 0.5.5) |

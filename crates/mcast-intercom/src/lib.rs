@@ -9,6 +9,7 @@
 //! `docs/intercom-plan.md` for an overview, `docs/intercom-roadmap.md` for what's next.
 
 pub mod backend;
+pub mod backup;
 pub mod cli;
 pub mod history;
 pub mod model;

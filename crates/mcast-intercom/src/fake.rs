@@ -264,7 +264,12 @@ impl Backend for Fake {
     fn download_media(&self, name: &str) -> BackendResult<(String, Vec<u8>)> {
         self.reachable()?;
         match self.st.lock().unwrap().files().get(name) {
-            Some(_) => Ok(("audio/wav".into(), b"RIFF fake wav".to_vec())),
+            // As long as it says it is.
+            Some(&bytes) => {
+                let mut data = b"RIFF fake wav".to_vec();
+                data.resize(bytes as usize, 0);
+                Ok(("audio/wav".into(), data))
+            }
             None => Err(err(404, format!("no media file \"{name}\""))),
         }
     }

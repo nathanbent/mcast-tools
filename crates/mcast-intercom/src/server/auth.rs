@@ -358,6 +358,8 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/media-hidden"
         | "/media-tags" => MediaWrite,
         "/tokens" | "/tokens/{id}" | "/layout/{tab}" => Admin,
+        "/backup" if get => Admin,
+        "/restore" if *method == Method::POST => Admin,
         // Any method: the handlers take GET and POST, and refuse the rest.
         "/trigger/{which}" | "/trigger/{which}/stop" | "/stop-all" => Play,
         "/webhooks" | "/webhooks/{id}" | "/webhooks/{id}/test" => Admin,
