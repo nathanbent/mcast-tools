@@ -1,17 +1,23 @@
 # Intercom: where things stand (handoff)
 
 Last updated 2026-11-08, at the end of a second session. That session checked
-the first one's work, then built everything left on the v0.6.0 roadmap, plus
-follow-ups: last-heard times in the Zones list, alerts when a speaker goes
-offline between plays, per-site webhooks and monitor, and a webhook delivery
-log. Read this first, then `intercom-roadmap.md`, which has the full plan and
-what each item became.
+the first one's work, built everything left on the roadmap plus follow-ups,
+merged it all into `main`, and bumped the version to 0.5.5. Read this first,
+then `intercom-roadmap.md` (the plan and what each item became) and
+`intercom-plan.md` (how the panel is built).
 
 ## Where things stand
 
-Every item on the roadmap for v0.5.5 and v0.6.0 is built, plus some
-follow-ups. The owner asked for all of it to be merged into `main`. It came
-as six stacked PRs, merged in order with merge commits:
+- **Everything is on `main`.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+  - last-heard times in the Zones list;
+  - alerts when a speaker goes offline between plays;
+  - per-site webhooks and monitor;
+  - a webhook delivery log.
+- **No intercom feature PRs are open;** only the version bump (#48).
+- **The version is 0.5.5** in `Cargo.toml`. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. The bump is in nathanbent/mcast-tools#48 (`claude/vibrant-knuth-34bpdf`). Once that's merged, the release is ready to cut (see What's next).
+- **New work** branches from `main`.
+
+The work came as six stacked PRs, merged in order with merge commits:
 
 | PR | Branch | What |
 |---|---|---|
@@ -22,15 +28,14 @@ as six stacked PRs, merged in order with merge commits:
 | nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site |
 | nathanbent/mcast-tools#47 | `claude/intercom-webhook-log` | A delivery log for each webhook |
 
-- **Before merging,** CI was green on every PR's latest commit, with no merge conflicts and no review comments.
-- **How they were merged:** each PR was merged once the one below it had landed and it had been pointed at `main`.
-- **The version is still 0.5.4** in `Cargo.toml`. Nothing has been released with this work yet.
-- **New work** branches from `main` again.
+- **Before merging,** CI was green on every PR's latest commit, with no merge conflicts and no review comments. Each was merged once the one below it had landed and it had been pointed at `main`.
+- **Their branches are still on GitHub** (the repo doesn't delete branches on merge). They can be deleted; nothing depends on them.
+- **Watches and check-ins:** the session that did this was watching the PRs until they merged, and has no check-ins left.
 
 ## Checked
 
 - **At the start of the session,** on #38's head (`6908d0f`): fmt, clippy (`-D warnings`) and `cargo test --workspace` all passed (271 tests), and GitHub CI was green. Every item listed below is in the code, with no TODOs left.
-- **At the top of the stack** (#47, `6439eb7`), the same checks pass: 306 tests.
+- **On `main` after the merges** (`c1c6ec7`), the same checks pass: 306 tests. They pass again with the version bump.
 - **Docs** that had fallen behind the code were fixed in #38: the roadmap's status, item 9 (the Panel is arrangeable too), item 11 (the core didn't expose listener reports yet), and `intercom-tokens.md` (history is persisted).
 
 ## What's built
@@ -151,14 +156,15 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Try the hardware:**
-   - A button on a Pi (#45).
-   - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
-2. **Release:** bump the version (0.5.4 → 0.6.0, or 0.5.5 then 0.6.0) and run the release workflow from the Actions tab.
-3. **Text pages in playlists:**
+1. **Merge the version bump:** nathanbent/mcast-tools#48 (0.5.4 → 0.5.5, with these docs), the only one open. Once it's merged, this step is done.
+2. **Try the hardware before releasing.** Nothing here has run on real hardware:
+   - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
+   - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
+3. **Release v0.5.5:** run the Release workflow (Actions tab) from `main` with the tag `v0.5.5`. It must match `Cargo.toml`, and the workflow refuses a tag or release that already exists. It builds the binaries and publishes the release.
+4. **Text pages in playlists:**
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
-4. **Smaller follow-ups:**
+5. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner
@@ -174,6 +180,8 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## How to work on it
 
+- **Git:** branch from `main` and open a PR against it. The history uses merge commits ("Merge pull request #N"). CI (`.github/workflows/ci.yml`) runs fmt, clippy, the tests and `shellcheck` on `pi/`. A CI failure in the "restore cache" step, before anything is built, has been a GitHub cache hiccup; one re-run cleared it.
+- **Releasing:** bump `version` in `Cargo.toml` (the lockfile follows on the next build), merge, then run the Release workflow from `main` with the matching tag.
 - **Build:** `cargo build -p mcast`. Needs `libasound2-dev`, `libopus-dev` and `pkg-config` (apt).
 - **Checks** (CI runs the same): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - **MSRV is 1.75** (`rust-version` in `Cargo.toml`): avoid newer std APIs (for example, use `map_or(true, …)`, not `is_none_or`). CI only builds on stable. Some dependencies already in `main`'s lockfile need more than 1.75 (`thiserror` 2.0.21 needs 1.77), so the declared MSRV isn't really checked.

@@ -28,6 +28,8 @@ panel-specific:
   `/media?audio=1`, `/media-info`.
 - **Playlists:** the `files` source.
 - **Push to talk:** the `live` source.
+- **Delivery confirmation:** the monitor's `listeners` (receivers heard on
+  RTCP), and send jobs' `ssrc`, which a listener's `about` names.
 
 ## The crate
 
@@ -39,16 +41,21 @@ crates/mcast-intercom/src/
   runner.rs     playing an announcement: a sender per group, conflicts, repeats, stop
   scheduler.rs  when schedules fire (time zones, days off, sites, grace for misses)
   tokens.rs     access tokens (tokens.json): roles, hashes, expiry, use counts
-  webhooks.rs   outbound webhooks (webhooks.json): events, signing, delivery
+  webhooks.rs   outbound webhooks (webhooks.json): events, site filters, signing,
+                delivery, and the delivery log (webhook-log.jsonl)
   history.rs    the play history and connection log (history/), stats and the monitor
-  cli.rs        mcast intercom list|check|upcoming|play|token
+  presence.rs   whether the speakers zones expect are reporting between plays
+  inputs.rs     GPIO buttons and contacts (gpiocdev on Linux; a fake for tests)
+  backup.rs     backups (intercom.json, or a .tar.gz with the sounds) and restoring
+  cli.rs        mcast intercom list|check|upcoming|play|token|backup|restore
   server/       the panel's HTTP API (/api/intercom/v1), its page, events, TLS
 assets/         the page: vanilla JS modules, no build step, strict CSP
 ```
 
 Files beside `intercom.json`:
-- **`tokens.json` and `webhooks.json`:** owner-only.
+- **`tokens.json`, `webhooks.json` and `webhook-log.jsonl`:** owner-only.
 - **`history/`:** a file per day, plus `connection.jsonl`.
+- **`intercom.json.bak`:** the config before the last restore.
 - **A self-signed certificate,** when the panel makes its own.
 
 ## Decisions that still hold

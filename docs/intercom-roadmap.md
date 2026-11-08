@@ -1,9 +1,12 @@
 # Intercom control panel: roadmap
 
-Status: **v0.5.5 is built** (PR #38), and so is everything planned for
-v0.6.0: the monitor page (item 10), delivery confirmation (item 11), GPIO
-triggers (item 12) and backup and restore (item 13). This covers two releases,
-**v0.5.5** (integrate and polish) and **v0.6.0** (observe and harden).
+Status: **everything here is built and merged into `main`.** That includes
+v0.5.5 and all of v0.6.0: the monitor page (item 10), delivery confirmation
+(item 11), GPIO triggers (item 12) and backup and restore (item 13). It also
+has follow-ups: speaker offline alerts, per-site webhooks and monitor, and a
+webhook delivery log. The owner chose to ship it all as **0.5.5**, so there's
+no separate 0.6.0 release. The plan was written as two releases, **v0.5.5**
+(integrate and polish) and **v0.6.0** (observe and harden).
 `intercom-status.md` has the current state and the next steps.
 `intercom-plan.md` is an overview of how the panel is built.
 

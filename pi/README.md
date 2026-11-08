@@ -117,8 +117,8 @@ panic button, a door contact or a bell push plays an announcement.
 Setting `ENABLE_INTERCOM=no` again stops and removes the service, but keeps
 `intercom.json` and the token.
 
-The intercom needs mcast 0.4.0 or later, and HTTPS (for push to talk) 0.5.0
-or later. With an older binary, `install.sh` skips the intercom, or serves it
+The intercom needs mcast 0.4.0 or later, HTTPS (for push to talk) 0.5.0 or
+later, and playlists, delivery confirmation and GPIO buttons 0.5.5 or later. With an older binary, `install.sh` skips the intercom, or serves it
 over plain HTTP, and says so: run `sudo mcast update`, then re-run
 `install.sh`.
 

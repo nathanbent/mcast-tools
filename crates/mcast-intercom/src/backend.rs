@@ -42,7 +42,7 @@ pub struct Job {
     pub group: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
-    /// The RTP SSRC it sends with (servers from 0.6). Listeners name it.
+    /// The RTP SSRC it sends with (servers from 0.5.5). Listeners name it.
     #[serde(default)]
     pub ssrc: Option<u32>,
 }
@@ -164,7 +164,7 @@ pub trait Backend: Send + Sync + 'static {
     fn stop_job(&self, id: u64) -> BackendResult<()>;
     fn job(&self, id: u64) -> BackendResult<Job>;
     /// Receivers the server's monitor hears reporting (404 when it was
-    /// started with `--no-monitor`; empty from servers before 0.6).
+    /// started with `--no-monitor`; empty from servers before 0.5.5).
     fn listeners(&self) -> BackendResult<Vec<Listener>>;
     /// Follow the server's events in the background until `on` returns false.
     fn follow(&self, on: FeedFn);

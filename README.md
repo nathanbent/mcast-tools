@@ -781,6 +781,9 @@ mcast intercom list
 mcast intercom check                                 # media files and phonebook names exist?
 mcast intercom upcoming                              # what the schedules play next
 mcast intercom play "Lunch bell"                     # Ctrl-C stops it
+mcast intercom token add Doorbell --role trigger     # a key for another system
+mcast intercom backup --sounds                       # the config and every sound, as a .tar.gz
+mcast intercom restore intercom-2026-11-08.tar.gz --dry-run
 ```
 
 The panel has a button for each announcement, what's playing now and next,
@@ -796,6 +799,22 @@ browser's microphone, which browsers only allow over HTTPS:
 `--tls-self-signed` (or `--tls-cert`/`--tls-key`) serves the panel that way.
 It is its own server with its own token (`--panel-token`); `--url` and
 `--token` point it at `mcast serve`.
+
+Since 0.5.5 the panel also has:
+- **Access and other systems:**
+  - Scoped access tokens (admin, operator, trigger and media), and kiosk screens.
+  - A trigger API for other systems, and signed outbound webhooks. Webhooks can be limited to sites, and each keeps a delivery log.
+- **The library and playback:**
+  - Checked uploads and recording in the browser, and a file manager with tags and search.
+  - Playlists, and parts that send other audio to other zones in the same play.
+- **The Panel and history:**
+  - Categories, colors and an arrangeable layout.
+  - A play history kept on disk, and a Monitor tab (for one site or all).
+- **Speakers:**
+  - Delivery confirmation: which speakers (`mcast receive --name`) heard each play.
+  - Alerts when one goes offline between plays.
+- **GPIO buttons and door contacts** on a Raspberry Pi.
+- **Backup and restore.**
 See [crates/mcast-intercom/README.md](crates/mcast-intercom/README.md) for the
 file's format and the panel's API. On a Raspberry Pi, `ENABLE_INTERCOM=yes` in
 `pi/pi.conf` runs it as a service ([pi/README.md](pi/README.md#the-intercom-panel)).
