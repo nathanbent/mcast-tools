@@ -34,6 +34,8 @@ export const state = {
   // { time_zone, now_ms, fires: [{ at_ms, local, weekday, schedule, announcement, name }] }
   upcoming: { time_zone: null, fires: [] },
   siteUpcoming: {},
+  // GPIO inputs' states (admins): [{ id, name, enabled, pressed, error, changed_ms, run }].
+  inputs: [],
 };
 
 // What the signed-in token may do (the server checks too).
@@ -109,6 +111,11 @@ export async function refreshRuns() {
   const runs = await api("GET", "/runs");
   state.runs = new Map(runs.map((r) => [r.id, r]));
   changed("runs");
+}
+
+export async function refreshInputs() {
+  try { state.inputs = await api("GET", "/input-status"); } catch {}
+  changed("inputs");
 }
 
 export async function refreshChimes() {
@@ -190,6 +197,10 @@ export function apply(ev) {
       if (ev.status.connected && !wasUp) { if (can.operate()) refreshServer(); refreshLibrary(); }
       break;
     }
+    case "inputs":
+      state.inputs = ev.inputs;
+      changed("inputs");
+      break;
     case "lagged":
       refreshAll();
       break;

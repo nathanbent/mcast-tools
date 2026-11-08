@@ -112,17 +112,19 @@ On the local branch `backup-restore`, on top of #43; not pushed yet (see the not
 - **Tests:** unit tests (round trip, refusing bad archives and `../` paths, planning) and an API test (download both forms, dry run, restore with a sound, `.bak`, a bad file, a sound that isn't audio).
 - **Checked by hand:** the CLI against a real `mcast serve` with a real WAV, and the page in a browser (download, preview, restore, a junk file, phone width and dark).
 
-### 3. Triggers from the room (GPIO), roadmap item 12
+### 3. Triggers from the room (GPIO), roadmap item 12: built
 
-- An optional `inputs` list in `intercom.json`, read by `mcast intercom serve`. Each input has:
-  - a pin (BCM number), `active_low`, `debounce_ms` (default 50) and a priority;
-  - an announcement, and `on`: press, release, or both (play on close, stop on open).
-- Read through the Linux GPIO character device (`/dev/gpiochip0`, v2 uAPI), not the deprecated sysfs. Use either a small ioctl wrapper or the `gpiocdev` crate, if its MSRV fits 1.75.
-- Linux only. Elsewhere `check` refuses `inputs` with a clear message.
-- Settings → Inputs shows each pin's live state and has a test button.
-- Runs record `trigger: {type: "input", pin, name}`.
-- Pi image: add the `mcast` user to the `gpio` group, and document the wiring (pull-ups, a contact closure to GND).
-- Test debounce and the edge-to-action logic against a fake pin source; check the real device by hand on a Pi.
+On the branch `claude/intercom-gpio`, on top of #44.
+- **The owner chose the `gpiocdev` crate.** It's Linux only (a target-gated dependency) and adds `gpiocdev`, `gpiocdev-uapi` and `ioctl-sys`.
+- **Config:** `inputs` in `intercom.json`: line, chip (default `gpiochip0`), `active_low` (default true), `bias` (default pull-up), `debounce_ms` (default 50), announcement, `while_held` and `enabled`. It's checked like the rest of the config: lines unique, no live announcements, chips named `gpiochipN`.
+- **`crate::inputs`:**
+  - A `Pins` trait: the real `gpiocdev` version (kernel debounce, both edges) and `FakePins` for tests.
+  - `Inputs` follows the config, re-reading it when poked and every 5 s, and retries a pin that failed to open every 30 s.
+  - A press plays the announcement (once, until it ends); releasing a `while_held` input stops it. A contact closed at start-up doesn't page.
+- **API:** `/inputs` (edit), `/input-status`, `/inputs/{id}/test`, and an admin-only `inputs` event.
+- **Page:** Settings → Buttons and contacts, showing each pin's state (with the header pin number on a Pi) and a Test button.
+- **Pi:** `install.sh` adds `mcast` to `gpio`, and `pi/README.md` documents the wiring.
+- **Not checked on a real Pi:** this container has no GPIO. The `gpiocdev` code was run, and it reported the missing chip as expected. Everything after the pin is tested with fake pins, and the Test button was tried in a browser with the real binaries. **Do check a real button on a Pi before release.**
 
 ### 4. Text pages in playlists
 
@@ -141,9 +143,8 @@ Then release v0.6.0.
 ## Questions still open for the owner
 
 1. Probes: how much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added. Should listeners be checked between runs too? Receivers report every few seconds even when idle (`about` is then `null`), so a "speaker offline" alert is possible.
-2. GPIO: a small ioctl wrapper of our own, or the `gpiocdev` crate?
-3. Text pages in playlists: displays, TTS, or both?
-4. Roll "Arrange this page" out to more tabs?
+2. Text pages in playlists: displays, TTS, or both?
+3. Roll "Arrange this page" out to more tabs?
 
 ## How to work on it
 

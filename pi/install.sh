@@ -180,6 +180,11 @@ install_mcast() {
         useradd --system --home-dir /var/lib/mcast --no-create-home --shell /usr/sbin/nologin mcast
     fi
     usermod -aG audio mcast
+    # The intercom's buttons and door contacts read /dev/gpiochip* (group gpio
+    # on Raspberry Pi OS).
+    if getent group gpio >/dev/null; then
+        usermod -aG gpio mcast
+    fi
 
     install -d -m 0750 -o root -g mcast /etc/mcast
     local env=/etc/mcast/mcast.env

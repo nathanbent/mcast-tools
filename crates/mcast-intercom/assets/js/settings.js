@@ -12,6 +12,7 @@ import { MODES } from "./announcements.js";
 import { ENCODINGS, encodingValue } from "./zones.js";
 import * as tokens from "./tokens.js";
 import * as webhooks from "./webhooks.js";
+import * as inputs from "./inputs.js";
 import { arrangeable } from "./layout.js";
 import { LOOK_DEFAULTS } from "./panel.js";
 
@@ -305,7 +306,7 @@ function connection() {
 // What a restore would change, a line each.
 function planLines(p) {
   const LIST = { zones: "Zones", announcements: "Announcements", schedules: "Schedules", playlists: "Playlists",
-    categories: "Categories", sites: "Sites", schedule_groups: "Schedule groups" };
+    categories: "Categories", sites: "Sites", schedule_groups: "Schedule groups", inputs: "Buttons and contacts" };
   const lines = Object.entries(p.lists).map(([k, c]) => [LIST[k] ?? k,
     [["added", c.added], ["changed", c.changed], ["removed", c.removed]]
       .filter(([, n]) => n.length).map(([w, n]) => `${w} ${n.join(", ")}`).join("; ")]);
@@ -398,6 +399,7 @@ export function mount(el) {
     ["history", "History", historyDays],
     ["tokens", "Access tokens", tokens.mount],
     ["other-systems", "Other systems", webhooks.mount],
+    ["inputs", "Buttons and contacts", inputs.mount],
     ["backup", "Backup and restore", backupRestore],
     ["connection", "Connection", connection],
   ].map(([id, title, make]) => ({ id, title, el: card(title, make()) }));

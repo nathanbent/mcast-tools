@@ -46,7 +46,7 @@ A page with a tab for each part:
 | **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need, and the **listeners** expected to hear it (see *Who heard it* below), with the receivers the mcast server hears now offered to add |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), **backup and restore**, and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), **buttons and contacts** (GPIO inputs), **backup and restore**, and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
 The setup tabs (Playlists, Sounds, Zones, Settings) are under **More** in
 the header. The header's theme button picks the theme: the system's, light or dark,
@@ -218,6 +218,49 @@ announcements can't be scheduled, and play once.
 
 `--web-dir crates/mcast-intercom/assets` serves the page from disk, so a
 reload picks up edits; `--no-web` serves the API alone.
+
+### Buttons and contacts (GPIO)
+
+On a Raspberry Pi (or any Linux machine with GPIO), the panel can watch pins
+and play an announcement when one is pressed: a panic button, a door contact,
+a bell push. Set them up in Settings → Buttons and contacts.
+- **What it shows:** each one's state now (pressed, released, or why it
+  can't be read), and a **Test** button.
+- **A press** plays the announcement, at its own priority. Pressing again
+  while it plays does nothing.
+- **"Play while held"** stops it when the button is let go: good for a
+  door held open.
+- **At start-up:** a contact that's already closed when the panel starts
+  doesn't page.
+- **In the history:** runs say which input started them (`trigger: {"type":
+  "input", "id", "by": NAME}`).
+
+The pins are read through the Linux GPIO character device (`/dev/gpiochipN`),
+and the kernel debounces them. The user running the panel needs access to
+it: on Raspberry Pi OS, the `gpio` group (`pi/install.sh` sets that up). On
+other systems the inputs show as unreadable.
+
+```json
+"inputs": [
+  {"id": "panic", "name": "Panic button", "line": 17, "announcement": "lockdown"},
+  {"id": "door", "name": "Loading dock door", "line": 27, "announcement": "door-open",
+   "while_held": true, "debounce_ms": 200}
+]
+```
+
+Each input has these fields:
+- `line`: the GPIO number (BCM numbering on a Pi; GPIO17 is header pin 11).
+- `chip`: `gpiochip0` unless set.
+- `active_low`: default `true`, meaning pressed when the pin reads low, as
+  with a switch to ground.
+- `bias`: `pull_up` (the default), `pull_down` or `none`.
+- `debounce_ms`: default 50, at most 1000.
+- `announcement`: any but a live one.
+- `while_held`: stop the announcement on release.
+- `enabled`: default `true`.
+
+Two enabled inputs can't share a line, and an announcement an input plays
+can't be deleted.
 
 ### Backup and restore
 
@@ -506,6 +549,9 @@ only their runs.
 | `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
+| `GET`, `POST /inputs`; `GET`, `PUT`, `DELETE /inputs/{id}` | GPIO inputs (admin), as in the config |
+| `GET /input-status` | Each input's state now (admin): `[{"id", "name", "enabled", "pressed", "error", "changed_ms", "run"}]`; the `inputs` event sends the same when one changes |
+| `POST /inputs/{id}/test` | Press it from the API (admin), as if by hand, and for a `while_held` one let go a second later: `{"run"}` |
 | `GET /backup` | The config as `intercom.json` (admin); `?sounds=1`: a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history |
 | `POST /restore` | Put a backup back (admin): the raw body is a `.tar.gz` or an `intercom.json`. `?dry_run=1` only says what would change. Returns `{"plan": {"lists": {LIST: {"added", "changed", "removed"}}, "settings", "sounds_in_backup", "upload", "missing", "same"}, "applied", "uploaded", "kept", "server_error"}`; the config before is kept as `intercom.json.bak` |
 | `GET /listeners` | The receivers `mcast serve`'s monitor hears now (`[{"group", "name", "cname", "about", "loss_percent", "last_heard_ms", "left"}]`), for choosing a zone's listeners; 404 if its monitor is off |

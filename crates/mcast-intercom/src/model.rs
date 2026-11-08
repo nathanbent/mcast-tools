@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Longest id or name accepted.
 pub const MAX_NAME: usize = 64;
@@ -61,6 +61,87 @@ pub struct Config {
     /// Days of play history to keep; 0 keeps it all. Unset: 90.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_days: Option<u32>,
+    /// Buttons and contacts on GPIO pins that play announcements.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Input>,
+}
+
+/// A button or contact on a GPIO pin (on a Raspberry Pi, its header) that
+/// plays an announcement: a panic button, a door contact, a bell push.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Input {
+    pub id: String,
+    pub name: String,
+    /// The GPIO chip, `gpiochip0` (a Pi's header) unless set: `gpiochipN`
+    /// or `/dev/gpiochipN`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chip: Option<String>,
+    /// The line on that chip. On a Pi, the BCM GPIO number: GPIO17 is
+    /// header pin 11.
+    pub line: u32,
+    /// Pressed when the pin reads low: a switch to ground, the usual
+    /// wiring with a pull-up. False: pressed when it reads high.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub active_low: bool,
+    /// The pin's pull resistor.
+    #[serde(default, skip_serializing_if = "Bias::is_default")]
+    pub bias: Bias,
+    /// Changes shorter than this are ignored (switch bounce); unset: 50 ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debounce_ms: Option<u32>,
+    /// The announcement it plays (id).
+    pub announcement: String,
+    /// Play while held, and stop on release. Otherwise a press plays it
+    /// through, and releasing does nothing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub while_held: bool,
+    /// Off: the pin isn't watched.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+}
+
+/// An input's pull resistor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Bias {
+    #[default]
+    PullUp,
+    PullDown,
+    /// None: something outside drives the pin.
+    None,
+}
+
+impl Bias {
+    fn is_default(&self) -> bool {
+        *self == Bias::PullUp
+    }
+}
+
+/// Debounce unless an input says otherwise.
+pub const DEFAULT_DEBOUNCE_MS: u32 = 50;
+/// Most inputs, and the longest debounce.
+pub const MAX_INPUTS: usize = 64;
+pub const MAX_DEBOUNCE_MS: u32 = 1000;
+
+impl Input {
+    /// Its chip's device: `/dev/gpiochip0` unless it says.
+    pub fn chip_path(&self) -> String {
+        match self
+            .chip
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+        {
+            None => "/dev/gpiochip0".into(),
+            Some(c) if c.starts_with('/') => c.to_string(),
+            Some(c) => format!("/dev/{c}"),
+        }
+    }
+
+    pub fn debounce_ms(&self) -> u32 {
+        self.debounce_ms.unwrap_or(DEFAULT_DEBOUNCE_MS)
+    }
 }
 
 /// Longest history that can be asked for, in days (ten years).
@@ -1325,6 +1406,53 @@ impl Config {
                 When::Once(at) => {
                     parse_datetime(at).map_err(|e| anyhow::anyhow!("{what}: {e}"))?;
                 }
+            }
+        }
+        if self.inputs.len() > MAX_INPUTS {
+            bail!("more than {MAX_INPUTS} inputs");
+        }
+        let (mut ids, mut names, mut pins) = (HashSet::new(), HashSet::new(), HashMap::new());
+        for i in &self.inputs {
+            let what = format!("input \"{}\"", i.id);
+            check_id("input", &i.id)?;
+            check_name("input", &i.name)?;
+            if !ids.insert(i.id.as_str()) {
+                bail!("two inputs have the id \"{}\"", i.id);
+            }
+            if !names.insert(i.name.to_lowercase()) {
+                bail!("two inputs are called \"{}\"", i.name);
+            }
+            let chip = i.chip_path();
+            let n = chip.strip_prefix("/dev/gpiochip").unwrap_or("");
+            if n.is_empty() || n.len() > 3 || !n.chars().all(|c| c.is_ascii_digit()) {
+                bail!(
+                    "{what}: chip \"{}\" should be gpiochipN, e.g. gpiochip0",
+                    chip
+                );
+            }
+            if i.line > 1023 {
+                bail!("{what}: line {} is out of range (0 to 1023)", i.line);
+            }
+            if i.debounce_ms() > MAX_DEBOUNCE_MS {
+                bail!("{what}: debounce_ms is at most {MAX_DEBOUNCE_MS}");
+            }
+            if i.enabled {
+                if let Some(other) = pins.insert((chip, i.line), i.id.as_str()) {
+                    bail!(
+                        "inputs \"{other}\" and \"{}\" both use line {}",
+                        i.id,
+                        i.line
+                    );
+                }
+            }
+            let Some(a) = self.announcements.iter().find(|a| a.id == i.announcement) else {
+                bail!("{what}: no announcement \"{}\"", i.announcement);
+            };
+            if a.audio == Audio::Live {
+                bail!(
+                    "{what}: \"{}\" is live (someone talks), so a button can't play it",
+                    a.name
+                );
             }
         }
         self.tz()?;
