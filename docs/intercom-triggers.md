@@ -90,6 +90,8 @@ a broken `webhooks.json`, and notices changes to it while running.
 
 **Delivery log.** Each hook keeps its last 50 deliveries, newest first, in
 `GET /webhooks/{id}/deliveries` (admin) and behind each hook's *Log* button.
+They're in the order they were sent (by `at_ms`, then `delivery`), even when
+a slow receiver or a retry makes one finish after a later one.
 - **Each one has:** `delivery` (the `X-Mcast-Delivery` number), `event`,
   `about` (the announcement or speaker), `at_ms`, `ok`, `status` (the
   receiver's HTTP status), `error`, `attempts` and `took_ms`.

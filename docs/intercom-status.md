@@ -189,6 +189,7 @@ The v0.5.5 items, plus requests that came up along the way:
 - **Where:** `GET /webhooks/{id}/deliveries` (admin), and a *Log* button on each hook in Settings → Other systems.
 - **The file:** `webhook-log.jsonl` beside `webhooks.json`, owner-only, so the log outlives a restart. It's cut back past 5000 lines, and a deleted hook's lines go with it. No bodies, so no secrets.
 - **Tests:** a unit test (the 50 cap, the file's permissions, reading it back, cutting it back, forgetting a hook) and an API test (a run and a test delivery logged with what they were about, the log after a restart, and gone with the hook). Checked in a browser with a working receiver and a dead one (failed, 2 attempts, 3000 ms).
+- **Order (later, as the owner asked):** deliveries are sent and logged on their own threads, so they can finish out of order (a slow receiver, a retry). The log keeps them in the order sent, by `at_ms` then the delivery number, in memory, read back from the file and when it's rewritten. Tested with a receiver that answers `run_started` slowly, so `run_ended` finishes first.
 
 ### In #44: backup and restore (roadmap item 13)
 
@@ -240,8 +241,7 @@ The v0.5.5 items, plus requests that came up along the way:
 4. **GPIO choices to confirm (#45):**
    - An input plays at its announcement's priority, with no per-input priority.
    - Re-pressing while it plays is ignored, not restarted.
-5. **Webhook log order (#47, noted in #50):** each delivery is sent and logged on its own thread, so two events fired close together can be logged in the order their deliveries finished, not the order they were sent. Fine as it is, or keep them in order?
-6. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
+5. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
 
 ## How to work on it
 

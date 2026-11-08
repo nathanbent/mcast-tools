@@ -310,6 +310,14 @@ pub struct Delivery {
     pub took_ms: u64,
 }
 
+impl Delivery {
+    /// When it was sent, for ordering: its time, then its number (which
+    /// tells apart deliveries sent in the same millisecond).
+    fn sent(&self) -> (u64, u64) {
+        (self.at_ms, self.delivery)
+    }
+}
+
 /// A delivery as the log file keeps it.
 #[derive(Serialize, Deserialize)]
 struct Logged {
@@ -320,6 +328,10 @@ struct Logged {
 
 /// The hooks' recent deliveries, in memory and in `webhook-log.jsonl`
 /// beside `webhooks.json` (owner-only), so they outlive a restart.
+///
+/// Each delivery is sent on its own thread and logged once it's done, so
+/// they can finish in any order (a slow receiver, a retry). The log keeps
+/// them in the order they were sent: by [`Delivery::sent`].
 struct Log {
     path: PathBuf,
     hooks: HashMap<String, VecDeque<Delivery>>,
@@ -346,7 +358,12 @@ impl Log {
 
     fn keep(&mut self, hook: String, d: Delivery) {
         let q = self.hooks.entry(hook).or_default();
-        q.push_back(d);
+        // After any sent before it; usually that's at the end.
+        let at = q
+            .iter()
+            .rposition(|x| x.sent() <= d.sent())
+            .map_or(0, |i| i + 1);
+        q.insert(at, d);
         while q.len() > LOG_PER_HOOK {
             q.pop_front();
         }
@@ -378,7 +395,7 @@ impl Log {
             .iter()
             .flat_map(|(h, q)| q.iter().map(move |d| (h, d)))
             .collect();
-        all.sort_by_key(|(_, d)| d.at_ms);
+        all.sort_by_key(|(_, d)| d.sent());
         let mut text = String::new();
         for (hook, d) in &all {
             let l = Logged {
@@ -915,6 +932,56 @@ mod tests {
             after.hooks["w_a"].back().unwrap().about.as_deref(),
             Some("Bell 60")
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_delivery_log_is_in_the_order_deliveries_were_sent() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcast-hook-order-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("webhook-log.jsonl");
+        let d = |n: u64, at_ms: u64, event: &str| Delivery {
+            delivery: n,
+            event: event.into(),
+            at_ms,
+            ok: true,
+            ..Default::default()
+        };
+        let order =
+            |log: &Log| -> Vec<u64> { log.hooks["w_a"].iter().map(|d| d.delivery).collect() };
+        // Finished out of order: 2 before 1 (a slow receiver), 4 before 3
+        // (sent in the same millisecond), and 5 retried, after 6.
+        let mut log = Log::open(path.clone());
+        for (n, at) in [
+            (2, 1000),
+            (1, 1000),
+            (4, 1001),
+            (3, 1001),
+            (6, 1003),
+            (5, 1002),
+        ] {
+            log.add("w_a", d(n, at, "run_started"));
+        }
+        assert_eq!(order(&log), [1, 2, 3, 4, 5, 6]);
+        // The newest is the last one sent, whatever finished last.
+        assert_eq!(log.hooks["w_a"].back().unwrap().delivery, 6);
+        // The file is in the order they finished; read back, in the order sent.
+        assert_eq!(order(&Log::open(path.clone())), [1, 2, 3, 4, 5, 6]);
+        // After a restart the numbers start again, but the times go on.
+        log.add("w_a", d(1, 2000, "test"));
+        log.rewrite().unwrap();
+        assert_eq!(order(&Log::open(path.clone())), [1, 2, 3, 4, 5, 6, 1]);
+        // Something sent before all that's kept, finishing late, goes.
+        for n in 0..LOG_PER_HOOK as u64 {
+            log.add("w_a", d(100 + n, 3000 + n, "run_ended"));
+        }
+        log.add("w_a", d(7, 1500, "run_ended"));
+        assert_eq!(log.hooks["w_a"].len(), LOG_PER_HOOK);
+        assert!(log.hooks["w_a"].iter().all(|d| d.delivery >= 100));
         let _ = std::fs::remove_dir_all(dir);
     }
 
