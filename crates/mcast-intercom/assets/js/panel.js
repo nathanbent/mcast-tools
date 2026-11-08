@@ -1,16 +1,36 @@
 // The panel: a big button per announcement, and what's playing now.
 
 import { api } from "./api.js";
-import { h, replace, toast } from "./dom.js";
-import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow } from "./store.js";
+import { h, replace, toast, saved } from "./dom.js";
+import { state, subscribe, isOver, zoneName, siteName, activeRun, fireTime, fromNow, can, panelAnnouncements, onRunEnded } from "./store.js";
+import { ordered, sortableList, saveLayouts, arrangeDialog } from "./layout.js";
 import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
+
+// How the Panel looks (Settings → Panel), with the defaults filled in.
+export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, show_stats: true, confirm_emergency: false };
+// The URL can set this screen's size and layout.
+const look = () => {
+  const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
+  if (state.view.size) l.size = state.view.size;
+  if (state.view.mode) l.mode = state.view.mode;
+  return l;
+};
+
+const categoryOf = (a) => (state.config.categories ?? []).find((c) => c.id === a.category);
+const colorOf = (a) => a.color ?? categoryOf(a)?.color ?? null;
+// Classes for a tile: priority, and its color if it has one.
+const tileClass = (a, extra = "") => [
+  "tile", a.priority ?? "normal", colorOf(a) && `colored color-${colorOf(a)}`, extra,
+].filter(Boolean).join(" ");
 
 let talkState = null;
 // The level meter of the tile being talked on, updated in place.
 let meter = null;
 
 async function play(a) {
+  const ask = a.confirm || (look().confirm_emergency && a.priority === "emergency");
+  if (ask && !confirm(`Play "${a.name}"?`)) return;
   try {
     const run = await api("POST", `/announcements/${encodeURIComponent(a.id)}/play`);
     const busy = run.targets.filter((t) => t.state === "busy").length;
@@ -37,13 +57,14 @@ function liveTile(a, run, meta) {
     title: "Hold to talk and let go to end, or tap to talk hands-free and tap again to end",
     "aria-pressed": String(!!mine),
   },
+    a.icon && h("span", { class: "icon-big", "aria-hidden": "true" }, a.icon),
     h("span", { class: "name" }, a.name),
-    h("span", { class: "meta" }, meta),
+    meta && h("span", { class: "meta" }, meta),
     h("span", { class: "talk-hint" }, mine?.phase === "live" && h("span", { class: "dot", "aria-hidden": "true" }), hint),
     mine && h("span", { class: "meter", "aria-hidden": "true" }, bar),
     a.priority && a.priority !== "normal" && h("span", { class: `badge ${a.priority}` }, a.priority));
   pushToTalk(button, a.id, a.name);
-  return h("div", { class: `tile live ${a.priority ?? "normal"}${run ? " active" : ""}${mine ? " on-air" : ""}` },
+  return h("div", { class: tileClass(a, `live${run ? " active" : ""}${mine ? " on-air" : ""}`) },
     button,
     run && h("div", { class: "playing" },
       h("span", {}, runState(run)),
@@ -52,22 +73,113 @@ function liveTile(a, run, meta) {
 
 function tile(a) {
   const run = activeRun(a.id);
-  const zones = a.zones.map(zoneName).join(", ");
-  const meta = [zones, a.repeat > 1 && `${a.repeat}×`].filter(Boolean).join(" · ");
+  const zones = [a.zones, ...(a.parts ?? []).map((p) => p.zones)].flat().map(zoneName).join(", ");
+  const meta = look().show_details ? [zones, a.repeat > 1 && `${a.repeat}×`].filter(Boolean).join(" · ") : "";
   if (a.audio === "live") return liveTile(a, run, meta);
-  return h("div", { class: `tile ${a.priority ?? "normal"}${run ? " active" : ""}` },
+  return h("div", { class: tileClass(a, run ? "active" : "") },
     h("button", {
       class: "play",
       disabled: !!run,
       title: run ? "Playing" : `Play "${a.name}"`,
       onclick: () => play(a),
     },
+      a.icon && h("span", { class: "icon-big", "aria-hidden": "true" }, a.icon),
       h("span", { class: "name" }, a.name),
-      h("span", { class: "meta" }, meta),
+      meta && h("span", { class: "meta" }, meta),
       a.priority && a.priority !== "normal" && h("span", { class: `badge ${a.priority}` }, a.priority)),
     run && h("div", { class: "playing" },
       h("span", {}, runState(run)),
       h("button", { class: "danger", onclick: () => stopRun(run) }, "Stop")));
+}
+
+// The tag the Panel is filtered to, per screen ("" for all).
+let filter = state.view.tag ?? saved.get("panel.tag", "");
+// Categories folded away on this screen.
+const collapsed = new Set(saved.get("panel.collapsed", []));
+const OTHER = "other"; // announcements in no category
+
+// Categories in the Panel's order, each with its announcements in order:
+// [{ id, name, anns }], the uncategorized last (as "Other", when there are
+// categories at all).
+function groups(anns) {
+  const cats = state.config.categories ?? [];
+  const byId = ordered("panel-buttons", anns.map((a) => a.id));
+  const sorted = byId.map((id) => anns.find((a) => a.id === id));
+  const known = (a) => cats.some((c) => c.id === a.category);
+  const out = ordered("panel", cats.map((c) => c.id)).map((id) => ({
+    id, name: cats.find((c) => c.id === id).name, anns: sorted.filter((a) => a.category === id),
+  }));
+  out.push({ id: OTHER, name: cats.length ? "Other" : null, anns: sorted.filter((a) => !known(a)) });
+  return out;
+}
+
+function arrangePanel() {
+  const all = state.config.announcements;
+  const gs = groups(all);
+  const catOrder = gs.filter((g) => g.id !== OTHER).map((g) => g.id);
+  const buttonOrders = Object.fromEntries(gs.map((g) => [g.id, g.anns.map((a) => a.id)]));
+  const name = (id) => all.find((a) => a.id === id)?.name ?? id;
+  const catName = (id) => (state.config.categories ?? []).find((c) => c.id === id)?.name ?? id;
+  arrangeDialog("Arrange the Panel",
+    "Drag (or use the arrows) to order the categories, and the buttons in each. Everyone using the panel sees this. Choose an announcement's category in its editor.",
+    h("div", {},
+      catOrder.length > 1 && [h("h3", {}, "Categories"), sortableList(catOrder, catName)],
+      gs.filter((g) => g.anns.length > 1).map((g) => [
+        h("h3", {}, g.name ?? "Buttons"), sortableList(buttonOrders[g.id], name)])),
+    () => saveLayouts({ panel: catOrder, "panel-buttons": gs.flatMap((g) => buttonOrders[g.id]) }, "Saved the Panel's arrangement"),
+    () => saveLayouts({ panel: null, "panel-buttons": null }, "The Panel is back to the usual order"));
+}
+
+function tagBar(anns) {
+  // A screen whose URL picks the tag shows no chips.
+  if (state.view.tag) return null;
+  const arrangeLink = can.edit() && !state.view.kiosk;
+  const tags = [...new Map(anns.flatMap((a) => a.tags ?? []).map((t) => [t.toLowerCase(), t])).values()]
+    .sort((a, b) => a.localeCompare(b));
+  if (!tags.length && !arrangeLink) return null;
+  const chip = (label, value) => h("button", {
+    class: `tag${filter.toLowerCase() === value.toLowerCase() ? " on" : ""}`,
+    onclick: () => { filter = value; saved.set("panel.tag", value); renderPanel(); },
+  }, label);
+  return h("div", { class: "tag-bar panel-bar" },
+    tags.length > 0 && [chip("All", ""), tags.map((t) => chip(t, t))],
+    h("span", { class: "spacer" }),
+    arrangeLink && h("button", { class: "link", onclick: arrangePanel }, "Arrange the Panel…"));
+}
+
+let renderPanel = () => {};
+
+// The stats strip (GET /stats), refreshed as plays end and every minute.
+let stats = null;
+async function loadStats() {
+  try {
+    stats = await api("GET", "/stats");
+  } catch {
+    stats = null;
+  }
+  renderPanel();
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+function statsStrip(next) {
+  const b = state.backend;
+  const item = (label, ...value) => h("div", { class: "stat" }, h("span", { class: "label" }, label), h("span", { class: "value" }, ...value));
+  const bad = (text) => h("span", { class: "bad" }, text);
+  const problems = (c) => [c.failed > 0 && bad(` · ${c.failed} failed`), c.missed > 0 && bad(` · ${c.missed} missed`)];
+  const t = stats?.today, w = stats?.week, d = stats?.last_24h;
+  return h("div", { class: "stats-strip" },
+    b && !b.connected && item("mcast server", bad("unreachable")),
+    look().show_next && next && item("Next", h("strong", {}, next.name), next.site && ` at ${siteName(next.site)}`,
+      ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
+    t && item("Today", plural(t.plays, "play"), problems(t)),
+    w && item("Last 7 days", plural(w.plays, "play"), problems(w)),
+    d && item("Last 24 h", d.busy_groups + d.failed_groups === 0
+      ? h("span", { class: "ok" }, "no busy or failed groups")
+      : [d.busy_groups > 0 && bad(`${plural(d.busy_groups, "group")} busy`),
+        d.busy_groups > 0 && d.failed_groups > 0 && ", ",
+        d.failed_groups > 0 && bad(`${plural(d.failed_groups, "group")} failed`)]),
+    !state.view.kiosk && h("a", { class: "link stat-more", href: "#history" }, "History →"));
 }
 
 export function mount(el) {
@@ -76,23 +188,47 @@ export function mount(el) {
       replace(el, h("p", { class: "error" }, `The intercom config has a problem: ${state.configError}`));
       return;
     }
-    const anns = state.config.announcements;
+    const anns = panelAnnouncements();
     // A redraw replaces the buttons: keep the keyboard on the one it was on.
     const focused = document.activeElement?.dataset?.talk;
     const active = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
     const next = state.upcoming.fires[0];
     replace(el,
-      next && h("p", { class: "next" },
+      look().show_stats && statsStrip(next),
+      !look().show_stats && look().show_next && next && h("p", { class: "next" },
         h("span", { class: "muted" }, "Next: "), h("strong", {}, next.name),
         next.site && ` at ${siteName(next.site)}`,
         ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
+      anns.length > 0 && tagBar(anns),
       anns.length
-        ? h("div", { class: "tiles" }, anns.map(tile))
-        : h("p", { class: "muted" }, "No announcements yet: add zones, then announcements, from the tabs above."),
-      active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
-      active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
+        ? groups(anns.filter((a) => !filter || (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase())))
+          .filter((g) => g.anns.length)
+          .map((g) => {
+            const shut = collapsed.has(g.id);
+            const size = (state.config.categories ?? []).find((c) => c.id === g.id)?.size ?? look().size;
+            return h("section", { class: "panel-group" },
+              g.name && h("button", {
+                class: "group-head", "aria-expanded": String(!shut),
+                onclick: () => { shut ? collapsed.delete(g.id) : collapsed.add(g.id); saved.set("panel.collapsed", [...collapsed]); render(); },
+              }, h("span", { "aria-hidden": "true" }, shut ? "▸" : "▾"), h("span", {}, g.name),
+              shut && h("span", { class: "count" }, `(${g.anns.length})`)),
+              !shut && h("div", { class: `tiles size-${size} mode-${look().mode}` }, g.anns.map(tile)));
+          })
+        : h("p", { class: "muted" }, state.config.announcements.length
+          ? "Nothing to show here: this screen or token is limited to categories with no announcements."
+          : "No announcements yet: add zones, then announcements, from the tabs above."),
+      look().show_playing && active.length > 0 && h("h2", { style: { marginTop: "24px" } }, "Now playing"),
+      look().show_playing && active.length > 0 && h("ul", { class: "runs" }, active.map(runCard)));
     if (focused) el.querySelector(`[data-talk="${CSS.escape(focused)}"]`)?.focus();
   };
+  renderPanel = render;
+  if (look().show_stats) loadStats();
+  setInterval(() => { if (look().show_stats) loadStats(); }, 60000);
+  // A play that ends changes the numbers.
+  onRunEnded(() => { if (look().show_stats) loadStats(); });
+  subscribe(["server"], render);
+  // A tag that's gone shows everything.
+  if (filter && !state.view.tag && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";
   subscribe(["config", "runs", "upcoming"], render);
   onTalk((t) => {
     const changed = t?.id !== talkState?.id || t?.phase !== talkState?.phase || t?.latched !== talkState?.latched;

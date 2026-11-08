@@ -41,6 +41,7 @@ export function runCard(run) {
       h("span", { class: "spacer" }),
       h("span", { class: "muted small" },
         run.trigger.type === "schedule" ? `scheduled for ${atTime(run.trigger.at_ms)}` : ago(run.started_ms),
+        run.trigger.by && ` · ${run.trigger.type === "api" ? "through the API by" : "by"} ${run.trigger.by}`,
         isOver(run) && run.targets.length > 0 && ` · played to ${played} of ${run.targets.length}`),
       !isOver(run) && h("button", { class: "danger", onclick: () => stopRun(run) }, "Stop")),
     run.error && h("div", { class: "error small" }, run.error),

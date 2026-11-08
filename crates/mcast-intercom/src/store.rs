@@ -44,6 +44,18 @@ pub fn load(path: &Path) -> Result<Config> {
 /// can't leave half of it.
 pub fn save(path: &Path, cfg: &Config) -> Result<()> {
     cfg.validate()?;
+    write_json(path, cfg, None)
+}
+
+/// Write a JSON file in one step, readable by its owner only (it holds
+/// secrets, or their hashes).
+pub fn save_private<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    write_json(path, value, Some(0o600))
+}
+
+/// Write `value` as JSON beside `path` and rename it into place, so a crash
+/// can't leave half a file; with `mode`, the file gets those permissions.
+fn write_json<T: serde::Serialize>(path: &Path, value: &T, mode: Option<u32>) -> Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -51,11 +63,25 @@ pub fn save(path: &Path, cfg: &Config) -> Result<()> {
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let write = || -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
-        serde_json::to_writer_pretty(&mut f, cfg)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        if let Some(m) = mode {
+            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, m);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        let mut f = opts.open(&tmp)?;
+        serde_json::to_writer_pretty(&mut f, value)?;
         f.write_all(b"\n")?;
         f.sync_all()?;
         std::fs::rename(&tmp, path)
     };
     write().with_context(|| format!("writing {}", path.display()))
+}
+
+/// The modified time and length of a file, to notice when it changes.
+pub(crate) fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }

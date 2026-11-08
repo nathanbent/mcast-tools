@@ -40,8 +40,8 @@ fn check_name(name: &str) -> ApiResult<String> {
     Ok(name.to_string())
 }
 
-/// `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by"}],
-///   "folders": [{"name", "hidden"}]}`
+/// `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error", "tags"}],
+///   "folders": [{"name", "hidden"}], "tags": [{"tag", "files"}]}`
 pub(super) async fn library(State(s): State<AppState>) -> ApiResult<Json<Value>> {
     let (files, folders): (Vec<crate::backend::MediaFile>, Vec<String>) =
         on_server(&s, |b| Ok((b.media_files()?, b.media_folders()?))).await?;
@@ -55,6 +55,9 @@ pub(super) async fn library(State(s): State<AppState>) -> ApiResult<Json<Value>>
                 "modified_ms": f.modified_ms,
                 "hidden": cfg.is_hidden(&f.name),
                 "used_by": cfg.media_users(&f.name),
+                "audio": f.audio,
+                "audio_error": f.audio_error,
+                "tags": cfg.tags_of(&f.name),
             })
         })
         .collect();
@@ -62,15 +65,28 @@ pub(super) async fn library(State(s): State<AppState>) -> ApiResult<Json<Value>>
         .into_iter()
         .map(|f| json!({ "name": f, "hidden": cfg.is_hidden(&f) }))
         .collect();
-    Ok(Json(json!({ "files": files, "folders": folders })))
+    // Every tag, with how many files have it, for choosing one.
+    let mut counts: std::collections::BTreeMap<String, (String, usize)> = Default::default();
+    for t in cfg.media_tags.values().flatten() {
+        counts.entry(t.to_lowercase()).or_insert((t.clone(), 0)).1 += 1;
+    }
+    let tags: Vec<Value> = counts
+        .into_values()
+        .map(|(tag, files)| json!({ "tag": tag, "files": files }))
+        .collect();
+    Ok(Json(
+        json!({ "files": files, "folders": folders, "tags": tags }),
+    ))
 }
 
-/// Upload a file (raw body), into its folders.
+/// Upload a sound (raw body), into its folders. The mcast server checks
+/// it's audio it can play (`422` if not, leaving any old file); returns
+/// `{"name", "bytes", "audio"}`.
 pub(super) async fn upload(
     State(s): State<AppState>,
     Path(name): Path<String>,
     body: Body,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<(StatusCode, Json<Value>)> {
     let name = check_name(&name)?;
     let data = axum::body::to_bytes(body, MAX_UPLOAD).await.map_err(|_| {
         ApiError::new(
@@ -81,8 +97,8 @@ pub(super) async fn upload(
             ),
         )
     })?;
-    on_server(&s, move |b| b.upload_media(&name, &data)).await?;
-    Ok(StatusCode::CREATED)
+    let v = on_server(&s, move |b| b.upload_media(&name, &data)).await?;
+    Ok((StatusCode::CREATED, Json(v)))
 }
 
 /// A file, to listen to.
@@ -133,15 +149,18 @@ pub(super) async fn delete(
     }
     let n = name.clone();
     on_server(&s, move |b| b.delete_media(&n)).await?;
-    forget_hidden(&s, name).await?;
+    forget(&s, name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Drop a deleted file or folder from the hidden list, if it's there.
-async fn forget_hidden(s: &AppState, name: String) -> ApiResult<()> {
-    if s.load().await?.hidden_media.contains(&name) {
+/// Drop a deleted file or folder's hidden mark and tags, if it has any.
+async fn forget(s: &AppState, name: String) -> ApiResult<()> {
+    let cfg = s.load().await?;
+    let mut after = cfg.clone();
+    after.media_deleted(&name);
+    if after != cfg {
         change(s, move |c| {
-            c.hidden_media.retain(|h| *h != name);
+            c.media_deleted(&name);
             Ok(())
         })
         .await?;
@@ -173,7 +192,7 @@ pub(super) async fn delete_folder(
     let name = check_name(&name)?;
     let n = name.clone();
     on_server(&s, move |b| b.delete_folder(&n)).await?;
-    forget_hidden(&s, name).await?;
+    forget(&s, name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -234,4 +253,41 @@ pub(super) async fn hide(
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Tags {
+    names: Vec<String>,
+    #[serde(default)]
+    add: Vec<String>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
+/// `{"names", "add", "remove"}`: tag files, or untag them, many at once.
+/// Returns each file's tags afterwards: `{name: [tags]}`.
+pub(super) async fn tag(
+    State(s): State<AppState>,
+    body: Result<Json<Tags>, JsonRejection>,
+) -> ApiResult<Json<Value>> {
+    let Json(t) = body?;
+    if t.names.is_empty() {
+        return Err(ApiError::bad("names: give at least one file"));
+    }
+    let names = t
+        .names
+        .iter()
+        .map(|n| check_name(n))
+        .collect::<ApiResult<Vec<_>>>()?;
+    let after = change(&s, move |c| {
+        c.retag(&names, &t.add, &t.remove)
+            .map_err(|e| ApiError::bad(format!("{e:#}")))?;
+        Ok(names
+            .iter()
+            .map(|n| (n.clone(), json!(c.tags_of(n))))
+            .collect::<serde_json::Map<_, _>>())
+    })
+    .await?;
+    Ok(Json(Value::Object(after)))
 }

@@ -22,6 +22,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Response;
+use axum::Extension;
 use serde_json::json;
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
@@ -58,6 +59,7 @@ fn same_origin(headers: &HeaderMap) -> ApiResult<()> {
 
 pub(super) async fn live(
     State(s): State<AppState>,
+    Extension(caller): Extension<super::Caller>,
     Path(id): Path<String>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -76,18 +78,28 @@ pub(super) async fn live(
             a.name
         )));
     }
+    if !caller.may_play(&cfg, &a.id) {
+        return Err(caller.cant(&format!("talk on \"{}\"", a.name)));
+    }
     let id = a.id.clone();
-    Ok(ws.on_upgrade(move |socket| talk(s, cfg, id, socket)))
+    let trigger = caller.trigger();
+    Ok(ws.on_upgrade(move |socket| talk(s, cfg, id, trigger, socket)))
 }
 
 async fn say(socket: &mut WebSocket, v: serde_json::Value) {
     let _ = socket.send(Message::Text(v.to_string().into())).await;
 }
 
-async fn talk(s: AppState, cfg: crate::model::Config, id: String, mut socket: WebSocket) {
+async fn talk(
+    s: AppState,
+    cfg: crate::model::Config,
+    id: String,
+    trigger: Trigger,
+    mut socket: WebSocket,
+) {
     let runner = s.0.runner.clone();
     let r = runner.clone();
-    let started = tokio::task::spawn_blocking(move || r.play(&cfg, &id, Trigger::Manual)).await;
+    let started = tokio::task::spawn_blocking(move || r.play(&cfg, &id, trigger)).await;
     let run = match started {
         Ok(Ok(run)) => run,
         Ok(Err(e)) => {

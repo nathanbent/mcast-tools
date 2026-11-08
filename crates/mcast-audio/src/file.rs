@@ -12,8 +12,52 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
+/// What an audio file holds, without playing it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioInfo {
+    /// The codec's short name: `pcm_s16le`, `mp3`, `flac`, `vorbis`, `aac`...
+    pub codec: String,
+    pub rate: u32,
+    pub channels: u16,
+    pub duration_s: f64,
+}
+
+/// Open and check an audio file: its codec, rate, channels and length.
+/// When the container doesn't say how long it is, the whole file is
+/// decoded to find out. An error if it can't be played.
+pub fn probe(path: &Path) -> Result<AudioInfo> {
+    let mut f = AudioFile::open(path)?;
+    let frames = match f.frames {
+        Some(n) if n > 0 => n,
+        _ => {
+            let mut buf = vec![0.0f32; 16_384];
+            let mut samples = 0u64;
+            loop {
+                let n = f.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                samples += n as u64;
+            }
+            samples / f.channels.max(1) as u64
+        }
+    };
+    if frames == 0 {
+        bail!("{}: no audio in it", path.display());
+    }
+    Ok(AudioInfo {
+        codec: f.codec.clone(),
+        rate: f.sample_rate,
+        channels: f.channels,
+        duration_s: frames as f64 / f.sample_rate.max(1) as f64,
+    })
+}
+
 pub struct AudioFile {
     path: PathBuf,
+    /// Frames in the file, if the container says.
+    frames: Option<u64>,
+    codec: String,
     format: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
@@ -57,8 +101,13 @@ impl AudioFile {
         let decoder = symphonia::default::get_codecs()
             .make(&params, &DecoderOptions::default())
             .map_err(|e| anyhow!("{}: can't decode this audio ({e})", path.display()))?;
+        let codec = symphonia::default::get_codecs()
+            .get_codec(params.codec)
+            .map_or_else(|| "unknown".to_string(), |d| d.short_name.to_string());
         let mut f = Self {
             path: path.to_path_buf(),
+            frames: params.n_frames,
+            codec,
             format,
             decoder,
             track_id,
@@ -184,6 +233,27 @@ mod tests {
             w.write_sample(((i % 100) as i16 - 50) * 100).unwrap();
         }
         w.finalize().unwrap();
+    }
+
+    #[test]
+    fn probes_length_and_refuses_what_isnt_audio() {
+        let dir = std::env::temp_dir().join(format!("mcast-probe-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("t.wav");
+        write_wav(&wav, 8000, 1, 12_000);
+        let i = probe(&wav).unwrap();
+        assert_eq!(
+            (i.rate, i.channels, i.codec.as_str()),
+            (8000, 1, "pcm_s16le")
+        );
+        assert!((i.duration_s - 1.5).abs() < 1e-9, "{i:?}");
+        let empty = dir.join("empty.wav");
+        write_wav(&empty, 8000, 1, 0);
+        assert!(probe(&empty).is_err());
+        let text = dir.join("notes.wav");
+        std::fs::write(&text, "not audio at all").unwrap();
+        assert!(probe(&text).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

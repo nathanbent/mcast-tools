@@ -84,6 +84,12 @@ fn config() -> Config {
         repeat_gap_s: 0.0,
         zones: vec![zone.into()],
         priority,
+        parts: Vec::new(),
+        category: None,
+        tags: Vec::new(),
+        color: None,
+        icon: None,
+        confirm: false,
     };
     Config {
         zones: vec![
@@ -136,7 +142,9 @@ fn plays_a_chime_to_two_groups() {
     let srv = server();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
     let r = Runner::new(backend, |_| {});
-    let run = r.play(&config(), "ding", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "ding", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.targets.len(), 2, "{run:#?}");
     assert_eq!(
         run.targets[0].address.as_deref(),
@@ -156,12 +164,16 @@ fn takes_over_a_busy_group_only_for_emergencies() {
         .unwrap();
     let r = Runner::new(backend.clone(), |_| {});
 
-    let run = r.play(&config(), "polite", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "polite", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.state, RunState::Failed);
     assert_eq!(run.targets[0].state, TargetState::Busy);
     assert!(backend.job(tone.id).unwrap().state == "running");
 
-    let run = r.play(&config(), "urgent", Trigger::Manual).unwrap();
+    let run = r
+        .play(&config(), "urgent", Trigger::Manual { by: None })
+        .unwrap();
     assert_eq!(run.targets[0].state, TargetState::Playing, "{run:#?}");
     assert_eq!(backend.job(tone.id).unwrap().state, "stopped");
     let run = wait_for(&r, run.id, "the chime to end", |r| r.state.is_over());
@@ -176,7 +188,7 @@ fn stops_a_run() {
     let mut cfg = config();
     cfg.announcements[0].repeat = 5;
     cfg.announcements[0].repeat_gap_s = 0.5;
-    let run = r.play(&cfg, "ding", Trigger::Manual).unwrap();
+    let run = r.play(&cfg, "ding", Trigger::Manual { by: None }).unwrap();
     let job = run.targets[0].job.unwrap();
     let run = r.stop(run.id).unwrap();
     let run = wait_for(&r, run.id, "the stop", |r| r.state.is_over());
@@ -260,6 +272,47 @@ fn the_panel_api_plays_through_a_real_server() {
         .into_json()
         .unwrap();
     assert_eq!(b["connected"], true, "{b}");
+
+    // Sounds uploaded through the panel are checked by the real server.
+    // (status, body)
+    let put = |name: &str, data: &[u8]| -> (u16, serde_json::Value) {
+        match ureq::put(&format!("{panel}/media/{name}")).send_bytes(data) {
+            Ok(r) => (r.status(), r.into_json().unwrap()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_json().unwrap()),
+            Err(e) => panic!("{e}"),
+        }
+    };
+    let (status, v) = put("bells/notes.wav", b"not audio");
+    assert_eq!(status, 422, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("isn't audio"), "{v}");
+    let mut wav = Vec::new();
+    {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::new(std::io::Cursor::new(&mut wav), spec).unwrap();
+        for i in 0..8000 {
+            w.write_sample(((i % 40) as i16 - 20) * 500).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    let (_, v) = put("bells/half.wav", &wav);
+    assert_eq!(v["audio"]["duration_s"], 0.5, "{v}");
+    let lib: serde_json::Value = ureq::get(&format!("{panel}/library"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let f = lib["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "bells/half.wav")
+        .unwrap();
+    assert_eq!(f["audio"]["rate"], 16_000, "{lib}");
 }
 
 /// Push to talk, end to end: a WebSocket into the panel, live senders on a
@@ -287,6 +340,12 @@ fn talks_live_to_two_groups() {
         repeat_gap_s: 0.0,
         zones: vec!["both".into()],
         priority: Priority::Normal,
+        parts: Vec::new(),
+        category: None,
+        tags: Vec::new(),
+        color: None,
+        icon: None,
+        confirm: false,
     });
     std::fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
     let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
@@ -337,4 +396,50 @@ fn talks_live_to_two_groups() {
             .iter()
             .all(|t| t.state == TargetState::Done && t.played == 1));
     });
+}
+
+/// A playlist to one zone and a sound to another, in one run, on a real
+/// mcast server: both play to the end.
+#[test]
+fn plays_a_playlist_and_a_part_together() {
+    let srv = server();
+    let media = srv.dir.join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    for (name, rate) in [
+        ("one.wav", 16_000),
+        ("two.wav", 8_000),
+        ("other.wav", 48_000),
+    ] {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(media.join(name), spec).unwrap();
+        for i in 0..rate / 4 {
+            w.write_sample(((i % 50) as i16 - 25) * 300).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    let cfg: Config = serde_json::from_value(json!({
+        "zones": [
+            {"id": "a", "name": "A", "targets": [{"group": "239.255.77.81:5004", "encoding": "g711u"}]},
+            {"id": "b", "name": "B", "targets": [{"group": "239.255.77.82:5004"}]}
+        ],
+        "playlists": [{"id": "pl", "name": "PL", "gap_ms": 100,
+            "items": [{"type": "sound", "media": "one.wav"}, {"type": "sound", "media": "two.wav"}]}],
+        "announcements": [{"id": "both", "name": "Both", "audio": {"playlist": "pl"}, "zones": ["a"],
+            "parts": [{"zones": ["b"], "audio": {"media": "other.wav"}}]}]
+    }))
+    .unwrap();
+    cfg.validate().unwrap();
+    let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
+    let r = Runner::new(backend, |_| {});
+    let run = r.play(&cfg, "both", Trigger::Manual { by: None }).unwrap();
+    assert_eq!(run.targets.len(), 2, "{run:#?}");
+    assert!(run.targets.iter().all(|t| t.error.is_none()), "{run:#?}");
+    let run = wait_for(&r, run.id, "both to end", |r| r.state.is_over());
+    assert_eq!(run.state, RunState::Done, "{run:#?}");
+    assert!(run.targets.iter().all(|t| t.played == 1), "{run:#?}");
 }

@@ -15,6 +15,7 @@ and reload the page to see changes.
 | File | |
 |---|---|
 | `index.html`, `app.css` | Layout and styles (light and dark) |
+| `js/theme.js`, `js/themes.js` | The theme (system, light or dark, per browser): applied before the page draws, and the header's switch |
 | `js/main.js` | Start-up: token prompt, initial load, event stream |
 | `js/api.js` | The only module that calls the server |
 | `js/store.js` | Lists from the API, kept current by server-sent events |

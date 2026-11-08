@@ -31,7 +31,28 @@ export function mediaOptions(prefix, current) {
   // Hidden ones are left out, unless already chosen.
   const names = state.media.filter((n) => !isHidden(n) || n === current);
   if (current && !names.includes(current)) names.push(current);
-  return names.map((n) => [prefix + n, state.media.includes(n) ? n : `${n} (missing)`]);
+  const tags = state.config.media_tags ?? {};
+  return names.map((n) => [prefix + n,
+    (state.media.includes(n) ? n : `${n} (missing)`) + (tags[n]?.length ? `  (${tags[n].join(", ")})` : "")]);
+}
+
+// A box that narrows `sel`'s media file options to those whose name or
+// tags match what's typed (#tag for a tag exactly). The chosen one stays.
+export function mediaFilter(sel) {
+  const input = h("input", { type: "search", placeholder: "Filter sounds: name, tag or #tag", "aria-label": "Filter sounds" });
+  input.addEventListener("input", () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const tags = state.config.media_tags ?? {};
+    for (const o of sel.querySelectorAll("option")) {
+      const m = /^(media|file):(.*)$/.exec(o.value);
+      if (!m) continue;
+      const name = m[2].toLowerCase();
+      const t = (tags[m[2]] ?? []).map((x) => x.toLowerCase());
+      const ok = words.every((w) => w.startsWith("#") ? t.includes(w.slice(1)) : name.includes(w) || t.some((x) => x.includes(w)));
+      o.hidden = !ok && o.value !== sel.value;
+    }
+  });
+  return input;
 }
 
 // A number input's value, or null when empty.
@@ -99,7 +120,7 @@ export function mountEditor(el, spec) {
                 h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
                   h("button", { onclick: () => open(item) }, "Edit"),
                   h("button", { class: "danger", onclick: () => remove(item) }, "Delete")))))))))
-        : h("p", { class: "muted" }, `No ${spec.kind}s yet.`),
+        : h("p", { class: "muted" }, `No ${spec.plural ?? `${spec.kind}s`} yet.`),
       h("div", { class: "buttons", style: { marginTop: "12px" } },
         h("button", { class: "primary", onclick: () => open(null) }, `Add ${spec.kind}`)));
   };
@@ -109,4 +130,19 @@ export function mountEditor(el, spec) {
   el.replaceChildren(list, formArea);
   // For views that change what's listed.
   return { render };
+}
+
+// The Panel's palette (as in the panel's config): [value, label] pairs.
+export const COLORS = ["red", "orange", "amber", "green", "teal", "blue", "purple", "grey"];
+export const SIZES = [["small", "Small"], ["medium", "Medium"], ["large", "Large"]];
+
+// A color choice: `none` is the label for no color of its own.
+export function colorSelect(value, none) {
+  const el = select([["", none], ...COLORS.map((c) => [c, c[0].toUpperCase() + c.slice(1)])], value ?? "");
+  const show = () => {
+    el.className = el.value ? `color-${el.value} has-swatch` : "";
+  };
+  el.addEventListener("change", show);
+  show();
+  return el;
 }

@@ -96,3 +96,22 @@ export function follow(onEvent, onStatus) {
   connect();
   return () => { clearTimeout(retry); source?.close(); };
 }
+
+// Save what `path` returns as a file (with the token in a header, not the URL).
+export async function download(path, filename) {
+  const t = token();
+  const res = await fetch(`${PREFIX}${path}`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });
+  if (!res.ok) {
+    let body = null;
+    try { body = await res.json(); } catch {}
+    throw new ApiError(res.status, body);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

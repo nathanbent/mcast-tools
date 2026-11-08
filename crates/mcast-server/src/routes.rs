@@ -92,8 +92,14 @@ pub(crate) async fn start_sender(
             "render is only available from the command line",
         ));
     }
-    if let SourceRequest::File { path, .. } = &mut req.source {
-        *path = s.media_path(path)?;
+    match &mut req.source {
+        SourceRequest::File { path, .. } => *path = s.media_path(path)?,
+        SourceRequest::Files { paths, .. } => {
+            for path in paths {
+                *path = s.media_path(path)?;
+            }
+        }
+        _ => {}
     }
     for chime in [&mut req.chime, &mut req.end_chime] {
         if let Some(ChimeRequest::File(path)) = chime {

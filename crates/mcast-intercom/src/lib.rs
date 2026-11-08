@@ -6,15 +6,18 @@
 //!
 //! This crate is a client of that API and nothing else: it doesn't link the
 //! other mcast crates, so it can be split out on its own. See
-//! `docs/intercom-plan.md` for where it's going.
+//! `docs/intercom-plan.md` for an overview, `docs/intercom-roadmap.md` for what's next.
 
 pub mod backend;
 pub mod cli;
+pub mod history;
 pub mod model;
 pub mod runner;
 pub mod scheduler;
 pub mod server;
 pub mod store;
+pub mod tokens;
+pub mod webhooks;
 
 pub use backend::{Backend, BackendError, HttpBackend};
 pub use model::{Announcement, Audio, Config, Day, Priority, Schedule, Target, When, Zone};

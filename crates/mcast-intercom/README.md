@@ -7,7 +7,7 @@ many times, at what priority), then play them from a button or on a
 
 It is a client of the mcast HTTP API and nothing else: it doesn't use any
 other crate in this workspace, so it can be moved out on its own. See
-[`docs/intercom-plan.md`](../../docs/intercom-plan.md) for how it came about.
+[`docs/intercom-plan.md`](../../docs/intercom-plan.md) for an overview of how it's built, and [`docs/intercom-roadmap.md`](../../docs/intercom-roadmap.md) for what's next.
 
 ## Use
 
@@ -36,28 +36,125 @@ A page with a tab for each part:
 
 | Tab | |
 |---|---|
-| **Panel** | A big button for each announcement, what's playing now (with Stop) and what's next. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
-| **History** | Recent plays, and how each group fared |
+| **Panel** | A **stats strip** (plays today and over the last 7 days, with failed and missed ones; groups busy or failed in the last 24 hours; and the mcast server if it's unreachable), then a big button for each announcement, under its **category**'s heading, what's playing now (with Stop) and what's next. **Tag** chips show just one tag's buttons (remembered per screen). Admins set the order of categories and buttons with *Arrange the Panel…*, for every screen, and **how it looks** in Settings → Panel (button size, tiles or a list, what's shown, asking before emergencies); categories and announcements can have a **color** (and announcements an **icon**, and "ask before playing"). Each screen can fold categories away. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
+| **Monitor** | From the history, over the last 7, 30 or 90 days: totals (plays, how many played, failed and missed, schedules on time, the mcast server's uptime), plays a day by outcome (a chart, or a table), each announcement and zone with its outcomes (busy, failed, taken over), how schedules kept time (late is over 5 s), what started plays, and when the mcast server was unreachable |
+| **History** | Every play, and how each group fared, kept on disk (a file a day in `history/` beside `intercom.json`, for 90 days or as set in Settings → History): filter by date, announcement, outcome and who started it, page back, and **download a CSV** |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
-| **Announcements** | Each one in sections: General (name, audio), Chimes, Zones, Playback (repeats, priority) and Sound (processing, volume, lead-in) |
-| **Sounds** | The mcast server's sound files, in folders: upload (or drop files on it), listen, rename or move, hide from the lists, delete. Renaming or moving a file updates the announcements that use it; one in use can't be deleted |
+| **Announcements** | Listed under their categories, with the **categories** themselves below. Each one in sections: General (name, audio: a sound, a playlist, chime only or live), On the Panel (category, tags), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
+| **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
+| **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need |
-| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, and the connection to the mcast server |
+| **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
+
+The setup tabs (Playlists, Sounds, Zones, Settings) are under **More** in
+the header. The header's theme button picks the theme: the system's, light or dark,
+remembered in that browser (`mcast serve`'s own page has the same switch).
 
 Sound files and phonebook names come from the mcast server, so its own web
 page and TUI see the same files and folders.
 
 Schedules only play while `mcast intercom serve` runs.
 
-The panel is its own server with its own token (`--panel-token` or
-`$MCAST_INTERCOM_TOKEN`, required unless it listens on loopback). `--token`
-stays the mcast server's. It saves edits to `intercom.json`, reading the file
+The panel is its own server with its own keys: a startup token
+(`--panel-token` or `$MCAST_INTERCOM_TOKEN`), which is an admin key, and
+named [access tokens](#access-tokens) with roles. Listening beyond loopback
+needs the startup token or an admin access token. `--token` stays the mcast
+server's. It saves edits to `intercom.json`, reading the file
 again first, so changes made by hand while it runs aren't lost. It keeps the
-last 50 plays in memory. When it stops, anything playing finishes on the mcast
+last 50 plays in memory for the Panel, and every play that ends in the
+history on disk. When it stops, anything playing finishes on the mcast
 server, but repeats still to come are dropped.
 
 On a Raspberry Pi, `ENABLE_INTERCOM=yes` in `pi/pi.conf` sets it up as a
 service next to `mcast serve` ([pi/README.md](../../pi/README.md#the-intercom-panel)).
+
+### Screens and kiosks
+
+Open the panel with `?kiosk=1` on a wall tablet: only the Panel shows (no
+tabs), with a full-screen button, and the screen is kept awake. The URL can
+also narrow and size what that screen shows: `categories=bells,other`
+(`other` for announcements in none), `tag=Building A`, `size=large`,
+`mode=list`. Settings → Panel builds the link. Narrowing by URL is only a
+view: to make sure a screen can only play some announcements, sign it in with
+an operator token limited to those categories.
+
+```
+https://pager.local:8651/?kiosk=1&categories=reception&size=large#panel
+```
+
+### Access tokens
+
+Give each person, screen or system its own token, with only what it needs.
+Each token has one role:
+
+| Role | For | Can |
+|---|---|---|
+| `admin` | Whoever sets the panel up | Everything, tokens included |
+| `operator` | A wall tablet, a reception desk | The Panel, History and Sounds tabs: play, stop, push to talk, listen. Changes nothing. Optionally limited to some **categories**: it then sees, plays and stops only announcements in them |
+| `trigger` | Other systems (a doorbell, a PBX, Home Assistant) | Play announcements through the API, and stop them. Optionally limited to some announcements |
+| `media` | A recording or upload script | Sound files: list, upload, download, delete, folders, move, hide |
+
+Make them in **Settings → Access tokens**, or from the command line:
+
+```bash
+mcast intercom token add "Front doorbell" --role trigger --announcement doorbell
+mcast intercom token add Reception --role operator --category reception --expires 2027-06-30
+mcast intercom token list
+mcast intercom token revoke "Front doorbell"
+```
+
+A token's secret (`mci_...`) is shown once, when it's made: only its SHA-256
+is kept, in `tokens.json` beside `intercom.json` (or `--tokens FILE` /
+`$MCAST_INTERCOM_TOKENS`), readable by its owner only. If a secret is lost,
+revoke the token and make another. A token can expire at the end of a given
+day, in the panel's time zone. The panel notices changes to the file while it
+runs, so a token revoked from the command line stops working at once. Each
+play records which token started it, and the History tab shows it.
+
+
+On loopback with no startup token the panel is open, as before: requests
+without a token act as admin. A known access token still gets its own role.
+
+### From other systems
+
+**Sounds.** A `media` token can upload sounds from a script, such as a
+message recorded fresh each day under the same name, which every
+announcement using that name then plays:
+
+```bash
+curl -X PUT -H "Authorization: Bearer mci_..." --data-binary @today.wav https://HOST:8651/api/intercom/v1/media/daily/message.wav
+```
+
+The mcast server checks it's audio it can play first; if it isn't, the
+upload is refused (`422`) and the old file stays.
+
+**Trigger API.** Other systems play announcements by id or name with a
+trigger token (or an operator or admin one):
+
+```bash
+curl -X POST -H "Authorization: Bearer mci_..." https://HOST:8651/api/intercom/v1/trigger/doorbell
+curl -X POST -H "Authorization: Bearer mci_..." https://HOST:8651/api/intercom/v1/trigger/doorbell/stop
+```
+
+A device that can only fetch a URL can use a GET with the token in it
+(trigger tokens only):
+`https://HOST:8651/api/intercom/v1/trigger/doorbell?access_token=mci_...`.
+`zones=reception` plays to only some of the announcement's zones, and
+`repeat=3` changes how often it plays, for that play only. These go in the
+URL, or in a JSON body (`{"zones": ["reception"], "repeat": 3}`).
+`/stop-all` stops everything the token may stop. Settings → Other systems
+shows the URLs for each announcement.
+
+**Webhooks.** The panel POSTs JSON to other systems when an announcement
+starts, ends or fails, when a schedule is missed, and when the mcast server
+goes away or comes back. Add them in Settings → Other systems, choose the
+events each one gets, and use *Test* to check one. Each delivery is signed
+(`X-Mcast-Signature`, an HMAC-SHA256 with the hook's secret, shown once)
+unless you turn that off. Hooks are kept in `webhooks.json` beside
+`intercom.json`, readable by its owner only.
+
+The payloads, signature check, and Home Assistant and Node-RED examples are
+in [docs/intercom-triggers.md](../../docs/intercom-triggers.md).
 
 ### Push to talk
 
@@ -169,7 +266,13 @@ out to use the server's default. `site`: the site it's at, if any.
 
 | Field | Default | |
 |---|---|---|
-| `audio` | | `{"media": "NAME"}`, a file uploaded to the server, `"chime_only"`, or `"live"` (push to talk from the panel's page) |
+| `audio` | | `{"media": "NAME"}`, a file uploaded to the server, `{"playlist": "ID"}`, `"chime_only"`, or `"live"` (push to talk from the panel's page) |
+| `category` | none | The Panel heading it's under (a category's id); none puts it under "Other" |
+| `tags` | none | For filtering the Panel: up to 20, each up to 32 characters, no commas |
+| `color` | its category's | Its button's color: `red`, `orange`, `amber`, `green`, `teal`, `blue`, `purple` or `grey` (high and emergency keep their amber or red edge) |
+| `icon` | none | An emoji (up to 4 characters, no spaces) on its button |
+| `confirm` | `false` | Ask "are you sure?" before playing it from the Panel |
+| `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ...}]`, `audio` as above but not live. A zone can be in only one place: the announcement's own `zones` or one part |
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
 | `mode` | the defaults' | `voice`, `music` or `none` |
 | `volume_db`, `lead_in_ms` | the defaults' | |
@@ -178,6 +281,36 @@ out to use the server's default. `site`: the site it's at, if any.
 | `repeat` | `1` | Times to play it (up to 20); each repeat has its chimes |
 | `repeat_gap_s` | `2` | Seconds between repeats |
 | `priority` | `normal` | What happens to a group something else is already sending to (below) |
+
+**Categories.** `[{"id", "name", "color", "size"}]`: headings on the Panel,
+with an optional color and button size (`small`, `medium`, `large`) for their
+buttons. Their order, and
+the buttons' order, are in `layout` (`panel` and `panel-buttons`), set with
+*Arrange the Panel…*. One with announcements in it can't be deleted.
+
+**`history_days`**: days of play history to keep (default 90; 0 keeps it
+all).
+
+**`panel`**: how the Panel looks: `{"size": "medium", "mode": "tiles",
+"show_details": true, "show_next": true, "show_playing": true, "show_stats": true,
+"confirm_emergency": false}` (the defaults; `mode` can be `list`). Set it in
+Settings → Panel, or with `PUT /settings` (`"panel"`, replaced whole).
+
+**Playlists.** `[{"id", "name", "items", "gap_ms"}]`: sounds that play one
+after another, as one stream, with the announcement's chimes before and
+after. `items` are `{"type": "sound", "media": "NAME"}` (up to 100), `gap_ms`
+the silence between them (default 0, up to 60000). Files at another sample
+rate or channel count than the first are converted to it. A playlist an
+announcement uses can't be deleted or left empty. They need an mcast server
+that plays a list of files (0.5.5 or later).
+
+```json
+"playlists": [{"id": "closing", "name": "Closing", "gap_ms": 500, "items": [
+  {"type": "sound", "media": "en/closing.wav"}, {"type": "sound", "media": "en/thanks.wav"}]}],
+"announcements": [{"id": "closing", "name": "Closing time", "audio": {"playlist": "closing"},
+  "zones": ["building-a"],
+  "parts": [{"zones": ["building-b"], "audio": {"media": "es/closing.wav"}}]}]
+```
 
 **Schedules.** `id`, `announcement` (its id), `enabled` (default `true`),
 an optional `name`, and `when`: `{"weekly": {"days": [...], "times": [...]}}`
@@ -277,14 +410,21 @@ by hand are picked up within 30 s.
 ## API
 
 Everything is under `/api/intercom/v1`, as JSON, with `Authorization: Bearer
-TOKEN` (or `?access_token=TOKEN`) when the panel has a token. Errors are
-`{"error": "..."}`: `404` for something that isn't there, `409` for a
-duplicate id, or a zone or announcement still in use, `422` for a config that wouldn't be valid,
-`502` when the mcast server can't be reached.
+TOKEN` when the panel has a token. Browsers can't send that header everywhere,
+so `?access_token=TOKEN` also works on `GET /events`, `GET /media/{path}`,
+`GET /chimes/{name}/preview` and `GET /live/{id}`, though not with trigger
+tokens. Errors are `{"error": "..."}`: `401` for a missing, wrong or expired
+token, `403` for a token whose [role](#access-tokens) can't do that, `404`
+for something that isn't there, `409` for a duplicate id, or a zone or
+announcement still in use, `422` for a config that wouldn't be valid, `502`
+when the mcast server can't be reached.
+
+A trigger token may only play its announcements, and `GET /runs` shows it
+only their runs.
 
 | Route | |
 |---|---|
-| `GET /health` | `{"ok": true, "version"}` |
+| `GET /health` | `{"ok": true, "version", "name", "role", "announcements", "categories"}`: who the token is (`name` is `null` without one) |
 | `GET /backend` | The mcast server: `{"url", "connected", "error", "since_ms"}` |
 | `GET /config` | The whole config, as in `intercom.json` |
 | `GET`, `POST /zones` | List, or add one (without `id`, one is made from `name`) |
@@ -293,20 +433,37 @@ duplicate id, or a zone or announcement still in use, `422` for a config that wo
 | `GET`, `POST /schedules`, `GET`, `PUT`, `DELETE /schedules/{id}` | The same; without `id` or `name`, the id comes from the announcement |
 | `GET`, `POST /sites`, `GET`, `PUT`, `DELETE /sites/{id}` | The same; a site with zones or schedules can't be deleted (`409`) |
 | `GET`, `POST /schedule-groups`, `GET`, `PUT`, `DELETE /schedule-groups/{id}` | The same; switch one with `PUT` and `"enabled"`. One with schedules can't be deleted |
+| `GET`, `POST /categories`, `GET`, `PUT`, `DELETE /categories/{id}` | As zones; one with announcements in it can't be deleted (`409`) |
+| `GET`, `POST /playlists`, `GET`, `PUT`, `DELETE /playlists/{id}` | As zones; one an announcement plays can't be deleted (`409`) |
+| `PUT /layout/{tab}`, `DELETE /layout/{tab}` | Admins: `{"order": [section ids]}` arranges a tab's sections for everyone (kept in `intercom.json` as `layout`; sections left out follow in their usual order); `DELETE` goes back to the usual order. Returns the whole layout. So far the Settings tab (`settings`: `panel`, `defaults`, `time-zone`, `sites`, `chimes`, `tokens`, `other-systems`, `connection`), and the Panel: `panel` (category ids) and `panel-buttons` (announcement ids) |
+| `GET /history` | Plays that ended, newest first: `{"runs": [RUN...], "more", "next"}`. Filters: `from`, `to` (dates in the panel's time zone, both included), `announcement`, `state` (`done`, `stopped`, `failed`, `missed`), `by` (part of a token's name), `q` (part of the name), `limit` (default 100, up to 1000), `before` (the `next` of the page before, `started_ms:id`, for the next page). A token limited to categories sees only theirs |
+| `GET /stats` | The Panel's stats strip, from the history: `{"today": COUNTS, "week": COUNTS, "last_24h": {"busy_groups", "failed_groups"}}`, with COUNTS `{"plays", "played", "stopped", "failed", "missed"}`; today and the last 7 days are in the panel's time zone. A token limited to categories counts only theirs |
+| `GET /monitor?days=7` | The Monitor tab (1 to 366 days, today included, in the panel's time zone): `{"totals", "days": [{"date", ...COUNTS}], "announcements": [{"id", "name", ...COUNTS}], "zones": [{"id", "name", "sends", "played", "busy", "failed", "taken_over"}], "schedules": {"on_time", "late", "missed", "late_after_ms", "most_late_ms"}, "triggers": {TYPE: n}, "by": [{"name", "plays"}], "connection": {"known_ms", "up_ms", "uptime", "outages": [{"from_ms", "to_ms"}]}, "from_ms", "to_ms"}`. Zones are the ones each group is in now. Uptime counts only time the panel was running, from `history/connection.jsonl`. A token limited to categories sees only theirs |
+| `GET /history.csv` | The same as a spreadsheet: started, ended (in the panel's time zone), announcement, name, state, trigger, by, groups, played, busy, failed, error |
 | `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
-| `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
+| `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off", "panel", "history_days"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`). Not for live announcements (`422`) |
 | `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
-| `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by"}], "folders": [{"name", "hidden"}]}`; `used_by` names the announcements (and "the defaults") that use a file |
-| `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. `DELETE` is refused (`409`) while something uses it |
+| `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error", "tags"}], "folders": [{"name", "hidden"}], "tags": [{"tag", "files"}]}`; `used_by` names the announcements (and "the defaults") that use a file; `audio` is `{"codec", "rate", "channels", "duration_s"}`, or `audio_error` says why the mcast server can't play it (`null` both with an mcast server before 0.5.5) |
+| `GET`, `PUT`, `DELETE /media/{path}` | Listen to, upload (raw body) or delete a file on the mcast server. An upload must be audio the mcast server can play (`422` if not, and any old file stays); it replaces a file of that name, so announcements using it play the new one. Returns `{"name", "bytes", "audio"}` (`201`). `DELETE` is refused (`409`) while something uses it |
 | `POST /media-folders`, `DELETE /media-folders/{path}` | `{"name"}`: make a folder; delete an empty one |
 | `POST /media-move` | `{"from", "to"}`: rename or move a file or folder, then point what used it at the new name. Returns `{"from", "to", "folder", "updated"}` |
 | `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |
+| `PUT /media-tags` | `{"names", "add", "remove"}`: tag or untag files, many at once (tags are up to 32 characters, no commas, and match without regard to case). Returns each file's tags: `{NAME: [tags]}`. Tags are kept in `intercom.json` (`media_tags`), follow a file when it's moved, and go when it's deleted |
 | `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
-| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed`, `backend` (`{"status"}`), `media_changed`, `lagged` |
+| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed` (also when tokens change), `backend` (`{"status"}`), `media_changed`, `lagged` |
+| `GET`, `POST /trigger/{id or name}` | Play it now (`201`, the run), as another system. Overrides for this play: `zones` (some of its zones) and `repeat`, in the query or a JSON body. `GET` takes a trigger token in the URL; `HEAD` and other methods get `405`. Not for live announcements (`422`) |
+| `GET`, `POST /trigger/{id or name}/stop` | Stop it wherever it's playing; the runs stopped |
+| `GET`, `POST /stop-all` | Stop everything the token may stop; the runs stopped |
+| `GET`, `POST /webhooks` | Outbound webhooks (admin): list them (`[{"id", "name", "url", "events", "enabled", "signed", "created_ms", "last_delivery"}]`), or add one (`{"name", "url", "events", "enabled", "sign"}`; returns `{"webhook", "secret"}`, the only time the secret is shown) |
+| `PUT`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` | Change one (`{"name", "url", "events", "enabled"}`), delete it, or send it a `test` event and get how it went: `{"event", "at_ms", "ok", "status", "error", "attempts", "took_ms"}` |
+| `GET /tokens` | Access tokens (admin): `[{"id", "name", "role", "announcements", "created_ms", "expires", "expires_ms", "expired", "last_used_ms", "uses"}]`, never their secrets |
+| `POST /tokens` | `{"name", "role", "announcements", "categories", "expires"}` (`announcements`, ids or names, for trigger tokens only; `categories`, ids or names, for operator tokens only; `expires` a date like `2027-06-30`): make one. Returns `{"token", "secret"}` (`201`), the only time the secret is shown |
+| `PUT /tokens/{id}` | `{"name", "announcements", "categories", "expires"}`: change those given (`"expires": null` clears it). The role can't change |
+| `DELETE /tokens/{id}` | Revoke it; returns it |
 
 A run:
 
@@ -318,8 +475,12 @@ A run:
               "job": 12, "error": null, "played": 0}]}
 ```
 
-A scheduled run's `trigger` is `{"type": "schedule", "id", "at_ms"}`, with the
-time it was due. Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
+A target's `part` says which of the announcement's parts it plays (from 1;
+missing for its own audio). A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
+button, push to talk or the command line, `{"type": "api", "by"}` for the
+trigger API (or a trigger token on the play route), and `{"type": "schedule", "id", "at_ms"}` for a schedule, with the time
+it was due. `by` is the token's name (`"startup token"` for the startup
+token), or missing without one. Run `state` is `playing`, `waiting` (between repeats), `stopping`, `done`,
 `stopped`, `failed` or `missed`. A target's is `starting`, `playing`, `done`, `busy`,
 `preempted`, `stopped` or `failed`.
 

@@ -74,6 +74,13 @@ pub enum SourceRequest {
         #[serde(default, rename = "loop")]
         looped: bool,
     },
+    /// Audio files one after another, as one stream (a playlist), with
+    /// `gap_ms` of silence between them.
+    Files {
+        paths: Vec<PathBuf>,
+        #[serde(default)]
+        gap_ms: u32,
+    },
     /// Live input; `None` is the default device, otherwise a substring of its name.
     Capture {
         #[serde(default)]
@@ -92,6 +99,9 @@ pub enum SourceRequest {
         channels: u16,
     },
 }
+
+/// Most files a `files` source plays.
+pub const MAX_FILES: usize = 100;
 
 fn default_live_rate() -> u32 {
     48_000
@@ -326,7 +336,7 @@ impl SendRequest {
     pub fn endless(&self) -> bool {
         let looped_or_live = match &self.source {
             SourceRequest::File { looped, .. } => *looped,
-            SourceRequest::Chime => false,
+            SourceRequest::Chime | SourceRequest::Files { .. } => false,
             _ => true,
         };
         looped_or_live && self.duration_s.is_none()
@@ -356,6 +366,18 @@ impl SendRequest {
                 path: path.clone(),
                 looped: *looped,
             },
+            SourceRequest::Files { paths, gap_ms } => {
+                if paths.is_empty() || paths.len() > MAX_FILES {
+                    bail!("a files source plays 1 to {MAX_FILES} files");
+                }
+                if *gap_ms > 60_000 {
+                    bail!("gap_ms is at most 60000");
+                }
+                sender::Source::Files {
+                    paths: paths.clone(),
+                    gap: Duration::from_millis(*gap_ms as u64),
+                }
+            }
             SourceRequest::Capture { device } => sender::Source::Capture {
                 device: device.clone().filter(|d| d != "default"),
             },

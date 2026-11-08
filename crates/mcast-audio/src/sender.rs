@@ -43,6 +43,10 @@ pub enum Source {
     /// Audio file (WAV, MP3, FLAC, Ogg Vorbis, AAC/M4A, ...), converted to
     /// the stream's rate and channels.
     File { path: PathBuf, looped: bool },
+    /// Audio files one after another, as one stream, with `gap` of silence
+    /// between them. They're read at the first file's rate and channels;
+    /// later files that differ are converted to it.
+    Files { paths: Vec<PathBuf>, gap: Duration },
     /// Live capture from an input device (default device if `None`).
     Capture { device: Option<String> },
     /// No audio: just the chimes (and lead-in and tail).
@@ -135,7 +139,128 @@ enum Input {
         file: AudioFile,
         looped: bool,
     },
+    Files(Box<FileList>),
     Live(LiveReader),
+}
+
+/// Files one after another at one rate and channel count (see [`Source::Files`]).
+struct FileList {
+    paths: Vec<PathBuf>,
+    /// The file being read (index into `paths`).
+    at: usize,
+    file: AudioFile,
+    /// For a file at another rate or channel count than the first.
+    convert: Option<Converter>,
+    rate: u32,
+    channels: usize,
+    /// Converted samples not yet handed out.
+    pending: Vec<f32>,
+    pending_pos: usize,
+    /// Silence still to come before the next file, in frames.
+    gap_left: u64,
+    gap: u64,
+    scratch: Vec<f32>,
+    /// Past the end of the last file (what's pending still goes out).
+    done: bool,
+}
+
+impl FileList {
+    fn open(paths: &[PathBuf], gap: Duration) -> Result<Self> {
+        let first = paths.first().context("no files to play")?;
+        let file = AudioFile::open(first)?;
+        let (rate, channels) = (file.sample_rate(), file.channels() as usize);
+        // Open each now, so a bad one fails the request rather than the stream.
+        for p in &paths[1..] {
+            AudioFile::open(p)?;
+        }
+        Ok(Self {
+            paths: paths.to_vec(),
+            at: 0,
+            file,
+            convert: None,
+            rate,
+            channels,
+            pending: Vec::new(),
+            pending_pos: 0,
+            gap_left: 0,
+            gap: (gap.as_secs_f64() * rate as f64).round() as u64,
+            scratch: Vec::new(),
+            done: false,
+        })
+    }
+
+    fn format(&self) -> (u32, u16) {
+        (self.rate, self.channels as u16)
+    }
+
+    /// Move to the next file; false after the last.
+    fn next_file(&mut self) -> Result<bool> {
+        if let Some(c) = &mut self.convert {
+            c.flush(&mut self.pending);
+        }
+        if self.at + 1 >= self.paths.len() {
+            self.done = true;
+            return Ok(false);
+        }
+        self.at += 1;
+        self.file = AudioFile::open(&self.paths[self.at])?;
+        let (r, c) = (self.file.sample_rate(), self.file.channels());
+        self.convert = ((r, c as usize) != (self.rate, self.channels))
+            .then(|| Converter::new(r, c, self.rate, self.channels as u16));
+        self.gap_left = self.gap;
+        Ok(true)
+    }
+
+    /// Fill `out` (interleaved); fewer samples only at the end of the last file.
+    fn fill(&mut self, out: &mut [f32]) -> Result<usize> {
+        let mut written = 0;
+        while written < out.len() {
+            // What a conversion left over.
+            if self.pending_pos < self.pending.len() {
+                let n = (self.pending.len() - self.pending_pos).min(out.len() - written);
+                out[written..written + n]
+                    .copy_from_slice(&self.pending[self.pending_pos..self.pending_pos + n]);
+                self.pending_pos += n;
+                written += n;
+                if self.pending_pos == self.pending.len() {
+                    self.pending.clear();
+                    self.pending_pos = 0;
+                }
+                continue;
+            }
+            if self.done {
+                break;
+            }
+            if self.gap_left > 0 {
+                let frames = ((out.len() - written) / self.channels).min(self.gap_left as usize);
+                out[written..written + frames * self.channels].fill(0.0);
+                written += frames * self.channels;
+                self.gap_left -= frames as u64;
+                continue;
+            }
+            let got = match &mut self.convert {
+                None => self.file.read(&mut out[written..])?,
+                Some(c) => {
+                    let ch = self.file.channels() as usize;
+                    let want = ((out.len() - written) / self.channels).max(256) * ch;
+                    self.scratch.resize(want, 0.0);
+                    let n = self.file.read(&mut self.scratch)?;
+                    c.process(&self.scratch[..n], &mut self.pending);
+                    if n > 0 {
+                        continue;
+                    }
+                    0
+                }
+            };
+            written += got;
+            if got == 0 {
+                // The next file, or (after the last) whatever its
+                // conversion flushed, then the end.
+                self.next_file()?;
+            }
+        }
+        Ok(written)
+    }
 }
 
 /// A paced source (tone or file) with start offset, length limit and fades.
@@ -184,6 +309,7 @@ impl Reader {
                     looped: *looped,
                 }
             }
+            Source::Files { paths, gap } => Input::Files(Box::new(FileList::open(paths, *gap)?)),
             Source::Live { feed } => Input::Live(LiveReader::new(feed.clone())),
             Source::Capture { .. } => unreachable!("capture isn't read through Reader"),
         };
@@ -226,6 +352,7 @@ impl Reader {
                 out.len()
             }
             Input::Silent => 0,
+            Input::Files(list) => list.fill(out)?,
             Input::Live(live) => live.fill(out),
             Input::File { file, looped } => {
                 let mut written = 0;
@@ -319,6 +446,13 @@ impl Sender {
                 }
                 (file_rate, file_channels)
             }
+            Source::Files { paths, gap } => {
+                let format = FileList::open(paths, *gap)?.format();
+                if cfg.match_file_format && spec.codec.pcm_encoding().is_some() {
+                    spec = StreamSpec::new(spec.codec, format.0, format.1);
+                }
+                format
+            }
             Source::Capture { device } => {
                 device::input_format(&device::input_device(device.as_deref())?)?
             }
@@ -371,7 +505,7 @@ impl Sender {
         let mut loudness_info = None;
         let loudness = match (&cfg.source, cfg.process.loudness_target()) {
             (_, None) => Loudness::Dynamic, // unused
-            (Source::File { .. }, Some(target)) => {
+            (Source::File { .. } | Source::Files { .. }, Some(target)) => {
                 let measured = measure(&cfg, rate, source_format.1, channels, band)?;
                 let gain_db = measured.map_or(0.0, |m| (target - m).clamp(-30.0, 30.0));
                 loudness_info = Some(LoudnessInfo {
@@ -889,5 +1023,63 @@ impl Mode {
             Mode::Music => Some(crate::codec::OpusMode::Music),
             Mode::None => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_wav(path: &std::path::Path, rate: u32, channels: u16, secs: f64, value: f32) {
+        let spec = hound::WavSpec {
+            channels,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for _ in 0..(secs * rate as f64) as usize * channels as usize {
+            w.write_sample((value * 32767.0) as i16).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    #[test]
+    fn plays_files_one_after_another_at_the_first_ones_format() {
+        let dir = std::env::temp_dir().join(format!("mcast-files-test-{}", random_u32()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+        write_wav(&a, 8000, 1, 0.5, 0.25);
+        // Another rate and channel count: converted to 8 kHz mono.
+        write_wav(&b, 16_000, 2, 0.25, -0.5);
+        let source = Source::Files {
+            paths: vec![a.clone(), b.clone(), a.clone()],
+            gap: Duration::from_millis(100),
+        };
+        let mut r = Reader::open(&source, 8000, 1, None, None).unwrap();
+        let mut all = Vec::new();
+        let mut buf = vec![0.0f32; 333];
+        loop {
+            let n = r.fill(&mut buf).unwrap();
+            all.extend_from_slice(&buf[..n]);
+            if n < buf.len() {
+                break;
+            }
+        }
+        // 4000 + 800 gap + ~2000 + 800 gap + 4000 frames.
+        assert!((11_550..=11_650).contains(&all.len()), "{}", all.len());
+        let near = |x: f32, want: f32| (x - want).abs() < 0.02;
+        assert!(near(all[2000], 0.25));
+        assert!(all[4100..4700].iter().all(|s| *s == 0.0), "the gap");
+        assert!(near(all[5800], -0.5), "{}", all[5800]);
+        assert!(near(all[all.len() - 100], 0.25));
+
+        // A missing file fails at the start, not partway.
+        let bad = Source::Files {
+            paths: vec![a.clone(), dir.join("nope.wav")],
+            gap: Duration::ZERO,
+        };
+        assert!(Reader::open(&bad, 8000, 1, None, None).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

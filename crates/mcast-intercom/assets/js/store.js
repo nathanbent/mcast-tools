@@ -4,6 +4,22 @@
 import { api } from "./api.js";
 
 export const state = {
+  // Who's signed in, from /health: { name, role, announcements }. No token
+  // on an open panel: admin, with no name.
+  me: { name: null, role: "admin", announcements: [], categories: [] },
+  // This screen's view, from the URL: ?kiosk (only the Panel, full screen),
+  // categories=a,b and tag=x (what it shows), size= and mode= (how).
+  view: (() => {
+    const q = new URLSearchParams(location.search);
+    const list = (k) => (q.get(k) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+    return {
+      kiosk: q.has("kiosk") && q.get("kiosk") !== "0",
+      categories: list("categories"),
+      tag: q.get("tag") || null,
+      size: ["small", "medium", "large"].includes(q.get("size")) ? q.get("size") : null,
+      mode: ["tiles", "list"].includes(q.get("mode")) ? q.get("mode") : null,
+    };
+  })(),
   config: { zones: [], announcements: [] },
   configError: null,
   runs: new Map(),
@@ -19,6 +35,32 @@ export const state = {
   upcoming: { time_zone: null, fires: [] },
   siteUpcoming: {},
 };
+
+// What the signed-in token may do (the server checks too).
+export const can = {
+  edit: () => state.me.role === "admin",
+  operate: () => ["admin", "operator"].includes(state.me.role),
+  changeSounds: () => ["admin", "media"].includes(state.me.role),
+};
+
+// The tabs each role sees.
+export const TABS = {
+  admin: ["panel", "history", "monitor", "schedules", "announcements", "playlists", "sounds", "zones", "settings"],
+  operator: ["panel", "history", "monitor", "sounds"],
+  media: ["sounds"],
+  trigger: [],
+};
+
+// The announcements this screen shows on the Panel: those the token may
+// play (an operator token can be limited to categories), narrowed by the
+// URL's categories.
+export function panelAnnouncements() {
+  const mine = state.me.categories ?? [];
+  const wanted = state.view.categories;
+  return state.config.announcements.filter((a) =>
+    (!mine.length || mine.includes(a.category))
+    && (!wanted.length || wanted.includes(a.category ?? "other")));
+}
 
 const listeners = [];
 
@@ -99,6 +141,8 @@ export function isHidden(name) {
 }
 
 export function refreshAll() {
+  // A media token sees only the Sounds tab.
+  if (!can.operate()) return refreshLibrary();
   // What's coming up depends on the sites in the config.
   return Promise.all([refreshConfig().then(refreshUpcoming), refreshRuns().catch(() => {}), refreshServer(), refreshLibrary()]);
 }
@@ -118,12 +162,13 @@ export function apply(ev) {
       break;
     }
     case "config_changed":
+      if (!can.operate()) { refreshLibrary(); break; }
       refreshConfig().then(refreshUpcoming);
       // Hidden files, and which announcements use which.
       refreshLibrary();
       break;
     case "media_changed":
-      refreshServer();
+      if (can.operate()) refreshServer();
       refreshLibrary();
       break;
     case "backend": {
@@ -131,7 +176,7 @@ export function apply(ev) {
       state.backend = { ...state.backend, ...ev.status };
       changed("server");
       // Back again: its media and phonebook may have changed meanwhile.
-      if (ev.status.connected && !wasUp) { refreshServer(); refreshLibrary(); }
+      if (ev.status.connected && !wasUp) { if (can.operate()) refreshServer(); refreshLibrary(); }
       break;
     }
     case "lagged":

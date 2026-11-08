@@ -1,6 +1,7 @@
 // Start-up: check access, load everything, follow events, mount the panels.
 
 import { api, follow, setToken, token } from "./api.js";
+import { themeButton } from "./themes.js";
 import { refreshAll, apply } from "./store.js";
 import * as page from "./page.js";
 import * as jobs from "./jobs.js";
@@ -49,6 +50,7 @@ async function authenticate() {
 }
 
 async function start() {
+  themeButton(document.getElementById("theme"));
   setStatus("connecting");
   try {
     await authenticate();

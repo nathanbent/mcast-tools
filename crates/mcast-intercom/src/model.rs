@@ -1,9 +1,9 @@
 //! The panel's own data: zones and announcements.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 /// Longest id or name accepted.
 pub const MAX_NAME: usize = 64;
@@ -42,6 +42,229 @@ pub struct Config {
     /// Sets of schedules switched on and off together.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub schedule_groups: Vec<ScheduleGroup>,
+    /// Tags on sound files, for finding them: path → tags.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub media_tags: BTreeMap<String, Vec<String>>,
+    /// Lists of sounds that play one after another; announcements use them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub playlists: Vec<Playlist>,
+    /// How admins arranged the page: a tab's id → its sections' ids, in
+    /// order. Sections left out follow in their usual order.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub layout: BTreeMap<String, Vec<String>>,
+    /// Headings the Panel groups announcements under.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<Category>,
+    /// How the Panel looks, for every screen.
+    #[serde(skip_serializing_if = "PanelLook::is_default")]
+    pub panel: PanelLook,
+    /// Days of play history to keep; 0 keeps it all. Unset: 90.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_days: Option<u32>,
+}
+
+/// Longest history that can be asked for, in days (ten years).
+pub const MAX_HISTORY_DAYS: u32 = 3650;
+
+impl Config {
+    /// Days of play history to keep (0: all of it).
+    pub fn history_days(&self) -> u32 {
+        self.history_days.unwrap_or(crate::history::DEFAULT_DAYS)
+    }
+}
+
+/// Colors a button or category can have: named, so the page can keep them
+/// readable in light and dark.
+pub const COLORS: [&str; 8] = [
+    "red", "orange", "amber", "green", "teal", "blue", "purple", "grey",
+];
+
+/// Button sizes on the Panel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Size {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+/// Buttons as tiles, or one row each.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PanelMode {
+    #[default]
+    Tiles,
+    List,
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+/// How the Panel looks. Leaving a field out keeps its default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PanelLook {
+    #[serde(skip_serializing_if = "is_medium")]
+    pub size: Size,
+    #[serde(skip_serializing_if = "is_tiles")]
+    pub mode: PanelMode,
+    /// The zones and repeat count under each name.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_details: bool,
+    /// The "Next:" line.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_next: bool,
+    /// The "Now playing" list.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_playing: bool,
+    /// The stats strip: plays today and this week, problems in the last day.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_stats: bool,
+    /// Ask before playing an emergency announcement.
+    #[serde(skip_serializing_if = "is_false")]
+    pub confirm_emergency: bool,
+}
+
+impl Default for PanelLook {
+    fn default() -> Self {
+        Self {
+            size: Size::Medium,
+            mode: PanelMode::Tiles,
+            show_details: yes(),
+            show_next: yes(),
+            show_playing: yes(),
+            show_stats: yes(),
+            confirm_emergency: false,
+        }
+    }
+}
+
+impl PanelLook {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Every field, defaults too (the file leaves those out).
+    pub fn full(&self) -> Value {
+        json!({
+            "size": self.size,
+            "mode": self.mode,
+            "show_details": self.show_details,
+            "show_next": self.show_next,
+            "show_playing": self.show_playing,
+            "show_stats": self.show_stats,
+            "confirm_emergency": self.confirm_emergency,
+        })
+    }
+}
+
+fn is_medium(s: &Size) -> bool {
+    *s == Size::Medium
+}
+
+fn is_tiles(m: &PanelMode) -> bool {
+    *m == PanelMode::Tiles
+}
+
+/// Longest icon (an emoji or a few characters), in characters.
+pub const MAX_ICON: usize = 4;
+
+fn check_look(what: &str, color: &Option<String>, icon: &Option<String>) -> Result<()> {
+    if let Some(c) = color {
+        if !COLORS.contains(&c.as_str()) {
+            bail!("{what}: no color \"{c}\" (use {})", COLORS.join(", "));
+        }
+    }
+    if let Some(i) = icon {
+        let n = i.chars().count();
+        if n == 0 || n > MAX_ICON || i.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            bail!("{what}: an icon is an emoji or up to {MAX_ICON} characters, no spaces");
+        }
+    }
+    Ok(())
+}
+
+/// Most things a layout lists (sections, categories, buttons).
+pub const MAX_LAYOUT: usize = 500;
+/// Most tags on an announcement.
+pub const MAX_TAGS: usize = 20;
+
+/// A heading on the Panel: announcements in it are shown together.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Category {
+    pub id: String,
+    pub name: String,
+    /// Its buttons' color, unless one sets its own (one of [`COLORS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Its buttons' size, instead of the Panel's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Size>,
+}
+
+/// Most items in a playlist.
+pub const MAX_PLAYLIST: usize = 100;
+/// Longest gap between a playlist's items, in milliseconds.
+pub const MAX_PLAYLIST_GAP_MS: u32 = 60_000;
+
+/// Sounds (and later other kinds of page) that play one after another, as
+/// one stream, with the announcement's chimes before and after.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Playlist {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub items: Vec<PlaylistItem>,
+    /// Silence between items.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gap_ms: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// One thing in a playlist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlaylistItem {
+    /// `{"type": "sound", "media": "bells/lunch.wav"}`.
+    Sound { media: String },
+}
+
+impl PlaylistItem {
+    pub fn media(&self) -> Option<&str> {
+        match self {
+            PlaylistItem::Sound { media } => Some(media),
+        }
+    }
+}
+
+/// Part of an announcement that sends other audio to other zones, in the
+/// same run (a message in two languages to two buildings, say).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Part {
+    /// Zone ids.
+    pub zones: Vec<String>,
+    pub audio: Audio,
+}
+
+/// Longest tag, in characters.
+pub const MAX_TAG: usize = 32;
+
+/// A tag as stored: trimmed, inner spaces collapsed; `None` if it isn't one
+/// (empty, too long, a comma or a control character in it).
+pub fn clean_tag(tag: &str) -> Option<String> {
+    let t = tag.split_whitespace().collect::<Vec<_>>().join(" ");
+    let ok = !t.is_empty()
+        && t.chars().count() <= MAX_TAG
+        && !t.chars().any(|c| c == ',' || c.is_control());
+    ok.then_some(t)
 }
 
 /// A place with its own zones and schedules, and its own time zone, days
@@ -385,6 +608,8 @@ pub enum Audio {
     /// `"live"`: someone talks, from the panel's page (push to talk). Its
     /// chimes go before and after.
     Live,
+    /// `{"playlist": "id"}`: a playlist's sounds, one after another.
+    Playlist(String),
 }
 
 /// The sample rate the panel's page sends live audio at.
@@ -474,6 +699,24 @@ pub struct Announcement {
     pub zones: Vec<String>,
     #[serde(default, skip_serializing_if = "is_normal")]
     pub priority: Priority,
+    /// Other audio to other zones, played alongside, in the same run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
+    /// The Panel heading it's under (a category's id); none for "Other".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// For filtering the Panel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Its button's color, instead of its category's (one of [`COLORS`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// An emoji (or a few characters) on its button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Ask "are you sure?" before playing it from the Panel.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub confirm: bool,
 }
 
 /// An announcement's chime with the default filled in: `None` for no chime.
@@ -502,18 +745,33 @@ impl Announcement {
         }
     }
 
+    /// Its own audio with its zones, then each part's: what plays where.
+    pub fn sections(&self) -> Vec<(&Audio, &[String])> {
+        std::iter::once((&self.audio, self.zones.as_slice()))
+            .chain(self.parts.iter().map(|p| (&p.audio, p.zones.as_slice())))
+            .collect()
+    }
+
     /// The send request for one target, in the mcast API's JSON. `group` is
-    /// the target's resolved address. Call it on [`Announcement::with_defaults`].
-    pub fn send_request(&self, target: &Target, group: &str) -> Value {
+    /// the target's resolved address and `audio` what plays there (its own,
+    /// or a part's). Call it on [`Announcement::with_defaults`].
+    pub fn send_request(&self, cfg: &Config, audio: &Audio, target: &Target, group: &str) -> Value {
         let mut r = Map::new();
         r.insert("group".into(), group.into());
         r.insert("name".into(), self.name.clone().into());
         r.insert(
             "source".into(),
-            match &self.audio {
+            match audio {
                 Audio::Media(path) => json!({ "type": "file", "path": path }),
                 Audio::ChimeOnly => json!({ "type": "chime" }),
                 Audio::Live => json!({ "type": "live", "rate": LIVE_RATE, "channels": 1 }),
+                Audio::Playlist(id) => {
+                    let p = cfg.playlist(id);
+                    let paths: Vec<&str> = p
+                        .map(|p| p.items.iter().filter_map(PlaylistItem::media).collect())
+                        .unwrap_or_default();
+                    json!({ "type": "files", "paths": paths, "gap_ms": p.map_or(0, |p| p.gap_ms) })
+                }
             },
         );
         let volume = match (self.volume_db, target.volume_db) {
@@ -567,12 +825,41 @@ impl Config {
             users.push("the defaults".to_string());
         }
         for a in &self.announcements {
-            let audio = matches!(&a.audio, Audio::Media(m) if within(m, name));
+            let audio = a
+                .sections()
+                .iter()
+                .any(|(au, _)| matches!(au, Audio::Media(m) if within(m, name)));
             if audio || file_of(&a.chime) || file_of(&a.end_chime) {
                 users.push(format!("announcement {}", a.name));
             }
         }
+        for p in &self.playlists {
+            if p.items
+                .iter()
+                .filter_map(PlaylistItem::media)
+                .any(|m| within(m, name))
+            {
+                users.push(format!("playlist {}", p.name));
+            }
+        }
         users
+    }
+
+    pub fn playlist(&self, id: &str) -> Option<&Playlist> {
+        self.playlists.iter().find(|p| p.id == id)
+    }
+
+    /// The announcements that play playlist `id`.
+    pub fn playlist_users(&self, id: &str) -> Vec<String> {
+        self.announcements
+            .iter()
+            .filter(|a| {
+                a.sections()
+                    .iter()
+                    .any(|(au, _)| matches!(au, Audio::Playlist(p) if p == id))
+            })
+            .map(|a| a.name.clone())
+            .collect()
     }
 
     /// Point everything that used `from` (a file, or a folder and what's in
@@ -589,19 +876,94 @@ impl Config {
         chime(&mut self.defaults.chime);
         chime(&mut self.defaults.end_chime);
         for a in &mut self.announcements {
-            if let Audio::Media(m) = &mut a.audio {
-                if let Some(new) = moved(m) {
-                    *m = new;
+            for audio in
+                std::iter::once(&mut a.audio).chain(a.parts.iter_mut().map(|p| &mut p.audio))
+            {
+                if let Audio::Media(m) = audio {
+                    if let Some(new) = moved(m) {
+                        *m = new;
+                    }
                 }
             }
             chime(&mut a.chime);
             chime(&mut a.end_chime);
+        }
+        for p in &mut self.playlists {
+            for item in &mut p.items {
+                let PlaylistItem::Sound { media } = item;
+                if let Some(new) = moved(media) {
+                    *media = new;
+                }
+            }
         }
         for h in &mut self.hidden_media {
             if let Some(new) = moved(h) {
                 *h = new;
             }
         }
+        let tagged: Vec<String> = self
+            .media_tags
+            .keys()
+            .filter(|n| within(n, from))
+            .cloned()
+            .collect();
+        for n in tagged {
+            if let (Some(tags), Some(new)) = (self.media_tags.remove(&n), moved(&n)) {
+                self.media_tags.insert(new, tags);
+            }
+        }
+    }
+
+    /// Forget a deleted file or folder: its hidden mark and tags.
+    pub fn media_deleted(&mut self, name: &str) {
+        self.hidden_media.retain(|h| h != name);
+        self.media_tags.retain(|n, _| !within(n, name));
+    }
+
+    /// A file's tags.
+    pub fn tags_of(&self, name: &str) -> &[String] {
+        self.media_tags.get(name).map_or(&[], Vec::as_slice)
+    }
+
+    /// Add and remove tags on files; a file left with none is dropped.
+    /// Tags match without regard to case.
+    pub fn retag(&mut self, names: &[String], add: &[String], remove: &[String]) -> Result<()> {
+        let clean = |list: &[String]| -> Result<Vec<String>> {
+            list.iter()
+                .map(|t| {
+                    clean_tag(t).with_context(|| {
+                        format!("\"{t}\" isn't a tag: up to {MAX_TAG} characters, no commas")
+                    })
+                })
+                .collect()
+        };
+        let (add, remove) = (clean(add)?, clean(remove)?);
+        // Spell a new tag as it's already spelled elsewhere.
+        let known: Vec<String> = self.media_tags.values().flatten().cloned().collect();
+        let spelled = |t: &String| {
+            known
+                .iter()
+                .find(|k| k.eq_ignore_ascii_case(t))
+                .cloned()
+                .unwrap_or_else(|| t.clone())
+        };
+        for n in names {
+            if !valid_media_name(n) {
+                bail!("\"{n}\" isn't a media file name");
+            }
+            let tags = self.media_tags.entry(n.clone()).or_default();
+            tags.retain(|t| !remove.iter().any(|r| r.eq_ignore_ascii_case(t)));
+            for t in &add {
+                if !tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                    tags.push(spelled(t));
+                }
+            }
+            tags.sort_by_key(|t| t.to_lowercase());
+            if tags.is_empty() {
+                self.media_tags.remove(n);
+            }
+        }
+        Ok(())
     }
 
     /// Whether schedules at `site` are off on this date.
@@ -639,7 +1001,15 @@ impl Config {
 
     /// An announcement's zones, or (with a site) those of them at that site.
     pub fn zones_at<'a>(&'a self, a: &Announcement, site: Option<&str>) -> Vec<&'a Zone> {
-        a.zones
+        a.sections()
+            .into_iter()
+            .flat_map(|(_, zones)| self.zones_in(zones, site))
+            .collect()
+    }
+
+    /// These zones (ids), or (with a site) those of them at that site.
+    pub fn zones_in<'a>(&'a self, zones: &[String], site: Option<&str>) -> Vec<&'a Zone> {
+        zones
             .iter()
             .filter_map(|z| self.zone(z))
             .filter(|z| site.map_or(true, |s| z.site.as_deref() == Some(s)))
@@ -694,17 +1064,61 @@ impl Config {
             if !names.insert(a.name.to_lowercase()) {
                 bail!("two announcements are called \"{}\"", a.name);
             }
-            if let Audio::Media(m) = &a.audio {
-                if !valid_media_name(m) {
-                    bail!("{what}: \"{m}\" isn't a media file name");
+            if let Some(c) = &a.category {
+                if !self.categories.iter().any(|x| x.id == *c) {
+                    bail!("{what}: no category \"{c}\"");
+                }
+            }
+            check_look(&what, &a.color, &a.icon)?;
+            if a.tags.len() > MAX_TAGS {
+                bail!("{what}: at most {MAX_TAGS} tags");
+            }
+            let mut tags = HashSet::new();
+            for t in &a.tags {
+                if clean_tag(t).as_deref() != Some(t.as_str()) {
+                    bail!("{what}: \"{t}\" isn't a tag (up to {MAX_TAG} characters, no commas)");
+                }
+                if !tags.insert(t.to_lowercase()) {
+                    bail!("{what}: the tag \"{t}\" is there twice");
                 }
             }
             if a.zones.is_empty() {
                 bail!("{what} has no zones");
             }
-            for z in &a.zones {
-                if self.zone(z).is_none() {
-                    bail!("{what}: no zone \"{z}\"");
+            if a.audio == Audio::Live && !a.parts.is_empty() {
+                bail!("{what}: a live announcement can't have parts");
+            }
+            let mut seen_zones = HashSet::new();
+            for (i, (audio, zones)) in a.sections().into_iter().enumerate() {
+                let what = if i == 0 {
+                    what.clone()
+                } else {
+                    format!("{what}, part {i}")
+                };
+                match audio {
+                    Audio::Media(m) if !valid_media_name(m) => {
+                        bail!("{what}: \"{m}\" isn't a media file name")
+                    }
+                    Audio::Playlist(id) => match self.playlist(id) {
+                        None => bail!("{what}: no playlist \"{id}\""),
+                        Some(p) if p.items.is_empty() => {
+                            bail!("{what}: playlist \"{}\" has nothing in it", p.name)
+                        }
+                        _ => {}
+                    },
+                    Audio::Live if i > 0 => bail!("{what}: a part can't be live"),
+                    _ => {}
+                }
+                if zones.is_empty() {
+                    bail!("{what} has no zones");
+                }
+                for z in zones {
+                    if self.zone(z).is_none() {
+                        bail!("{what}: no zone \"{z}\"");
+                    }
+                    if !seen_zones.insert(z.as_str()) {
+                        bail!("{what}: zone \"{z}\" is in the announcement twice");
+                    }
                 }
             }
             if !(1..=MAX_REPEAT).contains(&a.repeat) {
@@ -734,7 +1148,70 @@ impl Config {
                 bail!("hidden_media: \"{h}\" isn't a media file or folder name");
             }
         }
+        for (n, tags) in &self.media_tags {
+            if !valid_media_name(n) {
+                bail!("media_tags: \"{n}\" isn't a media file name");
+            }
+            for t in tags {
+                if clean_tag(t).as_deref() != Some(t.as_str()) {
+                    bail!("media_tags: \"{t}\" on {n} isn't a tag");
+                }
+            }
+        }
         check_days_off(&self.days_off)?;
+        if self.history_days() > MAX_HISTORY_DAYS {
+            bail!("history_days: at most {MAX_HISTORY_DAYS} (or 0 to keep it all)");
+        }
+        for (tab, order) in &self.layout {
+            check_id("layout tab", tab)?;
+            if order.len() > MAX_LAYOUT {
+                bail!("layout \"{tab}\": at most {MAX_LAYOUT} sections");
+            }
+            let mut seen = HashSet::new();
+            for id in order {
+                check_id(&format!("layout \"{tab}\" section"), id)?;
+                if !seen.insert(id.as_str()) {
+                    bail!("layout \"{tab}\": \"{id}\" is listed twice");
+                }
+            }
+        }
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for c in &self.categories {
+            check_look(&format!("category \"{}\"", c.id), &c.color, &None)?;
+            check_id("category", &c.id)?;
+            check_name("category", &c.name)?;
+            if !ids.insert(c.id.as_str()) {
+                bail!("two categories have the id \"{}\"", c.id);
+            }
+            if !names.insert(c.name.to_lowercase()) {
+                bail!("two categories are called \"{}\"", c.name);
+            }
+        }
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for p in &self.playlists {
+            let what = format!("playlist \"{}\"", p.id);
+            check_id("playlist", &p.id)?;
+            check_name("playlist", &p.name)?;
+            if !ids.insert(p.id.as_str()) {
+                bail!("two playlists have the id \"{}\"", p.id);
+            }
+            if !names.insert(p.name.to_lowercase()) {
+                bail!("two playlists are called \"{}\"", p.name);
+            }
+            if p.items.len() > MAX_PLAYLIST {
+                bail!("{what}: at most {MAX_PLAYLIST} items");
+            }
+            if p.gap_ms > MAX_PLAYLIST_GAP_MS {
+                bail!("{what}: gap_ms must be 0 to {MAX_PLAYLIST_GAP_MS}");
+            }
+            for m in p.items.iter().filter_map(PlaylistItem::media) {
+                if !valid_media_name(m) {
+                    bail!("{what}: \"{m}\" isn't a media file name");
+                }
+            }
+        }
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
         for site in &self.sites {

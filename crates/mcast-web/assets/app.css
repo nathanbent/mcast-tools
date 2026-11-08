@@ -20,7 +20,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0f1215;
     --panel: #171b20;
     --text: #e7eaee;
@@ -36,6 +36,26 @@
     --shadow: none;
   }
 }
+:root[data-theme="dark"] {
+  --bg: #0f1215;
+  --panel: #171b20;
+  --text: #e7eaee;
+  --muted: #97a1ac;
+  --line: #2a3038;
+  --field: #0f1215;
+  --accent: #5b8def;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --meter: #2a3038;
+  --meter-fill: #22c55e;
+  --shadow: none;
+}
+
+/* A theme chosen on this browser (js/theme.js) wins over the system's. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+#theme { display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; line-height: 0; }
 
 * { box-sizing: border-box; }
 

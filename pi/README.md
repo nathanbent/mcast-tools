@@ -76,6 +76,19 @@ it: schedules run on the Pi's clock and time zone) and re-run `install.sh`. You 
   `/etc/mcast/intercom.env` (readable by the `mcast` user), then
   `systemctl restart mcast-intercom`.
 
+That token is an admin key. For a wall tablet, a doorbell or an upload
+script, make an [access token](../crates/mcast-intercom/README.md#access-tokens)
+with just the role it needs, in Settings → Access tokens. Or make one on the Pi,
+as the `mcast` user so the service can still read the file:
+
+```bash
+sudo -u mcast env MCAST_INTERCOM=/var/lib/mcast/intercom.json mcast intercom token add Reception --role operator
+```
+
+Tokens are kept, hashed, in `/var/lib/mcast/tokens.json`, webhooks (Settings →
+Other systems) in `/var/lib/mcast/webhooks.json`, and the play history in
+`/var/lib/mcast/history/` (a file a day, kept 90 days unless Settings → History says otherwise).
+
 Zones, announcements and schedules are kept in `/var/lib/mcast/intercom.json`;
 set them up in the panel. Schedules only play while the service runs, so a
 power cut means missed announcements, and they show as *missed* in the panel's

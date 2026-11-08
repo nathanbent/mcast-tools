@@ -932,3 +932,121 @@ async fn streams_live_audio_into_a_sender() {
     let (s, _) = call(&h, "POST", "/api/v1/jobs/999/live", None, None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checks_audio_on_upload_and_says_how_long_files_are() {
+    let h = harness(None);
+    // Checked: refused, and nothing written.
+    assert_eq!(
+        put_media(&h, "bells/notes.wav?audio=1", b"not audio".to_vec()).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(!h.dir.join("bells/notes.wav").exists());
+    // Unchecked (pictures, received files...): stored as before.
+    assert_eq!(
+        put_media(&h, "notes.txt", b"hello".to_vec()).await,
+        StatusCode::CREATED
+    );
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/v1/media/bells/tone.wav?audio=1")
+        .body(Body::from(wav()))
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let v: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["audio"]["rate"], 8000);
+    assert_eq!(v["audio"]["duration_s"], 0.2);
+
+    // A bad file replacing a good one leaves the good one.
+    assert_eq!(
+        put_media(&h, "bells/tone.wav?audio=1", b"oops".to_vec()).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (_, info) = call(&h, "GET", "/api/v1/media-info/bells/tone.wav", None, None).await;
+    assert_eq!(info["audio"]["codec"], "pcm_s16le", "{info}");
+    assert_eq!(info["audio"]["channels"], 1);
+
+    let (_, list) = call(&h, "GET", "/api/v1/media?audio=1", None, None).await;
+    let by_name = |n: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == n)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_name("bells/tone.wav")["audio"]["duration_s"], 0.2);
+    let text = by_name("notes.txt");
+    assert!(text.get("audio").is_none());
+    assert!(text["audio_error"].as_str().is_some(), "{text}");
+    assert!(
+        !text["audio_error"]
+            .as_str()
+            .unwrap()
+            .contains(h.dir.to_str().unwrap()),
+        "no server paths: {text}"
+    );
+    // Without asking, the list is as before.
+    let (_, plain) = call(&h, "GET", "/api/v1/media", None, None).await;
+    assert!(plain[0].get("audio").is_none() && plain[0].get("audio_error").is_none());
+
+    let (s, _) = call(&h, "GET", "/api/v1/media-info/nope.wav", None, None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _) = call(&h, "GET", "/api/v1/media-info/..%2Fx", None, None).await;
+    assert!(s.is_client_error());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_a_list_of_files_as_one_stream() {
+    let h = harness(None);
+    for name in ["bells/a.wav", "b.wav"] {
+        assert_eq!(put_media(&h, name, wav()).await, StatusCode::CREATED);
+    }
+    let send = |paths: serde_json::Value| {
+        json!({
+            "group": "239.255.77.23:5004", "sap": false, "encoding": "g711u", "tail_ms": 0,
+            "source": {"type": "files", "paths": paths, "gap_ms": 200}
+        })
+    };
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(send(json!(["bells/a.wav", "nope.wav"]))),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (s, v) = call(&h, "POST", "/api/v1/senders", Some(send(json!([]))), None).await;
+    assert!(s.is_client_error(), "{v}");
+
+    let (s, job) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(send(json!(["bells/a.wav", "b.wav", "bells/a.wav"]))),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{job}");
+    let id = job["id"].as_u64().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let done = loop {
+        let (_, j) = call(&h, "GET", &format!("/api/v1/jobs/{id}"), None, None).await;
+        if j["state"] != "running" || std::time::Instant::now() > deadline {
+            break j;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(done["state"], "finished", "{done}");
+    // Three 0.2 s files and two 0.2 s gaps: about a second.
+    let secs = done["stats"]["seconds"].as_f64().unwrap();
+    assert!((0.9..1.6).contains(&secs), "{done}");
+}

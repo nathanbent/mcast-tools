@@ -6,10 +6,14 @@
 import { api } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, subscribe } from "./store.js";
-import { field, select, numberInput, num, mountEditor } from "./editor.js";
+import { field, select, numberInput, num, mountEditor, SIZES } from "./editor.js";
 import { chimeField, chooserLink, openChooser } from "./chimes.js";
 import { MODES } from "./announcements.js";
 import { ENCODINGS, encodingValue } from "./zones.js";
+import * as tokens from "./tokens.js";
+import * as webhooks from "./webhooks.js";
+import { arrangeable } from "./layout.js";
+import { LOOK_DEFAULTS } from "./panel.js";
 
 export async function putSettings(body, done) {
   try {
@@ -86,6 +90,108 @@ function defaults() {
   };
   draw();
   subscribe(["config", "server"], () => { if (!dirty) draw(); });
+  return el;
+}
+
+// How the Panel looks, for every screen.
+function panelLook() {
+  const el = h("div");
+  let dirty = false;
+  const draw = () => {
+    dirty = false;
+    const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
+    const size = select(SIZES, l.size);
+    const mode = select([["tiles", "Tiles"], ["list", "List: one row each"]], l.mode);
+    const box = (on, label) => {
+      const b = h("input", { type: "checkbox", checked: on });
+      return { b, el: h("label", { class: "check" }, b, ` ${label}`) };
+    };
+    const details = box(l.show_details, "Zones and repeats under each name");
+    const next = box(l.show_next, "\"Next:\" (what's scheduled)");
+    const playing = box(l.show_playing, "\"Now playing\"");
+    const statsBox = box(l.show_stats, "Stats: plays today and over 7 days, busy or failed groups in the last 24 hours");
+    const confirmE = box(l.confirm_emergency, "Ask before playing an emergency announcement");
+    replace(el,
+      h("p", { class: "muted" }, "How the Panel looks on every screen. Categories can have their own size and color, and announcements their own color and icon (in their editors)."),
+      h("form", {
+        oninput: () => { dirty = true; }, onchange: () => { dirty = true; },
+        onsubmit: async (e) => {
+          e.preventDefault();
+          const panel = { size: size.value, mode: mode.value, show_details: details.b.checked, show_next: next.b.checked,
+            show_playing: playing.b.checked, show_stats: statsBox.b.checked, confirm_emergency: confirmE.b.checked };
+          if (await putSettings({ panel }, "Panel look saved")) dirty = false;
+        },
+      },
+        h("div", { class: "row" }, field("Button size", size), field("Layout", mode)),
+        h("div", { class: "checks column" }, statsBox.el, details.el, next.el, playing.el, confirmE.el),
+        h("div", { class: "buttons" },
+          h("button", { type: "submit", class: "primary" }, "Save"),
+          h("button", { type: "button", onclick: draw }, "Undo changes"))),
+      kioskLink());
+  };
+  draw();
+  subscribe(["config"], () => { if (!dirty) draw(); });
+  return el;
+}
+
+// A link for one screen: kiosk (only the Panel, kept awake), and what it
+// shows. What it shows isn't a lock: for that, sign the screen in with an
+// operator token limited to categories.
+function kioskLink() {
+  const cats = state.config.categories ?? [];
+  const chosen = new Set();
+  const tags = [...new Set(state.config.announcements.flatMap((a) => a.tags ?? []))].sort();
+  const kiosk = h("input", { type: "checkbox", checked: true });
+  const tag = select([["", "Any"], ...tags.map((t) => [t, t])], "");
+  const size = select([["", "The Panel's"], ...SIZES], "");
+  const mode = select([["", "The Panel's"], ["tiles", "Tiles"], ["list", "List"]], "");
+  const out = h("code", {});
+  const url = () => {
+    const q = new URLSearchParams();
+    if (kiosk.checked) q.set("kiosk", "1");
+    if (chosen.size) q.set("categories", [...chosen].join(","));
+    if (tag.value) q.set("tag", tag.value);
+    if (size.value) q.set("size", size.value);
+    if (mode.value) q.set("mode", mode.value);
+    const qs = q.toString().replace(/%2C/g, ",");
+    return `${location.origin}${location.pathname}${qs ? `?${qs}` : ""}#panel`;
+  };
+  const update = () => { out.textContent = url(); };
+  const box = h("fieldset", { class: "part", oninput: update, onchange: update },
+    h("legend", {}, "A link for one screen"),
+    h("p", { class: "muted small" },
+      "Open this on a wall tablet or kiosk. Kiosk shows only the Panel and keeps the screen awake. Choosing categories or a tag only narrows what that screen shows; to make sure a screen can only play some categories, sign it in with an operator token limited to them (Access tokens)."),
+    h("label", { class: "check" }, kiosk, " Kiosk: only the Panel, no tabs"),
+    cats.length > 0 && h("div", { class: "checks" }, h("span", { class: "muted small" }, "Categories:"),
+      [...cats, { id: "other", name: "Other (none)" }].map((c) => h("label", { class: "check" },
+        h("input", { type: "checkbox", onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); } }), ` ${c.name}`))),
+    h("div", { class: "row" }, field("Tag", tag), field("Button size", size), field("Layout", mode)),
+    h("div", { class: "kiosk-link" }, out,
+      h("button", { type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(url()); toast("Copied", "ok"); } catch { toast("Select the link and copy it", "info"); }
+      } }, "Copy"),
+      h("a", { href: "#", class: "link", onclick: (e) => { e.preventDefault(); window.open(url(), "_blank", "noopener"); } }, "Open")));
+  update();
+  return box;
+}
+
+// How long the play history is kept.
+function historyDays() {
+  const el = h("div");
+  const show = () => {
+    const days = h("input", { type: "number", min: 0, max: 3650, step: 1, value: String(state.config.history_days ?? 90) });
+    replace(el,
+      h("p", { class: "muted" }, "Every play is kept on disk (the History tab), in a file a day beside the config. Older days are deleted."),
+      h("form", {
+        class: "inline-form",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          await putSettings({ history_days: Number(days.value) }, "History setting saved");
+        },
+      }, field("Days to keep", days, "0 keeps it all"), h("button", { type: "submit", class: "primary" }, "Save")));
+  };
+  show();
+  subscribe(["config"], show);
   return el;
 }
 
@@ -189,7 +295,7 @@ function connection() {
       h("dt", {}, "Phonebook names"), h("dd", {}, String(state.phonebook.length)),
       h("dt", {}, "Panel version"), h("dd", {}, version ?? "…")),
     h("p", { class: "muted small" },
-      "The panel's address, token and config file are set when it starts (mcast intercom serve --help)."));
+      "The panel's address, startup token and config file are set when it starts (mcast intercom serve --help)."));
   };
   show();
   subscribe(["server"], show);
@@ -202,10 +308,16 @@ export function mount(el) {
     replace(document.getElementById("time-zones"),
       Intl.supportedValuesOf("timeZone").map((z) => h("option", { value: z })));
   } catch {}
-  el.replaceChildren(
-    card("Announcement defaults", defaults()),
-    card("Time zone", timeZone()),
-    card("Sites", sitesEditor()),
-    card("Chime lists", chimes()),
-    card("Connection", connection()));
+  const sections = [
+    ["panel", "Panel", panelLook],
+    ["defaults", "Announcement defaults", defaults],
+    ["time-zone", "Time zone", timeZone],
+    ["sites", "Sites", sitesEditor],
+    ["chimes", "Chime lists", chimes],
+    ["history", "History", historyDays],
+    ["tokens", "Access tokens", tokens.mount],
+    ["other-systems", "Other systems", webhooks.mount],
+    ["connection", "Connection", connection],
+  ].map(([id, title, make]) => ({ id, title, el: card(title, make()) }));
+  el.replaceChildren(arrangeable("settings", sections));
 }

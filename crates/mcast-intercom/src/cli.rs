@@ -36,11 +36,16 @@ pub fn list(path: &Path) -> Result<()> {
     }
     println!("Announcements:");
     for a in &cfg.announcements {
-        let audio = match &a.audio {
+        let describe = |au: &Audio| match au {
             Audio::Media(m) => m.clone(),
             Audio::ChimeOnly => "chime only".into(),
             Audio::Live => "live (push to talk)".into(),
+            Audio::Playlist(id) => format!(
+                "playlist {}",
+                cfg.playlist(id).map_or(id.as_str(), |p| p.name.as_str())
+            ),
         };
+        let audio = describe(&a.audio);
         let mut extras = Vec::new();
         // As it plays, with the defaults: say which chimes are those.
         let played = a.with_defaults(&cfg.defaults);
@@ -58,6 +63,13 @@ pub fn list(path: &Path) -> Result<()> {
         }
         if a.priority != Default::default() {
             extras.push(format!("{} priority", a.priority));
+        }
+        for p in &a.parts {
+            extras.push(format!(
+                "and {} -> {}",
+                describe(&p.audio),
+                p.zones.join(", ")
+            ));
         }
         let extras = if extras.is_empty() {
             String::new()
@@ -255,17 +267,32 @@ fn server_problems(
     // The defaults, then each announcement's own (the defaults it uses are
     // checked once, above).
     let d = &cfg.defaults;
-    let mut uses = vec![("defaults".to_string(), None, [&d.chime, &d.end_chime])];
+    // (what, its media files, its chimes)
+    type Uses<'a> = Vec<(String, Vec<&'a str>, [&'a Option<Value>; 2])>;
+    let mut uses: Uses = vec![("defaults".to_string(), Vec::new(), [&d.chime, &d.end_chime])];
     for a in &cfg.announcements {
         let what = format!("announcement \"{}\"", a.id);
-        let media = match &a.audio {
-            Audio::Media(m) => Some(m.as_str()),
-            Audio::ChimeOnly | Audio::Live => None,
-        };
+        let media: Vec<&str> = a
+            .sections()
+            .into_iter()
+            .filter_map(|(au, _)| match au {
+                Audio::Media(m) => Some(m.as_str()),
+                _ => None,
+            })
+            .collect();
         uses.push((what, media, [&a.chime, &a.end_chime]));
     }
+    for p in &cfg.playlists {
+        let what = format!("playlist \"{}\"", p.id);
+        let media = p
+            .items
+            .iter()
+            .filter_map(crate::model::PlaylistItem::media)
+            .collect();
+        uses.push((what, media, [&None, &None]));
+    }
     for (what, audio, chime_values) in uses {
-        let mut files: Vec<&str> = audio.into_iter().collect();
+        let mut files: Vec<&str> = audio;
         for c in chime_values.into_iter().flatten() {
             if let Some(f) = c["file"].as_str() {
                 files.push(f);
@@ -301,7 +328,7 @@ pub fn play(path: &Path, backend: Arc<dyn Backend>, which: &str, stop: &AtomicBo
     let runner = Runner::new(backend, move |_| {
         let _ = tx.send(());
     });
-    let run = runner.play(&cfg, which, Trigger::Manual)?;
+    let run = runner.play(&cfg, which, Trigger::Manual { by: None })?;
     println!(
         "Playing \"{}\" to {} group{}{}",
         run.name,
@@ -394,4 +421,110 @@ impl Shown {
             }
         }
     }
+}
+
+// ---- access tokens ----
+
+/// A moment in the panel's time zone: "2026-11-07 14:03".
+fn local_time(cfg: &Config, ms: u64) -> String {
+    let tz = cfg.tz().unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    jiff::Timestamp::from_millisecond(ms as i64)
+        .map(|t| t.to_zoned(tz).strftime("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| "?".into())
+}
+
+/// `mcast intercom token add`: make a token and print its secret, once.
+pub fn token_add(config: &Path, tokens: &Path, new: crate::tokens::NewToken) -> Result<()> {
+    let cfg = store::load(config)?;
+    let mut f = crate::tokens::load(tokens)?;
+    let (t, secret) = f.add(new, &cfg, crate::now_ms())?;
+    crate::tokens::save(tokens, &f)?;
+    let mut about = vec![format!("{} token", t.role)];
+    if !t.announcements.is_empty() {
+        about.push(format!("plays only {}", t.announcements.join(", ")));
+    }
+    if !t.categories.is_empty() {
+        about.push(format!("only categories {}", t.categories.join(", ")));
+    }
+    if let Some(d) = &t.expires {
+        about.push(format!("works until the end of {d}"));
+    }
+    eprintln!(
+        "Made \"{}\" ({}) in {}. Its secret, shown only now:",
+        t.name,
+        about.join(", "),
+        tokens.display()
+    );
+    println!("{secret}");
+    Ok(())
+}
+
+/// `mcast intercom token list`.
+pub fn token_list(config: &Path, tokens: &Path) -> Result<()> {
+    let cfg = store::load(config)?;
+    let f = crate::tokens::load(tokens)?;
+    if f.tokens.is_empty() {
+        println!("No access tokens in {}.", tokens.display());
+        return Ok(());
+    }
+    let now = crate::now_ms();
+    println!("Access tokens in {}:", tokens.display());
+    for t in &f.tokens {
+        let mut about = Vec::new();
+        if !t.announcements.is_empty() {
+            let names: Vec<&str> = t
+                .announcements
+                .iter()
+                .map(|id| {
+                    cfg.announcement(id)
+                        .map_or(id.as_str(), |a| a.name.as_str())
+                })
+                .collect();
+            about.push(format!("plays only {}", names.join(", ")));
+        }
+        if !t.categories.is_empty() {
+            let names: Vec<&str> = t
+                .categories
+                .iter()
+                .map(|id| {
+                    cfg.categories
+                        .iter()
+                        .find(|c| c.id == *id)
+                        .map_or(id.as_str(), |c| c.name.as_str())
+                })
+                .collect();
+            about.push(format!("only {}", names.join(", ")));
+        }
+        match &t.expires {
+            Some(d) if t.expired(now) => about.push(format!("EXPIRED after {d}")),
+            Some(d) => about.push(format!("until {d}")),
+            None => {}
+        }
+        about.push(match t.last_used_ms {
+            Some(ms) => format!(
+                "used {} time{}, last {}",
+                t.uses,
+                if t.uses == 1 { "" } else { "s" },
+                local_time(&cfg, ms)
+            ),
+            None => "never used".into(),
+        });
+        println!(
+            "  {:<10} {:<24} {:<9} {}",
+            t.id,
+            t.name,
+            t.role.name(),
+            about.join("; ")
+        );
+    }
+    Ok(())
+}
+
+/// `mcast intercom token revoke`, by id or name.
+pub fn token_revoke(tokens: &Path, which: &str) -> Result<()> {
+    let mut f = crate::tokens::load(tokens)?;
+    let t = f.remove(which)?;
+    crate::tokens::save(tokens, &f)?;
+    println!("Revoked \"{}\" ({}).", t.name, t.role);
+    Ok(())
 }

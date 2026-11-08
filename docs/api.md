@@ -51,9 +51,10 @@ Errors are JSON: `{"error": "message"}`.
 | GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
 | POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
 | POST | `/file-receivers` | Receive files into the media directory (body: file receive request). `201` with the job |
-| GET | `/media` | Every file, in every folder: `[{"name", "bytes", "modified_ms"}]`, `name` being its path (`bells/lunch.wav`) |
+| GET | `/media` | Every file, in every folder: `[{"name", "bytes", "modified_ms"}]`, `name` being its path (`bells/lunch.wav`). With `?audio=1`, each also has `audio` (`{"codec", "rate", "channels", "duration_s"}`) if it's audio mcast can play, else `audio_error` saying why not. Files are probed once and remembered until they change |
+| GET | `/media-info/{name}` | One file, as in `/media?audio=1` |
 | GET | `/media/{name}` | Download a file. Pictures and audio come with their type; anything else downloads as `application/octet-stream`, so nothing received can run in a browser |
-| PUT | `/media/{name}` | Upload a file (raw body), making any folders in its path. Replaces any file of that name |
+| PUT | `/media/{name}` | Upload a file (raw body), making any folders in its path. Replaces any file of that name. With `?audio=1`, it must be audio mcast can play: if not, `422` and any old file stays. Returns `{"name", "bytes"}`, and `audio` when checked |
 | DELETE | `/media/{name}` | Delete a file |
 | GET | `/media-folders` | Every folder, empty ones included: `["bells", "bells/old"]` |
 | POST | `/media-folders` | `{"name": "bells/old"}`: make a folder (and those above it) |
@@ -101,7 +102,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_mode` | follows `mode` | `voice` or `music` |
 | `opus_bandwidth` | | `nb`, `wb`, `swb`, `fb` |
 | `opus_fec` | `true` | |
-| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
+| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "files", "paths": ["NAME", ...], "gap_ms": 0}` (up to 100 files one after another as one stream, at the first one's rate and channels, with `gap_ms` of silence between them; loudness is measured over them all), `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | Volume change after processing, with a limiter; chimes too |
 | `input_gain_db` | | Gain on the source before processing (not the chimes), -40 to 40, e.g. `12` for a quiet microphone; a boost is limited |

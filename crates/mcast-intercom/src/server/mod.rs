@@ -4,21 +4,27 @@
 //! It runs as its own process with its own token, and reaches the mcast
 //! server only through a [`Backend`].
 
+mod auth;
+mod history;
+mod hooks;
 mod library;
 mod live;
 mod routes;
 pub mod tls;
+mod trigger;
 mod web;
 
 use crate::backend::Backend;
-use crate::model::{Announcement, Config, Schedule, ScheduleGroup, Site, Zone};
+use crate::model::{Announcement, Category, Config, Playlist, Schedule, ScheduleGroup, Site, Zone};
 use crate::runner::{BackendStatus, Change, Run, Runner};
 use crate::scheduler::{Scheduler, GRACE};
 use crate::store;
+use crate::tokens::TokenStore;
 use anyhow::{bail, Context, Result};
-use axum::extract::{Request, State};
-use axum::http::{header, StatusCode};
-use axum::middleware::{self, Next};
+pub use auth::{access, url_token_ok, Access, AuthConfig, Caller, STARTUP_TOKEN};
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::middleware;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -38,10 +44,13 @@ pub const API_PREFIX: &str = "/api/intercom/v1";
 #[derive(Debug, Clone)]
 pub struct ServeConfig {
     pub listen: SocketAddr,
-    /// Bearer token clients must send. Required unless listening on loopback.
+    /// The startup token: admin. Required unless listening on loopback or
+    /// `tokens.json` has an admin token.
     pub token: Option<String>,
     /// The intercom config file.
     pub config: PathBuf,
+    /// The access tokens' file; `tokens.json` beside the config by default.
+    pub tokens: Option<PathBuf>,
     /// Serve the web page (otherwise the API alone).
     pub web: bool,
     /// Serve the web page from this directory instead of the built-in copy.
@@ -73,7 +82,12 @@ pub(crate) struct Inner {
     pub(crate) events: broadcast::Sender<Event>,
     /// Plays schedules; told when the config changes.
     pub(crate) scheduler: Scheduler,
-    token: Option<String>,
+    pub(crate) auth: AuthConfig,
+    pub(crate) tokens: Arc<TokenStore>,
+    /// Outbound webhooks, in `webhooks.json` beside the config.
+    pub(crate) webhooks: Arc<crate::webhooks::Webhooks>,
+    /// Runs that ended, on disk (`history/` beside the config).
+    pub(crate) history: Arc<crate::history::History>,
     closing: watch::Receiver<bool>,
 }
 
@@ -81,18 +95,48 @@ pub(crate) struct Inner {
 pub struct AppState(pub(crate) Arc<Inner>);
 
 impl AppState {
-    /// Start the runner and the scheduler. `closing` ends event streams when it becomes true,
-    /// so graceful shutdown isn't held up by open clients.
+    /// [`AppState::with_auth`] with only a startup token (or none: open)
+    /// and `tokens.json` beside the config. Panics if that file is broken.
     pub fn new(
         backend: Arc<dyn Backend>,
         config: PathBuf,
         token: Option<String>,
         closing: watch::Receiver<bool>,
     ) -> Self {
+        let token = token.filter(|t| !t.is_empty());
+        let auth = AuthConfig {
+            open: token.is_none(),
+            token,
+            tokens: crate::tokens::default_path(&config),
+        };
+        let tokens = TokenStore::open(auth.tokens.clone()).expect("reading tokens.json");
+        Self::with_auth(backend, config, auth, Arc::new(tokens), closing)
+    }
+
+    /// Start the runner and the scheduler. `closing` ends event streams when it becomes true,
+    /// so graceful shutdown isn't held up by open clients.
+    pub fn with_auth(
+        backend: Arc<dyn Backend>,
+        config: PathBuf,
+        auth: AuthConfig,
+        tokens: Arc<TokenStore>,
+        closing: watch::Receiver<bool>,
+    ) -> Self {
         let (events, _) = broadcast::channel(256);
+        let webhooks = Arc::new(crate::webhooks::Webhooks::open(
+            crate::webhooks::default_path(&config),
+        ));
+        let history = Arc::new(crate::history::History::new(
+            crate::history::default_dir(&config),
+            store::load(&config).map_or(crate::history::DEFAULT_DAYS, |c| c.history_days()),
+        ));
         let runner = {
             let tx = events.clone();
+            let hooks = webhooks.clone();
+            let past = history.clone();
             Runner::new(backend.clone(), move |c| {
+                hooks.observe(&c);
+                past.observe(&c);
                 // No subscribers is fine.
                 let _ = tx.send(match c {
                     Change::Run(run) => Event::Run { run: run.clone() },
@@ -109,7 +153,10 @@ impl AppState {
             config,
             config_lock: tokio::sync::Mutex::new(()),
             events,
-            token: token.filter(|t| !t.is_empty()),
+            auth,
+            tokens,
+            webhooks,
+            history,
             closing,
         }))
     }
@@ -133,20 +180,58 @@ pub async fn serve(
     backend: Arc<dyn Backend>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    if !cfg.listen.ip().is_loopback() && cfg.token.as_deref().map_or(true, str::is_empty) {
+    let token = cfg.token.clone().filter(|t| !t.is_empty());
+    let tokens_path = cfg
+        .tokens
+        .clone()
+        .unwrap_or_else(|| crate::tokens::default_path(&cfg.config));
+    let tokens = {
+        let p = tokens_path.clone();
+        Arc::new(tokio::task::spawn_blocking(move || TokenStore::open(p)).await??)
+    };
+    let loopback = cfg.listen.ip().is_loopback();
+    if !loopback && token.is_none() && !tokens.has_admin(crate::now_ms()) {
         bail!(
             "refusing to listen on {} without a token: anyone who can reach it could page; \
-             set --panel-token / MCAST_INTERCOM_TOKEN, or listen on 127.0.0.1",
+             set --panel-token / MCAST_INTERCOM_TOKEN, make an admin token \
+             (mcast intercom token add NAME --role admin), or listen on 127.0.0.1",
             cfg.listen
         );
     }
+    let auth = AuthConfig {
+        open: loopback && token.is_none(),
+        token,
+        tokens: tokens_path,
+    };
     // Refuse to start with a config that doesn't load, rather than serve errors.
     let path = cfg.config.clone();
     let loaded = tokio::task::spawn_blocking(move || store::load(&path)).await??;
+    let hooks_path = crate::webhooks::default_path(&cfg.config);
+    tokio::task::spawn_blocking(move || crate::webhooks::load(&hooks_path)).await??;
     let (close_tx, close_rx) = watch::channel(false);
     let state = {
-        let (backend, config, token) = (backend.clone(), cfg.config.clone(), cfg.token.clone());
-        tokio::task::spawn_blocking(move || AppState::new(backend, config, token, close_rx)).await?
+        let (backend, config, tokens) = (backend.clone(), cfg.config.clone(), tokens.clone());
+        tokio::task::spawn_blocking(move || {
+            AppState::with_auth(backend, config, auth, tokens, close_rx)
+        })
+        .await?
+    };
+    // What the connection was while the panel wasn't running isn't known.
+    state.0.history.panel_up_or_down();
+    // Write out how much tokens were used now and then, not on every request.
+    let flusher = {
+        let tokens = tokens.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(std::time::Duration::from_secs(60));
+            every.tick().await;
+            loop {
+                every.tick().await;
+                let t = tokens.clone();
+                if let Ok(Err(e)) = tokio::task::spawn_blocking(move || t.flush()).await {
+                    eprintln!("mcast intercom: saving token use: {e:#}");
+                }
+            }
+        })
     };
     let mut app = router(state.clone());
     if cfg.web {
@@ -182,13 +267,20 @@ pub async fn serve(
         loaded.announcements.len(),
         cfg.config.display(),
         backend.describe(),
-        if state.0.token.is_some() {
-            ", token required"
-        } else {
+        if state.0.auth.open {
             ""
+        } else {
+            ", token required"
         }
     );
-    server.await?;
+    let served = server.await;
+    state.0.history.panel_up_or_down();
+    flusher.abort();
+    let t = tokens.clone();
+    if let Ok(Err(e)) = tokio::task::spawn_blocking(move || t.flush()).await {
+        eprintln!("mcast intercom: saving token use: {e:#}");
+    }
+    served?;
     Ok(())
 }
 
@@ -196,7 +288,7 @@ pub async fn serve(
 pub fn router(state: AppState) -> Router {
     use routes::*;
     let api = Router::new()
-        .route("/health", get(health))
+        .route("/health", get(auth::health))
         .route("/backend", get(backend_status))
         .route("/config", get(get_config))
         .route("/zones", get(list::<Zone>).post(create::<Zone>))
@@ -238,6 +330,31 @@ pub fn router(state: AppState) -> Router {
                 .put(put::<ScheduleGroup>)
                 .delete(delete::<ScheduleGroup>),
         )
+        .route(
+            "/categories",
+            get(list::<Category>).post(create::<Category>),
+        )
+        .route(
+            "/categories/{id}",
+            get(get_one::<Category>)
+                .put(put::<Category>)
+                .delete(delete::<Category>),
+        )
+        .route("/playlists", get(list::<Playlist>).post(create::<Playlist>))
+        .route(
+            "/playlists/{id}",
+            get(get_one::<Playlist>)
+                .put(put::<Playlist>)
+                .delete(delete::<Playlist>),
+        )
+        .route(
+            "/layout/{tab}",
+            axum::routing::put(put_layout).delete(delete_layout),
+        )
+        .route("/history", get(history::list))
+        .route("/history.csv", get(history::csv))
+        .route("/stats", get(history::stats))
+        .route("/monitor", get(history::monitor))
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))
@@ -257,12 +374,36 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/media-move", post(library::move_media))
         .route("/media-hidden", axum::routing::put(library::hide))
+        .route("/media-tags", axum::routing::put(library::tag))
         .route("/phonebook", get(phonebook))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))
         .route("/events", get(events))
+        .route("/tokens", get(auth::list_tokens).post(auth::create_token))
+        .route(
+            "/tokens/{id}",
+            axum::routing::put(auth::put_token).delete(auth::delete_token),
+        )
+        .route("/trigger/{which}", axum::routing::any(trigger::trigger))
+        .route(
+            "/trigger/{which}/stop",
+            axum::routing::any(trigger::trigger_stop),
+        )
+        .route("/stop-all", axum::routing::any(trigger::stop_all))
+        .route("/webhooks", get(hooks::list).post(hooks::create))
+        .route(
+            "/webhooks/{id}",
+            axum::routing::put(hooks::put).delete(hooks::delete),
+        )
+        .route("/webhooks/{id}/test", post(hooks::test))
+        // Once the route is known: may this caller use it?
+        .route_layer(middleware::from_fn(auth::authorize))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
-        .layer(middleware::from_fn_with_state(state.clone(), auth))
+        // Every request, unknown routes too: who's calling?
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::authenticate,
+        ))
         .with_state(state);
     // No fallback outside the API, so the web page can be merged in.
     Router::new().nest(API_PREFIX, api)
@@ -270,25 +411,48 @@ pub fn router(state: AppState) -> Router {
 
 // ---- events ----
 
+/// Server-sent events. A token limited to some announcements hears only
+/// their runs, as `/runs` lists only them.
 async fn events(
     State(s): State<AppState>,
+    axum::Extension(caller): axum::Extension<Caller>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let rx = s.0.events.subscribe();
     let mut closing = s.0.closing.clone();
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        let e = match rx.recv().await {
-            Ok(e) => {
-                let value = serde_json::to_value(&e).unwrap_or_default();
-                let kind = value["type"].as_str().unwrap_or("event").to_string();
-                SseEvent::default().event(kind).data(value.to_string())
+    // The config the filter uses: read once, and again when it changes.
+    let cfg = if caller.is_limited() {
+        Some(s.load().await.unwrap_or_default())
+    } else {
+        None
+    };
+    let state = (rx, cfg, s, caller);
+    let stream = futures_util::stream::unfold(state, |(mut rx, mut cfg, s, caller)| async move {
+        let e = loop {
+            match rx.recv().await {
+                Ok(e) => {
+                    if let Some(c) = cfg.as_mut() {
+                        match &e {
+                            Event::ConfigChanged => *c = s.load().await.unwrap_or_default(),
+                            Event::Run { run } if !caller.may_play(c, &run.announcement) => {
+                                continue
+                            }
+                            _ => {}
+                        }
+                    }
+                    let value = serde_json::to_value(&e).unwrap_or_default();
+                    let kind = value["type"].as_str().unwrap_or("event").to_string();
+                    break SseEvent::default().event(kind).data(value.to_string());
+                }
+                // A slow client missed some; tell it so it can refetch.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    break SseEvent::default()
+                        .event("lagged")
+                        .data(json!({ "type": "lagged", "missed": n }).to_string())
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
             }
-            // A slow client missed some; tell it so it can refetch.
-            Err(broadcast::error::RecvError::Lagged(n)) => SseEvent::default()
-                .event("lagged")
-                .data(json!({ "type": "lagged", "missed": n }).to_string()),
-            Err(broadcast::error::RecvError::Closed) => return None,
         };
-        Some((Ok(e), rx))
+        Some((Ok(e), (rx, cfg, s, caller)))
     })
     .take_until(async move {
         // End on shutdown only: a dropped sender (no shutdown wired up) isn't one.
@@ -343,43 +507,6 @@ impl From<tokio::task::JoinError> for ApiError {
 }
 
 pub(crate) type ApiResult<T> = Result<T, ApiError>;
-
-// ---- auth ----
-
-/// Compare without leaking how much of the token matched.
-fn same(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-async fn auth(State(s): State<AppState>, req: Request, next: Next) -> Response {
-    let Some(token) = &s.0.token else {
-        return next.run(req).await;
-    };
-    let bearer = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    // Browsers' EventSource can't set headers, so the token may come as a query parameter.
-    let query = req
-        .uri()
-        .query()
-        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("access_token=")));
-    if bearer
-        .or(query)
-        .is_some_and(|t| same(t.as_bytes(), token.as_bytes()))
-    {
-        next.run(req).await
-    } else {
-        let mut r =
-            ApiError::new(StatusCode::UNAUTHORIZED, "missing or wrong token").into_response();
-        r.headers_mut().insert(
-            header::WWW_AUTHENTICATE,
-            "Bearer".parse().expect("valid header"),
-        );
-        r
-    }
-}
 
 #[cfg(test)]
 mod tests;
