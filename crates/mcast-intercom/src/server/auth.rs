@@ -359,6 +359,9 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/media-hidden"
         | "/media-tags" => MediaWrite,
         "/tokens" | "/tokens/{id}" | "/layout/{tab}" => Admin,
+        "/inputs" | "/inputs/{id}" => Admin,
+        "/inputs/{id}/test" if *method == Method::POST => Admin,
+        "/input-status" if get => Admin,
         "/backup" if get => Admin,
         "/restore" if *method == Method::POST => Admin,
         // Any method: the handlers take GET and POST, and refuse the rest.

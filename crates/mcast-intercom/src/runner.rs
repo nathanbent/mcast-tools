@@ -48,6 +48,9 @@ pub enum Trigger {
     },
     /// A schedule, for the time it was due.
     Schedule { id: String, at_ms: u64 },
+    /// A button or contact on a GPIO pin (`inputs` in the config); `by` is
+    /// its name.
+    Input { id: String, by: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

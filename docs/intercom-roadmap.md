@@ -1,8 +1,8 @@
 # Intercom control panel: roadmap
 
-Status: **v0.5.5 is built** (PR #38), along with the monitor page (item 10),
-delivery confirmation (item 11) and backup and restore (item 13) from v0.6.0.
-Item 12 (GPIO triggers) is planned below. This covers two releases,
+Status: **v0.5.5 is built** (PR #38), and so is everything planned for
+v0.6.0: the monitor page (item 10), delivery confirmation (item 11), GPIO
+triggers (item 12) and backup and restore (item 13). This covers two releases,
 **v0.5.5** (integrate and polish) and **v0.6.0** (observe and harden).
 `intercom-status.md` has the current state and the next steps.
 `intercom-plan.md` is an overview of how the panel is built.
@@ -286,6 +286,14 @@ a `listener_silent` webhook say who heard it and who stayed silent. See
   listening devices.
 
 ### 12. Triggers from the room
+
+**Built.** `inputs` in the config: a GPIO line (on a Pi, its BCM number)
+plays an announcement when pressed, or while held, read through the Linux
+character device with `gpiocdev` (the owner chose that crate) and debounced
+by the kernel. Settings → Buttons and contacts shows each one's state and
+has a Test button; `pi/install.sh` gives the `mcast` user the `gpio` group.
+An input plays at its announcement's priority, so a per-input priority
+wasn't needed. The plan:
 
 - Pi GPIO / contact-closure inputs mapped to announcements (a panic button,
   a door contact), with debounce and per-input priority.

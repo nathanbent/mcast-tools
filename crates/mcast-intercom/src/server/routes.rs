@@ -87,6 +87,12 @@ impl Item for Announcement {
         &mut c.announcements
     }
     fn in_use(c: &Config, id: &str) -> Option<String> {
+        if let Some(i) = c.inputs.iter().find(|i| i.announcement == id) {
+            return Some(format!(
+                "announcement \"{id}\" is played by the input \"{}\"; change it first",
+                i.name
+            ));
+        }
         let n = c.schedules.iter().filter(|s| s.announcement == id).count();
         (n > 0).then(|| {
             format!(
@@ -109,6 +115,48 @@ impl Item for Schedule {
     fn all_mut(c: &mut Config) -> &mut Vec<Self> {
         &mut c.schedules
     }
+}
+
+impl Item for crate::model::Input {
+    const KIND: &'static str = "input";
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn all(c: &Config) -> &Vec<Self> {
+        &c.inputs
+    }
+    fn all_mut(c: &mut Config) -> &mut Vec<Self> {
+        &mut c.inputs
+    }
+}
+
+/// Each input's state now: `[{"id", "name", "enabled", "pressed", "error",
+/// "changed_ms", "run"}]`.
+pub(super) async fn input_status(
+    State(s): State<AppState>,
+) -> Json<Vec<crate::inputs::InputStatus>> {
+    Json(s.0.inputs.status())
+}
+
+/// Press an input as if by hand (and let go after a second, for one that
+/// plays while held): `{"run"}`.
+pub(super) async fn test_input(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let st = s.clone();
+    let run = tokio::task::spawn_blocking(move || {
+        st.0.inputs.test(&id, std::time::Duration::from_secs(1))
+    })
+    .await?
+    .map_err(|e| {
+        if e.starts_with("no input") {
+            ApiError::new(StatusCode::NOT_FOUND, e)
+        } else {
+            ApiError::new(StatusCode::BAD_GATEWAY, e)
+        }
+    })?;
+    Ok(Json(json!({ "run": run })))
 }
 
 impl Item for Site {
@@ -238,6 +286,7 @@ pub(super) async fn change<R: Send + 'static>(
     })
     .await??;
     s.0.scheduler.poke();
+    s.0.inputs.poke();
     s.0.presence.poke();
     let _ = s.0.events.send(Event::ConfigChanged);
     Ok(r)

@@ -200,7 +200,7 @@ fn read_archive(bytes: &[u8]) -> Result<Backup> {
 }
 
 /// The lists in a config whose items have ids, with what to call them.
-const LISTS: [(&str, &str); 7] = [
+const LISTS: [(&str, &str); 8] = [
     ("zones", "zone"),
     ("announcements", "announcement"),
     ("schedules", "schedule"),
@@ -208,6 +208,7 @@ const LISTS: [(&str, &str); 7] = [
     ("categories", "category"),
     ("sites", "site"),
     ("schedule_groups", "schedule group"),
+    ("inputs", "input"),
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

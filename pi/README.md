@@ -94,6 +94,25 @@ set them up in the panel. Schedules only play while the service runs, so a
 power cut means missed announcements, and they show as *missed* in the panel's
 history. Logs: `journalctl -u mcast-intercom -f`.
 
+### Buttons and door contacts
+
+The panel can watch the Pi's GPIO pins (Settings → Buttons and contacts): a
+panic button, a door contact or a bell push plays an announcement.
+`install.sh` adds the `mcast` user to the `gpio` group so it can read them.
+
+**Wiring:**
+- **The usual way:** a switch between a GPIO pin and ground (GND, e.g.
+  header pin 9 or 14), with the input set to "pressed when low" and a
+  pull-up. Those are the defaults, and the Pi's own pull-up is enough, so no
+  other parts are needed.
+- **Pin numbers:** use the BCM GPIO number, not the header pin; the panel
+  shows both. GPIO17 is header pin 11, and GPIO27 pin 13.
+- **Avoid** pins the Pi uses for something else: GPIO2 and 3 (I²C), and
+  GPIO14 and 15 if the serial console is on.
+- **Long cable runs** pick up noise. Raise the debounce (50 ms by default),
+  or use an opto-isolated input board.
+- **Never** put more than 3.3 V on a pin.
+
 Setting `ENABLE_INTERCOM=no` again stops and removes the service, but keeps
 `intercom.json` and the token.
 

@@ -694,3 +694,58 @@ fn zones_check_their_listeners() {
         .to_string()
         .contains("more than"));
 }
+
+#[test]
+fn inputs_are_checked() {
+    let with = |inputs: serde_json::Value| {
+        let mut v = serde_json::to_value(config()).unwrap();
+        v["inputs"] = inputs;
+        serde_json::from_value::<Config>(v)
+            .map_err(|e| e.to_string())
+            .and_then(|c| c.validate().map_err(|e| e.to_string()))
+    };
+    let ok = json!({"id": "panic", "name": "Panic", "line": 17, "announcement": "lunch"});
+    assert!(with(json!([ok])).is_ok());
+    let cfg: Config =
+        serde_json::from_value(json!({"inputs": [], "zones": [], "announcements": []})).unwrap();
+    assert!(cfg.inputs.is_empty());
+    // Defaults: gpiochip0, active low with a pull-up, 50 ms.
+    let i: crate::model::Input = serde_json::from_value(ok.clone()).unwrap();
+    assert_eq!(i.chip_path(), "/dev/gpiochip0");
+    assert!(i.active_low && i.enabled && !i.while_held);
+    assert_eq!(i.debounce_ms(), 50);
+    assert_eq!(
+        serde_json::to_value(&i).unwrap(),
+        ok,
+        "defaults aren't written out"
+    );
+
+    let bad = |change: serde_json::Value, says: &str| {
+        let mut i = ok.clone();
+        for (k, v) in change.as_object().unwrap() {
+            i[k] = v.clone();
+        }
+        let err = with(json!([i])).unwrap_err();
+        assert!(err.contains(says), "{change}: {err}");
+    };
+    bad(json!({"announcement": "nope"}), "no announcement");
+    bad(json!({"line": 5000}), "out of range");
+    bad(json!({"chip": "/etc/passwd"}), "gpiochipN");
+    bad(json!({"chip": "spi0"}), "gpiochipN");
+    bad(json!({"debounce_ms": 5000}), "at most");
+    bad(json!({"bias": "sideways"}), "unknown variant");
+    bad(json!({"id": "a b"}), "invalid input id");
+    let mut twin = ok.clone();
+    twin["id"] = json!("other");
+    twin["name"] = json!("Other");
+    assert!(with(json!([ok, twin]))
+        .unwrap_err()
+        .contains("both use line 17"));
+    // One of them off: fine.
+    twin["enabled"] = json!(false);
+    assert!(with(json!([ok, twin])).is_ok());
+    let mut chip1 = twin.clone();
+    chip1["enabled"] = json!(true);
+    chip1["chip"] = json!("gpiochip1");
+    assert!(with(json!([ok, chip1])).is_ok());
+}

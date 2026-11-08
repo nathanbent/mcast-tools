@@ -191,7 +191,7 @@ function render() {
           : h("p", { class: "muted" }, "No scheduled plays in this time."),
         h("h3", { class: "group-head", style: { marginTop: "16px" } }, "Started by"),
         h("dl", { class: "facts" },
-          [["manual", "Buttons and push to talk"], ["schedule", "Schedules"], ["api", "Other systems (trigger API)"]].map(([k, label]) =>
+          [["manual", "Buttons and push to talk"], ["schedule", "Schedules"], ["api", "Other systems (trigger API)"], ["input", "Buttons and contacts (GPIO)"]].map(([k, label]) =>
             [h("dt", {}, label), h("dd", {}, String(data.triggers[k] ?? 0))]),
           data.by.length > 0 && [h("dt", {}, "Most by"), h("dd", {}, data.by.slice(0, 5).map((b) => `${b.name} (${b.plays})`).join(", "))])),
       h("section", { class: "panel-group" },

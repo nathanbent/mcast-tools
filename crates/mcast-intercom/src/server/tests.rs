@@ -896,6 +896,13 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/phonebook"),
     ("GET", "/listeners"),
     ("GET", "/backup"),
+    ("GET", "/inputs"),
+    ("POST", "/inputs"),
+    ("GET", "/inputs/{id}"),
+    ("PUT", "/inputs/{id}"),
+    ("DELETE", "/inputs/{id}"),
+    ("POST", "/inputs/{id}/test"),
+    ("GET", "/input-status"),
     ("POST", "/restore"),
     ("GET", "/speakers"),
     ("GET", "/chimes"),
@@ -2775,6 +2782,95 @@ impl IntoJson for (StatusCode, axum::http::HeaderMap, Vec<u8>) {
             self.0,
             serde_json::from_slice(&self.2).unwrap_or(Value::Null),
         )
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gpio_inputs_play_announcements() {
+    use crate::inputs::FakePins;
+    let dir = std::env::temp_dir().join(format!(
+        "mcast-intercom-api-inputs-{}-{}",
+        std::process::id(),
+        crate::now_ms()
+    ));
+    let path = dir.join("intercom.json");
+    let fake = Arc::new(Fake::default());
+    let pins = Arc::new(FakePins::default());
+    let (tx, rx) = watch::channel(false);
+    let state = AppState::with_pins(fake.clone(), path.clone(), Arc::new(pins.clone()), rx);
+    let p = Panel {
+        app: router(state),
+        fake,
+        path,
+        _closing: tx,
+    };
+    p.set_up().await;
+
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/inputs",
+            Some(json!({"name": "Panic button", "line": 17, "announcement": "bell"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["id"], "panic-button");
+    // A line can't be used twice.
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/inputs",
+            Some(json!({"name": "Other", "line": 17, "announcement": "bell"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+
+    // Watched as soon as it's saved.
+    let status = || async {
+        let (_, v) = p.call(Method::GET, "/input-status", None).await;
+        v[0].clone()
+    };
+    let until = Instant::now() + Duration::from_secs(5);
+    while status().await["pressed"] != false {
+        assert!(Instant::now() < until, "not watched: {}", status().await);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let pins2 = pins.clone();
+    tokio::task::spawn_blocking(move || pins2.set("/dev/gpiochip0", 17, true))
+        .await
+        .unwrap();
+    let st = status().await;
+    assert_eq!(st["pressed"], true);
+    let run = st["run"].as_u64().expect("a run");
+    let (_, r) = p.call(Method::GET, &format!("/runs/{run}"), None).await;
+    assert_eq!(r["announcement"], "bell");
+    assert_eq!(
+        r["trigger"],
+        json!({"type": "input", "id": "panic-button", "by": "Panic button"})
+    );
+
+    // The announcement can't go while an input plays it.
+    let (s, v) = p.call(Method::DELETE, "/announcements/bell", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("Panic button"), "{v}");
+
+    // The Test button, once that run is over.
+    p.call(Method::DELETE, "/runs", None).await;
+    let (s, v) = p
+        .call(Method::POST, "/inputs/panic-button/test", None)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["run"].as_u64().unwrap() > run);
+    let (s, _) = p.call(Method::POST, "/inputs/nope/test", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Deleted: no longer watched.
+    let (s, _) = p.call(Method::DELETE, "/inputs/panic-button", None).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let until = Instant::now() + Duration::from_secs(5);
+    while !pins.watched().is_empty() {
+        assert!(Instant::now() < until, "still watched");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 

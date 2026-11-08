@@ -25,6 +25,10 @@ ring = "0.17"
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
 
+# GPIO inputs (buttons, door contacts) through the Linux character device.
+[target.'cfg(target_os = "linux")'.dependencies]
+gpiocdev = "0.8"
+
 [dev-dependencies]
 hound.workspace = true
 tower.workspace = true

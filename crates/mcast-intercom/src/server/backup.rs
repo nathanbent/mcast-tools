@@ -158,6 +158,7 @@ pub(super) async fn restore(
             s.0.history.set_keep_days(days);
         }
         s.0.scheduler.poke();
+        s.0.inputs.poke();
         let _ = s.0.events.send(Event::ConfigChanged);
     }
     Ok(Json(json!({

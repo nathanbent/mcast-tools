@@ -16,7 +16,9 @@ mod trigger;
 mod web;
 
 use crate::backend::Backend;
-use crate::model::{Announcement, Category, Config, Playlist, Schedule, ScheduleGroup, Site, Zone};
+use crate::model::{
+    Announcement, Category, Config, Input, Playlist, Schedule, ScheduleGroup, Site, Zone,
+};
 use crate::runner::{BackendStatus, Change, Run, Runner};
 use crate::scheduler::{Scheduler, GRACE};
 use crate::store;
@@ -72,6 +74,10 @@ pub enum Event {
     Backend { status: BackendStatus },
     /// Media files or folders changed on the mcast server; fetch them again.
     MediaChanged,
+    /// The GPIO inputs' states changed: all of them, as `GET /input-status`.
+    Inputs {
+        inputs: Vec<crate::inputs::InputStatus>,
+    },
     /// Expected speakers' states changed (as `GET /speakers`), with any
     /// that went offline or came back.
     Speakers {
@@ -95,6 +101,8 @@ pub(crate) struct Inner {
     pub(crate) webhooks: Arc<crate::webhooks::Webhooks>,
     /// Runs that ended, on disk (`history/` beside the config).
     pub(crate) history: Arc<crate::history::History>,
+    /// Buttons and contacts on GPIO pins.
+    pub(crate) inputs: crate::inputs::Inputs,
     /// Whether expected speakers are there between plays.
     pub(crate) presence: crate::presence::Presence,
     closing: watch::Receiver<bool>,
@@ -122,6 +130,23 @@ impl AppState {
         Self::with_auth(backend, config, auth, Arc::new(tokens), closing)
     }
 
+    /// [`AppState::new`] reading GPIO inputs from `pins` (for tests).
+    #[doc(hidden)]
+    pub fn with_pins(
+        backend: Arc<dyn Backend>,
+        config: PathBuf,
+        pins: Arc<dyn crate::inputs::Pins>,
+        closing: watch::Receiver<bool>,
+    ) -> Self {
+        let auth = AuthConfig {
+            open: true,
+            token: None,
+            tokens: crate::tokens::default_path(&config),
+        };
+        let tokens = TokenStore::open(auth.tokens.clone()).expect("reading tokens.json");
+        Self::build(backend, config, auth, Arc::new(tokens), closing, pins)
+    }
+
     /// Start the runner and the scheduler. `closing` ends event streams when it becomes true,
     /// so graceful shutdown isn't held up by open clients.
     pub fn with_auth(
@@ -130,6 +155,18 @@ impl AppState {
         auth: AuthConfig,
         tokens: Arc<TokenStore>,
         closing: watch::Receiver<bool>,
+    ) -> Self {
+        let pins = crate::inputs::system_pins();
+        Self::build(backend, config, auth, tokens, closing, pins)
+    }
+
+    fn build(
+        backend: Arc<dyn Backend>,
+        config: PathBuf,
+        auth: AuthConfig,
+        tokens: Arc<TokenStore>,
+        closing: watch::Receiver<bool>,
+        pins: Arc<dyn crate::inputs::Pins>,
     ) -> Self {
         let (events, _) = broadcast::channel(256);
         let webhooks = Arc::new(crate::webhooks::Webhooks::open(
@@ -155,6 +192,12 @@ impl AppState {
             })
         };
         let scheduler = Scheduler::start(config.clone(), runner.clone(), GRACE);
+        let inputs = {
+            let tx = events.clone();
+            crate::inputs::Inputs::start(config.clone(), runner.clone(), pins, move |inputs| {
+                let _ = tx.send(Event::Inputs { inputs });
+            })
+        };
         let presence = {
             let (tx, hooks) = (events.clone(), webhooks.clone());
             crate::presence::Presence::start(
@@ -182,6 +225,7 @@ impl AppState {
             tokens,
             webhooks,
             history,
+            inputs,
             presence,
             closing,
         }))
@@ -403,6 +447,15 @@ pub fn router(state: AppState) -> Router {
         .route("/media-tags", axum::routing::put(library::tag))
         .route("/phonebook", get(phonebook))
         .route("/listeners", get(routes::listeners))
+        .route("/inputs", get(list::<Input>).post(create::<Input>))
+        .route(
+            "/inputs/{id}",
+            get(get_one::<Input>)
+                .put(put::<Input>)
+                .delete(delete::<Input>),
+        )
+        .route("/inputs/{id}/test", post(routes::test_input))
+        .route("/input-status", get(routes::input_status))
         .route("/backup", get(backup::download))
         .route("/restore", post(backup::restore))
         .route("/speakers", get(routes::speakers))
@@ -460,6 +513,12 @@ async fn events(
         let e = loop {
             match rx.recv().await {
                 Ok(e) => {
+                    // Inputs are set up by admins, and only they see them.
+                    if matches!(e, Event::Inputs { .. })
+                        && caller.role != crate::tokens::Role::Admin
+                    {
+                        continue;
+                    }
                     if let Some(c) = cfg.as_mut() {
                         match &e {
                             Event::ConfigChanged => *c = s.load().await.unwrap_or_default(),

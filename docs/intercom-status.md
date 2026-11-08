@@ -1,32 +1,42 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, in a second session that checked the first one's work
-and planned what's left. Read this first, then `intercom-roadmap.md`, which has
-the full plan and what each item became.
+Last updated 2026-11-08, late in a second session. That session checked the
+first one's work, then built everything left on the v0.6.0 roadmap, plus two
+follow-ups: last-heard times in the Zones list, and alerts when a speaker
+goes offline between plays. Read this first, then `intercom-roadmap.md`, which has the full plan
+and what each item became.
 
-## The branch and PR
+## Where things stand
 
-- Branch `claude/intelligent-hypatia-awklrl`, open as **nathanbent/mcast-tools#38**, not merged yet. It's waiting on the owner's review; there are no review comments.
-- `main` (v0.5.4) is merged in. `main` keeps moving (v0.5.1 → v0.5.4 came from other threads), so merge `origin/main` into the branch before pushing more. Conflicts so far were small, in `announcements.js` and `talk.js`.
-- The PR description lists everything in detail.
-- The docs fixes and this plan were made on `claude/vibrant-knuth-34bpdf`, branched from #38's head (`6908d0f`), to go into #38 before it merges.
+Every item on the roadmap for v0.5.5 and v0.6.0 is built. Nothing is merged
+yet: the work is four PRs, each stacked on the one before so its diff shows
+only its own feature.
 
-## Checked (2026-11-08)
+| PR | Branch | What | Based on |
+|---|---|---|---|
+| nathanbent/mcast-tools#38 | `claude/intelligent-hypatia-awklrl` | v0.5.5: tokens, triggers, webhooks, sounds, files, playlists, history, monitor, Panel organizing, kiosks | `main` |
+| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
+| nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
+| nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
 
-On #38's head (`6908d0f`), locally:
-- `cargo fmt --all --check` passes.
-- `cargo clippy --workspace --all-targets --locked -- -D warnings` passes.
-- `cargo test --workspace --locked` passes: 271 tests, none failing or ignored.
+- **State:** all four are open, with no merge conflicts and no review comments, waiting on the owner.
+  - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
+  - On #45 (`dadf4c0`), `shellcheck` passed and the Rust job was still running when this was written. The same checks pass locally there.
+- **Changes low in the stack are merged up:** a fix or follow-up on #43 is merged into #44's branch, then #44's into #45's, so the PRs stay consistent. Conflicts so far were neighbouring additions (routes, events, tests, docs), resolved by keeping both. After one, check every `#[tokio::test]` attribute survived: clippy's dead-code error caught one that didn't.
+- **Merging:** merge them in order (#38, then #43, #44, #45). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
+- **`main`** is at v0.5.4 and was last merged into #38 at that version. If `main` moves, merge it into #38's branch and carry it up the stack (merge each branch into the next). Conflicts so far were small, in `announcements.js` and `talk.js`.
+- **After merging:** release v0.5.5 (#38), then v0.6.0 (the rest), or all of it as v0.6.0.
+- **A Claude session was watching all four PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
 
-GitHub CI was green on the same commit. Every item listed below is in the code, with no TODOs left. The Home Assistant and Node-RED examples promised for item 2 are in `intercom-triggers.md`.
+## Checked
 
-Docs that had fallen behind the code, now fixed:
-- The roadmap's status line still said "planning".
-- Item 9 said only Settings was arrangeable; the Panel is too.
-- Item 11 said the core monitor already exposes listener reports. It doesn't (see below).
-- `intercom-tokens.md` described persisted history as future work.
+- **At the start of the session,** on #38's head (`6908d0f`): fmt, clippy (`-D warnings`) and `cargo test --workspace` all passed (271 tests), and GitHub CI was green. Every item listed below is in the code, with no TODOs left.
+- **At the top of the stack** (#45, `dadf4c0`), the same checks pass: 300 tests. #43's branch alone has 287.
+- **Docs** that had fallen behind the code were fixed in #38: the roadmap's status, item 9 (the Panel is arrangeable too), item 11 (the core didn't expose listener reports yet), and `intercom-tokens.md` (history is persisted).
 
-## What's built (all in #38)
+## What's built
+
+### In #38 (v0.5.5)
 
 The v0.5.5 items, plus requests that came up along the way:
 
@@ -65,92 +75,92 @@ The v0.5.5 items, plus requests that came up along the way:
     - Theme icons.
     - `docs/intercom-plan.md` rewritten as an overview.
 
-## What's next (the plan)
+### In #43: delivery confirmation (roadmap item 11)
 
-In this order. Each numbered step is its own PR unless it says otherwise.
+"Probes" means speakers running `mcast receive --name`; the owner decided this.
 
-### 0. Merge #38 and release v0.5.5
-
-The docs fixes above go in first.
-
-### 1. Delivery confirmation ("probes"), roadmap item 11: built
-
-On `claude/vibrant-knuth-34bpdf`, on top of #38. "Probes" means speakers running `mcast receive --name`; the owner decided this.
-
-**1a. Core (backwards compatible):**
-- `GET /api/v1/monitor` and the `monitor` event carry `listeners`: each receiver heard on a watched group's RTCP port, with the SSRC it hears (`about`).
-- Audio send jobs report their `ssrc`, so a listener's `about` ties it to a page exactly. No `tag` on send requests was needed.
-- Documented in `docs/api.md`. Tested in `mcast-control/src/watch.rs` with a real sender and a named receiver.
-
-**1b. Panel:**
-- **Zones:** a zone's `listeners` (names). The Zones tab offers the names the mcast server hears now (`GET /listeners`).
-- **Checking runs:** the runner checks every run to zones that list listeners. It asks `/monitor` every second while the run plays and for up to 12 s after it ends, stopping early once everyone expected was heard.
-- **Results:** the run gets `listeners: {checking, expected, heard [{name, loss_percent}], silent, error}`, and each target its `expected` and `heard`.
-- **Where it shows:**
-  - History waits for the check before writing the run.
-  - A `listener_silent` webhook, and a toast on the page.
-  - Run cards say "Heard by 1 of 2 · silent: Office".
-  - The Monitor tab has a Speakers table and a "Heard by every speaker" tile.
-- **The monitor off (or unreachable)** sets `listeners.error`, and nobody is called silent.
+- **Core (backwards compatible):**
+  - `GET /api/v1/monitor` and the `monitor` event carry `listeners`: each receiver heard on a watched group's RTCP port, with the SSRC it hears (`about`).
+  - Audio send jobs report their `ssrc`, which ties a listener to a page exactly. No `tag` on send requests was needed.
+  - Documented in `docs/api.md`.
+- **Panel:**
+  - A zone's `listeners` names the speakers expected to hear it. The Zones tab offers the names heard now (`GET /listeners`).
+  - The runner checks every play to such zones through `/monitor`: once a second while it plays, and for up to 12 s after (`LISTEN_GRACE`), stopping early once everyone expected was heard.
+  - The run gets `listeners: {checking, expected, heard [{name, loss_percent}], silent, error}`.
+  - History writes a checked run once the check ends.
+  - A `listener_silent` webhook, a toast, "Heard by 1 of 2 · silent: Office" on run cards, and a Speakers table on the Monitor tab.
+  - If the monitor is off or unreachable, `listeners.error` says so and nobody is called silent.
+- **The Zones list** shows each expected listener with a dot: reporting, offline (and since when), or checking. It also says when the listener last heard a page, from the history over 30 days.
+- **Speakers going offline between plays** (`crate::presence`):
+  - The panel asks the monitor every 10 s (`POLL`).
+  - A speaker missing for a minute (`OFFLINE_AFTER`) is offline: a `listener_offline` webhook, a toast, and "Speakers: Office offline" on the Panel's stats strip.
+  - When it's back: `listener_online` and a toast.
+  - The state is at `GET /speakers` and in the `speakers` event.
+  - Nothing is called offline while the monitor can't be asked.
 - **Tests:**
-  - Runner, history, webhook and summary unit tests, plus an API test, against the fake.
-  - An end-to-end test in `tests/server.rs`: a real `mcast serve` with its monitor on and a real named receiver.
-  - Checked by hand in a browser with the real binaries: the zone form, the toast, History and Monitor, in light and dark, at desktop and phone widths.
-- **The Zones list** shows each expected listener's state: reporting now or offline (from `GET /speakers`), and when it last heard a page (from the history, over 30 days).
-- **Speakers going offline between plays** (`crate::presence`): the panel asks the monitor every 10 s. A speaker missing for a minute is offline: a `listener_offline` webhook, a toast and the Panel's stats strip. It gets `listener_online` when back. Nothing is called offline while the monitor can't be asked.
+  - Unit and API tests against the fake.
+  - An end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver.
+  - Checked in a browser with the real binaries: the alerts with real receivers (one never running, one stopped and restarted) and a local webhook receiver.
 
-### 2. Backup and restore, roadmap item 13: built
+### In #44: backup and restore (roadmap item 13)
 
-On the local branch `backup-restore`, on top of #43; not pushed yet (see the note for the owner below).
-- **The owner chose** config plus optional sounds. It adds the `tar` crate (with `filetime`; `flate2` was already in the tree).
-- **`crate::backup`** holds the shared logic:
-  - writing and reading the `.tar.gz` (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`), with safe paths, at most 1 GiB and 10,000 files;
-  - reading a plain `intercom.json` as a backup too;
-  - `media_used`, `plan` (lists added, changed and removed by id; other settings; sounds to upload; missing sounds) and `apply` (upload, keep `.bak`, save).
-- **API:** `GET /backup[?sounds=1]` and `POST /restore[?dry_run=1]`, admin only, under the config lock.
-- **CLI:** `mcast intercom backup [--sounds] [-o FILE]` and `mcast intercom restore FILE [--dry-run]`.
-- **Page:** Settings → Backup and restore. Download either form, or choose a file to see what it would change, then Restore.
-- **Tests:** unit tests (round trip, refusing bad archives and `../` paths, planning) and an API test (download both forms, dry run, restore with a sound, `.bak`, a bad file, a sound that isn't audio).
-- **Checked by hand:** the CLI against a real `mcast serve` with a real WAV, and the page in a browser (download, preview, restore, a junk file, phone width and dark).
+- **What a backup holds:** the owner chose `intercom.json` alone, or a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history.
+- **Restoring:**
+  - It says first what it adds, changes and removes (by id, for zones, announcements, schedules, playlists, categories, sites, schedule groups and inputs), which other settings change, which sounds it uploads, and which would be missing.
+  - Then it uploads the sounds the server lacks or has at another size, keeps `intercom.json.bak`, and writes the config.
+  - A sound the server refuses leaves the config unchanged.
+- **Where:** Settings → Backup and restore; `mcast intercom backup [--sounds] [-o FILE]` and `restore FILE [--dry-run]`; `GET /backup[?sounds=1]` and `POST /restore[?dry_run=1]` (admin).
+- **`crate::backup`** holds the archive, `plan` and `apply` logic, shared by the API and the CLI. Archives are checked: only the expected file names, no `..` or hidden paths, at most 1 GiB unpacked and 10,000 files.
+- **Dependency:** adds `tar` (with `filetime`); `flate2` was already in the tree.
+- **Tests:** unit and API tests. The CLI was checked against a real `mcast serve` with a real WAV, and the page in a browser.
 
-### 3. Triggers from the room (GPIO), roadmap item 12
+### In #45: GPIO buttons and contacts (roadmap item 12)
 
-- An optional `inputs` list in `intercom.json`, read by `mcast intercom serve`. Each input has:
-  - a pin (BCM number), `active_low`, `debounce_ms` (default 50) and a priority;
-  - an announcement, and `on`: press, release, or both (play on close, stop on open).
-- Read through the Linux GPIO character device (`/dev/gpiochip0`, v2 uAPI), not the deprecated sysfs. Use either a small ioctl wrapper or the `gpiocdev` crate, if its MSRV fits 1.75.
-- Linux only. Elsewhere `check` refuses `inputs` with a clear message.
-- Settings → Inputs shows each pin's live state and has a test button.
-- Runs record `trigger: {type: "input", pin, name}`.
-- Pi image: add the `mcast` user to the `gpio` group, and document the wiring (pull-ups, a contact closure to GND).
-- Test debounce and the edge-to-action logic against a fake pin source; check the real device by hand on a Pi.
+- **How pins are read:** the owner chose the `gpiocdev` crate. It's Linux only (a target-gated dependency) and adds `gpiocdev`, `gpiocdev-uapi` and `ioctl-sys`.
+- **Config:** `inputs` in `intercom.json`: `line`, `chip` (default `gpiochip0`), `active_low` (default true), `bias` (pull-up), `debounce_ms` (50, done by the kernel), `announcement`, `while_held` and `enabled`.
+- **Behaviour:**
+  - A press plays the announcement at its own priority. Re-pressing while it plays does nothing.
+  - `while_held` stops it on release.
+  - A contact closed at start-up doesn't page.
+  - Runs record `trigger: {"type": "input", "id", "by"}`.
+- **`crate::inputs`:** a `Pins` trait (`gpiocdev` on Linux, a "needs Linux" stub elsewhere, `FakePins` for tests). `Inputs` follows the config: poked on edits, re-read every 5 s, and a pin that won't open is retried every 30 s.
+- **API (admin):** `/inputs`, `/input-status`, `/inputs/{id}/test`, and an `inputs` event.
+- **Page:** Settings → Buttons and contacts: each pin's state, with its header pin on a Pi, and a Test button.
+- **Pi:** `install.sh` adds `mcast` to `gpio`; `pi/README.md` has a wiring section.
+- **Not checked on real hardware:** this machine had no GPIO. The `gpiocdev` code ran and reported the missing chip, and everything after the pin is tested with fake pins. `install.sh` passed `shellcheck` in #45's CI. **Press a real button on a Pi before releasing.**
 
-### 4. Text pages in playlists
+## What's next
 
-- `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
-- Blocked on the owner: show text on displays through `mcast text`, read it aloud (TTS, listed as out of scope), or both.
-
-### 5. Smaller follow-ups
-
-- Per-site webhook filters.
-- A webhook delivery log (the last N deliveries per hook).
-- Monitor charts per site.
-- "Arrange this page" on more tabs (Schedules), if the owner wants it.
-
-Then release v0.6.0.
+1. **The owner reviews and merges** #38, #43, #44 and #45, in that order.
+2. **Try the hardware:**
+   - A button on a Pi (#45).
+   - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
+3. **Release.**
+4. **Text pages in playlists:**
+   - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
+   - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
+5. **Smaller follow-ups:**
+   - Per-site webhook filters.
+   - A webhook delivery log (the last N deliveries per hook).
+   - Monitor charts per site.
+   - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner
 
-1. Probes: how much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
-2. GPIO: a small ioctl wrapper of our own, or the `gpiocdev` crate?
-3. Text pages in playlists: displays, TTS, or both?
-4. Roll "Arrange this page" out to more tabs?
+1. **Delivery confirmation:**
+   - How much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
+2. **Text pages in playlists:** displays, TTS, or both?
+3. **Arrange this page:** roll it out to more tabs?
+4. **GPIO choices to confirm (#45):**
+   - An input plays at its announcement's priority, with no per-input priority.
+   - Re-pressing while it plays is ignored, not restarted.
+5. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
 
 ## How to work on it
 
 - **Build:** `cargo build -p mcast`. Needs `libasound2-dev`, `libopus-dev` and `pkg-config` (apt).
 - **Checks** (CI runs the same): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
-- **MSRV is 1.75:** avoid newer std APIs (for example, use `map_or(true, …)`, not `is_none_or`).
+- **MSRV is 1.75** (`rust-version` in `Cargo.toml`): avoid newer std APIs (for example, use `map_or(true, …)`, not `is_none_or`). CI only builds on stable. Some dependencies already in `main`'s lockfile need more than 1.75 (`thiserror` 2.0.21 needs 1.77), so the declared MSRV isn't really checked.
 - **Run it by hand:**
   - `mcast serve --media-dir DIR --no-monitor`
   - `mcast intercom serve --config DIR/intercom.json --no-tls --web-dir crates/mcast-intercom/assets`. `--web-dir` serves the page from disk, so a reload picks up JS and CSS edits.
@@ -162,6 +172,12 @@ Then release v0.6.0.
   - Page JS builds DOM with `h()`, never `innerHTML`. The strict CSP allows no inline scripts or style attributes; set styles through `el.style`.
   - Shared page helpers:
     - `layout.js`: `arrangeable`, `sortableList`, `arrangeDialog`.
-    - `store.js`: `onRunEnded`, `panelAnnouncements`, `can`, `TABS`.
+    - `store.js`: `onRunEnded` (as a run ends), `onRunSettled` (once it's in the history, after any listener check), `onSpeakersChanged`, `panelAnnouncements`, `can`, `TABS`.
     - `editor.js`: `mountEditor`, `mediaFilter`, `colorSelect`.
+- **Test helpers:**
+  - `presence::Presence::start` takes the poll and offline times, so tests can shorten them.
+  - `crate::fake::Fake` is a fake mcast server. Its `listeners` field sets what `/monitor` reports, and its jobs' `ssrc` is `0x5000_0000 + job id`.
+  - `Runner::with_listen_timing` shortens the listener check's waits.
+  - `inputs::FakePins` with `AppState::with_pins` presses GPIO pins.
+- **Running a named receiver without a sound card:** `mcast audio recv -g GROUP --wav FILE -n Lobby`, with `mcast serve --watch GROUP` so its monitor hears it.
 - **Gotcha:** `pkill -f 'mcast serve'` inside a script can kill the script itself. Use a pattern like `'[t]arget/debug/mcast serve'`.
