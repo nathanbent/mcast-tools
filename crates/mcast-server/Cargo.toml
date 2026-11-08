@@ -4,6 +4,7 @@ description = "HTTP/JSON API for mcast-tools: start and stop pages, receivers, d
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 anyhow.workspace = true

@@ -4,6 +4,7 @@ description = "Watch multicast streams: rate, loss, jitter, TTL, DSCP and audio 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 mcast-core.workspace = true
