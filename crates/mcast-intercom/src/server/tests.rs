@@ -872,6 +872,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/playlists/{id}"),
     ("PUT", "/layout/{tab}"),
     ("DELETE", "/layout/{tab}"),
+    ("GET", "/history"),
+    ("GET", "/history.csv"),
     ("GET", "/upcoming"),
     ("GET", "/settings"),
     ("PUT", "/settings"),
@@ -2262,6 +2264,161 @@ async fn operator_tokens_limited_to_categories() {
             Method::POST,
             "/tokens",
             Some(json!({"name": "Y", "role": "operator", "categories": ["nope"]})),
+            admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn history_is_kept_on_disk_and_filtered() {
+    let p = panel(Some("s3cret"));
+    let admin = Some("s3cret");
+    p.set_up_two(admin).await;
+    // Bell twice (the second finds its groups busy), then Gate; stop them.
+    for id in ["bell", "bell", "gate"] {
+        p.call_with(
+            Method::POST,
+            &format!("/announcements/{id}/play"),
+            None,
+            admin,
+        )
+        .await;
+    }
+    p.call_with(Method::DELETE, "/runs", None, admin).await;
+    let (s, v) = p.call_with(Method::GET, "/history", None, admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let states: Vec<&str> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states.len(), 3, "{v}");
+    assert!(
+        states.contains(&"failed") && states.contains(&"stopped"),
+        "{states:?}"
+    );
+    assert_eq!(v["more"], false);
+    // On disk, beside the config.
+    let dir = p.path.with_file_name("history");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+
+    let (_, v) = p
+        .call_with(Method::GET, "/history?announcement=gate", None, admin)
+        .await;
+    assert_eq!(v["runs"].as_array().unwrap().len(), 1);
+    let (_, v) = p
+        .call_with(Method::GET, "/history?state=failed", None, admin)
+        .await;
+    // The second Bell, and Gate (Yard is the first Bell's): both busy.
+    let failed = v["runs"].as_array().unwrap();
+    assert_eq!(failed.len(), 2, "{v}");
+    assert!(failed.iter().all(|r| r["state"] == "failed"));
+    let (_, v) = p
+        .call_with(Method::GET, "/history?limit=2", None, admin)
+        .await;
+    assert_eq!(
+        (v["runs"].as_array().unwrap().len(), v["more"].clone()),
+        (2, json!(true))
+    );
+    let before = v["runs"][1]["started_ms"].as_u64().unwrap();
+    let (_, v) = p
+        .call_with(
+            Method::GET,
+            &format!("/history?before={before}"),
+            None,
+            admin,
+        )
+        .await;
+    assert_eq!(v["runs"].as_array().unwrap().len(), 1, "the next page");
+    let (_, v) = p
+        .call_with(
+            Method::GET,
+            "/history?from=2001-01-01&to=2001-12-31",
+            None,
+            admin,
+        )
+        .await;
+    assert!(v["runs"].as_array().unwrap().is_empty());
+    let (s, _) = p
+        .call_with(Method::GET, "/history?from=yesterday", None, admin)
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // CSV.
+    let req = Request::builder()
+        .uri(format!("{API_PREFIX}/history.csv?announcement=bell"))
+        .header(header::AUTHORIZATION, "Bearer s3cret")
+        .body(Body::empty())
+        .unwrap();
+    let r = p.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(r.headers()[header::CONTENT_TYPE], "text/csv; charset=utf-8");
+    let text = String::from_utf8(
+        axum::body::to_bytes(r.into_body(), 1 << 16)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(lines[0].starts_with("started,ended,announcement"));
+    assert!(lines[1].contains(",bell,Bell,"), "{text}");
+
+    // A token limited to a category sees only its runs; a trigger token none.
+    p.call_with(
+        Method::POST,
+        "/categories",
+        Some(json!({"name": "Gates"})),
+        admin,
+    )
+    .await;
+    let (_, mut gate) = p
+        .call_with(Method::GET, "/announcements/gate", None, admin)
+        .await;
+    gate["category"] = json!("gates");
+    p.call_with(Method::PUT, "/announcements/gate", Some(gate), admin)
+        .await;
+    let desk = p
+        .token(
+            admin,
+            json!({"name": "Desk", "role": "operator", "categories": ["gates"]}),
+        )
+        .await;
+    let (_, v) = p
+        .call_with(Method::GET, "/history", None, Some(&desk))
+        .await;
+    let anns: Vec<&str> = v["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["announcement"].as_str().unwrap())
+        .collect();
+    assert_eq!(anns, ["gate"]);
+    let bot = p
+        .token(admin, json!({"name": "Bot", "role": "trigger"}))
+        .await;
+    let (s, _) = p.call_with(Method::GET, "/history", None, Some(&bot)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // How long it's kept.
+    let (_, v) = p.call_with(Method::GET, "/settings", None, admin).await;
+    assert_eq!(v["history_days"], 90);
+    let (s, v) = p
+        .call_with(
+            Method::PUT,
+            "/settings",
+            Some(json!({"history_days": 30})),
+            admin,
+        )
+        .await;
+    assert_eq!((s, v["history_days"].clone()), (StatusCode::OK, json!(30)));
+    let (s, _) = p
+        .call_with(
+            Method::PUT,
+            "/settings",
+            Some(json!({"history_days": 99999})),
             admin,
         )
         .await;

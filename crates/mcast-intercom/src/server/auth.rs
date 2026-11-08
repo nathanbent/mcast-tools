@@ -288,7 +288,15 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
     let get = *method == Method::GET;
     Some(match path {
         "/health" if get => Anyone,
-        "/backend" | "/config" | "/upcoming" | "/phonebook" | "/chimes/{name}/preview" if get => {
+        "/backend"
+        | "/config"
+        | "/upcoming"
+        | "/phonebook"
+        | "/history"
+        | "/history.csv"
+        | "/chimes/{name}/preview"
+            if get =>
+        {
             Read
         }
         "/zones"

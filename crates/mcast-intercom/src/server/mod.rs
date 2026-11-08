@@ -5,6 +5,7 @@
 //! server only through a [`Backend`].
 
 mod auth;
+mod history;
 mod hooks;
 mod library;
 mod live;
@@ -85,6 +86,8 @@ pub(crate) struct Inner {
     pub(crate) tokens: Arc<TokenStore>,
     /// Outbound webhooks, in `webhooks.json` beside the config.
     pub(crate) webhooks: Arc<crate::webhooks::Webhooks>,
+    /// Runs that ended, on disk (`history/` beside the config).
+    pub(crate) history: Arc<crate::history::History>,
     closing: watch::Receiver<bool>,
 }
 
@@ -123,11 +126,17 @@ impl AppState {
         let webhooks = Arc::new(crate::webhooks::Webhooks::open(
             crate::webhooks::default_path(&config),
         ));
+        let history = Arc::new(crate::history::History::new(
+            crate::history::default_dir(&config),
+            store::load(&config).map_or(crate::history::DEFAULT_DAYS, |c| c.history_days()),
+        ));
         let runner = {
             let tx = events.clone();
             let hooks = webhooks.clone();
+            let past = history.clone();
             Runner::new(backend.clone(), move |c| {
                 hooks.observe(&c);
+                past.observe(&c);
                 // No subscribers is fine.
                 let _ = tx.send(match c {
                     Change::Run(run) => Event::Run { run: run.clone() },
@@ -147,6 +156,7 @@ impl AppState {
             auth,
             tokens,
             webhooks,
+            history,
             closing,
         }))
     }
@@ -338,6 +348,8 @@ pub fn router(state: AppState) -> Router {
             "/layout/{tab}",
             axum::routing::put(put_layout).delete(delete_layout),
         )
+        .route("/history", get(history::list))
+        .route("/history.csv", get(history::csv))
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))

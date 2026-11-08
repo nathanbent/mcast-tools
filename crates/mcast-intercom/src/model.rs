@@ -58,6 +58,19 @@ pub struct Config {
     /// How the Panel looks, for every screen.
     #[serde(skip_serializing_if = "PanelLook::is_default")]
     pub panel: PanelLook,
+    /// Days of play history to keep; 0 keeps it all. Unset: 90.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_days: Option<u32>,
+}
+
+/// Longest history that can be asked for, in days (ten years).
+pub const MAX_HISTORY_DAYS: u32 = 3650;
+
+impl Config {
+    /// Days of play history to keep (0: all of it).
+    pub fn history_days(&self) -> u32 {
+        self.history_days.unwrap_or(crate::history::DEFAULT_DAYS)
+    }
 }
 
 /// Colors a button or category can have: named, so the page can keep them
@@ -1121,6 +1134,9 @@ impl Config {
             }
         }
         check_days_off(&self.days_off)?;
+        if self.history_days() > MAX_HISTORY_DAYS {
+            bail!("history_days: at most {MAX_HISTORY_DAYS} (or 0 to keep it all)");
+        }
         for (tab, order) in &self.layout {
             check_id("layout tab", tab)?;
             if order.len() > MAX_LAYOUT {

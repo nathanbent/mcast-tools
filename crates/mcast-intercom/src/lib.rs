@@ -10,6 +10,7 @@
 
 pub mod backend;
 pub mod cli;
+pub mod history;
 pub mod model;
 pub mod runner;
 pub mod scheduler;

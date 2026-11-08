@@ -609,6 +609,7 @@ fn settings(c: &Config) -> Value {
         "schedules_paused": c.schedules_paused,
         "days_off": c.days_off,
         "panel": c.panel.full(),
+        "history_days": c.history_days(),
     })
 }
 
@@ -643,6 +644,9 @@ pub(super) struct Settings {
     /// How the Panel looks, replaced whole.
     #[serde(default)]
     panel: Option<crate::model::PanelLook>,
+    /// Days of history to keep (0: all).
+    #[serde(default)]
+    history_days: Option<u32>,
 }
 
 pub(super) async fn put_settings(
@@ -666,10 +670,18 @@ pub(super) async fn put_settings(
         if let Some(look) = new.panel {
             c.panel = look;
         }
+        if let Some(days) = new.history_days {
+            c.history_days = (days != crate::history::DEFAULT_DAYS).then_some(days);
+        }
         Ok(settings(c))
     })
     .await
-    .map(Json)
+    .map(|v| {
+        if let Some(days) = v["history_days"].as_u64() {
+            s.0.history.set_keep_days(days as u32);
+        }
+        Json(v)
+    })
 }
 
 #[derive(serde::Deserialize)]

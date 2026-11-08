@@ -44,7 +44,11 @@ export function ago(ms) {
   const s = (Date.now() - ms) / 1000;
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  return new Date(ms).toLocaleTimeString();
+  const d = new Date(ms);
+  // Today: the time; before: the day too (the history goes back weeks).
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString()
+    : d.toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 const toasts = () => document.getElementById("toasts");

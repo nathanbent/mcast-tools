@@ -37,7 +37,7 @@ A page with a tab for each part:
 | Tab | |
 |---|---|
 | **Panel** | A big button for each announcement, under its **category**'s heading, what's playing now (with Stop) and what's next. **Tag** chips show just one tag's buttons (remembered per screen). Admins set the order of categories and buttons with *Arrange the Panel…*, for every screen, and **how it looks** in Settings → Panel (button size, tiles or a list, what's shown, asking before emergencies); categories and announcements can have a **color** (and announcements an **icon**, and "ask before playing"). Each screen can fold categories away. A live announcement's button is **push to talk** (below). *All stop* in the header stops everything |
-| **History** | Recent plays, and how each group fared |
+| **History** | Every play, and how each group fared, kept on disk (a file a day in `history/` beside `intercom.json`, for 90 days or as set in Settings → History): filter by date, announcement, outcome and who started it, page back, and **download a CSV** |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
 | **Announcements** | Listed under their categories, with the **categories** themselves below. Each one in sections: General (name, audio: a sound, a playlist, chime only or live), On the Panel (category, tags), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
 | **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
@@ -59,7 +59,8 @@ named [access tokens](#access-tokens) with roles. Listening beyond loopback
 needs the startup token or an admin access token. `--token` stays the mcast
 server's. It saves edits to `intercom.json`, reading the file
 again first, so changes made by hand while it runs aren't lost. It keeps the
-last 50 plays in memory. When it stops, anything playing finishes on the mcast
+last 50 plays in memory for the Panel, and every play that ends in the
+history on disk. When it stops, anything playing finishes on the mcast
 server, but repeats still to come are dropped.
 
 On a Raspberry Pi, `ENABLE_INTERCOM=yes` in `pi/pi.conf` sets it up as a
@@ -276,6 +277,9 @@ buttons. Their order, and
 the buttons' order, are in `layout` (`panel` and `panel-buttons`), set with
 *Arrange the Panel…*. One with announcements in it can't be deleted.
 
+**`history_days`**: days of play history to keep (default 90; 0 keeps it
+all).
+
 **`panel`**: how the Panel looks: `{"size": "medium", "mode": "tiles",
 "show_details": true, "show_next": true, "show_playing": true,
 "confirm_emergency": false}` (the defaults; `mode` can be `list`). Set it in
@@ -421,8 +425,10 @@ only their runs.
 | `GET`, `POST /categories`, `GET`, `PUT`, `DELETE /categories/{id}` | As zones; one with announcements in it can't be deleted (`409`) |
 | `GET`, `POST /playlists`, `GET`, `PUT`, `DELETE /playlists/{id}` | As zones; one an announcement plays can't be deleted (`409`) |
 | `PUT /layout/{tab}`, `DELETE /layout/{tab}` | Admins: `{"order": [section ids]}` arranges a tab's sections for everyone (kept in `intercom.json` as `layout`; sections left out follow in their usual order); `DELETE` goes back to the usual order. Returns the whole layout. So far the Settings tab (`settings`: `panel`, `defaults`, `time-zone`, `sites`, `chimes`, `tokens`, `other-systems`, `connection`), and the Panel: `panel` (category ids) and `panel-buttons` (announcement ids) |
+| `GET /history` | Plays that ended, newest first: `{"runs": [RUN...], "more"}`. Filters: `from`, `to` (dates in the panel's time zone, both included), `announcement`, `state` (`done`, `stopped`, `failed`, `missed`), `by` (part of a token's name), `q` (part of the name), `limit` (default 100, up to 1000), `before` (a `started_ms`, for the next page). A token limited to categories sees only theirs |
+| `GET /history.csv` | The same as a spreadsheet: started, ended (in the panel's time zone), announcement, name, state, trigger, by, groups, played, busy, failed, error |
 | `GET /upcoming?n=10&site=ID` | `{"time_zone", "paused", "now_ms", "fires": [{"at_ms", "local", "weekday", "schedule", "announcement", "name", "site"}], "next": {SCHEDULE: at_ms or null}, "sites": {ID: {"time_zone", "paused"}}}`. `site` limits it to one site's schedules (empty for those with none). `local` is in the schedule's own time zone. `fires` leaves out days off and schedules that can't play; `next` leaves out days off only |
-| `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off", "panel"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
+| `GET`, `PUT /settings` | `{"time_zone", "defaults", "schedules_paused", "days_off", "panel", "history_days"}`, as in the config (`time_zone` `null` for the system's). `PUT` changes the fields given and leaves the rest; `defaults` and `days_off` are replaced whole. `GET` adds `effective_time_zone` |
 | `POST /announcements/{id}/play` | Play it now; returns the run (`201`). Not for live announcements (`422`) |
 | `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |

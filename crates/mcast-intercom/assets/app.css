@@ -535,3 +535,5 @@ body.kiosk main { max-width: none; }
 #fullscreen { font-size: 18px; padding: 2px 8px; }
 .kiosk-link { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .kiosk-link code { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.history-filters { align-items: flex-end; margin-bottom: 12px; }
+#history h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 12px 0 8px; }

@@ -167,6 +167,26 @@ function kioskLink() {
   return box;
 }
 
+// How long the play history is kept.
+function historyDays() {
+  const el = h("div");
+  const show = () => {
+    const days = h("input", { type: "number", min: 0, max: 3650, step: 1, value: String(state.config.history_days ?? 90) });
+    replace(el,
+      h("p", { class: "muted" }, "Every play is kept on disk (the History tab), in a file a day beside the config. Older days are deleted."),
+      h("form", {
+        class: "inline-form",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          await putSettings({ history_days: Number(days.value) }, "History setting saved");
+        },
+      }, field("Days to keep", days, "0 keeps it all"), h("button", { type: "submit", class: "primary" }, "Save")));
+  };
+  show();
+  subscribe(["config"], show);
+  return el;
+}
+
 // The time zone, with a way to change it.
 function timeZone() {
   const el = h("div");
@@ -286,6 +306,7 @@ export function mount(el) {
     ["time-zone", "Time zone", timeZone],
     ["sites", "Sites", sitesEditor],
     ["chimes", "Chime lists", chimes],
+    ["history", "History", historyDays],
     ["tokens", "Access tokens", tokens.mount],
     ["other-systems", "Other systems", webhooks.mount],
     ["connection", "Connection", connection],

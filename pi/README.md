@@ -85,8 +85,9 @@ as the `mcast` user so the service can still read the file:
 sudo -u mcast env MCAST_INTERCOM=/var/lib/mcast/intercom.json mcast intercom token add Reception --role operator
 ```
 
-Tokens are kept, hashed, in `/var/lib/mcast/tokens.json`, and webhooks (Settings →
-Other systems) in `/var/lib/mcast/webhooks.json`.
+Tokens are kept, hashed, in `/var/lib/mcast/tokens.json`, webhooks (Settings →
+Other systems) in `/var/lib/mcast/webhooks.json`, and the play history in
+`/var/lib/mcast/history/` (a file a day, kept 90 days unless Settings → History says otherwise).
 
 Zones, announcements and schedules are kept in `/var/lib/mcast/intercom.json`;
 set them up in the panel. Schedules only play while the service runs, so a

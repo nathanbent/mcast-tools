@@ -138,6 +138,15 @@ The plan:
 
 ### 6. Persistent history
 
+**Built.**
+- **Storage:** every run that ends (missed schedules included) is appended as a JSON line to `history/YYYY-MM-DD.jsonl` (UTC day) beside `intercom.json`. Each run is written once, even though run ids start again after a restart.
+- **Retention:** days older than `history_days` (default 90; 0 keeps everything) are deleted at the first write of a day.
+- **API:** `GET /history` filters by dates (in the panel's time zone), announcement, outcome, who started it and name, newest first and paged. `GET /history.csv` gives a spreadsheet, with formula-like cells defused. A category-limited token sees only its own runs.
+- **History tab:** reads from the log, with plays in progress at the top, filters, "Show more" and Download CSV. It refreshes when a run ends.
+- **Settings → History:** the number of days to keep.
+
+The plan:
+
 - An append-only JSONL run log beside `intercom.json`, rotated (keep 90 days
   by default, set in Settings).
 - Each entry: announcement, trigger (button, schedule, API token name,
