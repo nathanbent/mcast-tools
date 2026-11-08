@@ -48,6 +48,11 @@ impl Packetizer {
         self.frames_per_packet
     }
 
+    /// RTP SSRC of the packets.
+    pub fn ssrc(&self) -> u32 {
+        self.ssrc
+    }
+
     /// Queue samples and call `emit` for every complete packet.
     pub fn push(&mut self, samples: &[f32], mut emit: impl FnMut(&[u8])) -> Result<(), String> {
         self.pending.extend_from_slice(samples);

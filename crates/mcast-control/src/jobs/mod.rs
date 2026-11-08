@@ -137,6 +137,9 @@ pub struct JobInfo {
     pub group: Option<SocketAddr>,
     /// SAP name announced (send) or of the stream joined (recv).
     pub name: Option<String>,
+    /// Audio sends to the network: the RTP SSRC of the stream, once
+    /// started. Listeners in the monitor report on it (`about`).
+    pub ssrc: Option<u32>,
     /// One line describing the stream, e.g. "PCMU/8000/1 sending to ...".
     pub summary: Option<String>,
     /// Notes worth showing, e.g. loudness normalisation or decode warnings.

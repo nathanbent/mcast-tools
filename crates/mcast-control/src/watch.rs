@@ -269,6 +269,10 @@ mod tests {
         };
         assert_eq!(listener.group, group);
         assert_eq!(listener.about, Some(stream_ssrc));
+        // The send's job names the same stream, so a client can tell which
+        // listeners heard its page.
+        assert_eq!(sender.ssrc, Some(stream_ssrc));
+        assert_eq!(receiver.ssrc, None);
         assert!(!listener.left);
         assert!(listener.last_heard_ms < 5000.0);
 

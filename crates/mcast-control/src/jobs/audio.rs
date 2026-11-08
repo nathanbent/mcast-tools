@@ -66,6 +66,7 @@ impl Jobs {
             state: JobState::Starting,
             group: sends.then_some(req.group),
             name: cfg.announce.as_ref().map(|a| a.name.clone()),
+            ssrc: None,
             summary: None,
             notes: Vec::new(),
             created_ms: now_ms(),
@@ -105,6 +106,7 @@ impl Jobs {
                     progress.clone(),
                     sender.frames_per_packet() as u64,
                     rate,
+                    sends.then(|| sender.ssrc()),
                 );
                 if ready_tx.send(Ok(ready)).is_err() {
                     return;
@@ -122,7 +124,7 @@ impl Jobs {
             .map_err(|e| StartError::Invalid(format!("starting thread: {e}")))?;
 
         match ready_rx.recv() {
-            Ok(Ok((summary, note, progress, fpp, rate))) => {
+            Ok(Ok((summary, note, progress, fpp, rate, ssrc))) => {
                 let info = {
                     let mut st = self.shared.lock();
                     let job = st.jobs.get_mut(&id).expect("starting jobs aren't pruned");
@@ -133,6 +135,7 @@ impl Jobs {
                         job.info.state = JobState::Running;
                     }
                     job.info.summary = Some(summary);
+                    job.info.ssrc = ssrc;
                     job.info.notes.extend(note);
                     job.refresh();
                     job.info.clone()
@@ -195,6 +198,7 @@ impl Jobs {
             state: JobState::Running,
             group: Some(resolved.group),
             name: resolved.announced.as_ref().map(|i| i.name.clone()),
+            ssrc: None,
             summary: Some(summary),
             notes: Vec::new(),
             created_ms: now_ms(),

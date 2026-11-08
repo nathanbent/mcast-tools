@@ -271,9 +271,9 @@ The plan:
 - A zone can list the listeners it expects. After a run, the panel shows
   "3/4 listeners heard it" and flags silent endpoints. A webhook fires for
   an endpoint that stays silent.
-- Maybe an optional core change: a free-form `tag` on send requests, echoed
-  in `JobInfo`, to match jobs to runs. The group, the stream's SSRC and the
-  run's time window may be enough; decide once listeners are exposed.
+- Decided: no `tag` on send requests. Send jobs report their stream's
+  `ssrc`, and each listener names the SSRC it hears (`about`), which ties
+  listeners to a run exactly.
 - Decided: "probes" means these `mcast receive` endpoints, not separate
   listening devices.
 

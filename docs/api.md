@@ -259,7 +259,7 @@ event.
 ```json
 {
   "id": 1, "kind": "send", "state": "running",
-  "group": "239.192.2.1:10000", "name": "Lobby page",
+  "group": "239.192.2.1:10000", "name": "Lobby page", "ssrc": 2864434397,
   "summary": "PCMU/8000/1 sending to 239.192.2.1:10000 (pt 0, 20 ms packets, voice processing, rising chime)",
   "notes": ["loudness: measured -11.0 LUFS after processing; -5.0 dB to reach -16 LUFS"],
   "created_ms": 1794022911066, "ended_ms": null, "error": null,
@@ -270,7 +270,9 @@ event.
 
 `kind` is `send` (audio), `recv` (audio), `text`, `file_send` or
 `file_recv`. `state` is `starting`, `running`, `stopping`, `finished` (source ended),
-`stopped` (on request) or `failed` (see `error`). Receive jobs' `stats` are
+`stopped` (on request) or `failed` (see `error`). `ssrc` is set on audio
+send jobs once they start: the RTP SSRC of the stream, which listeners'
+reports in the monitor name as `about`. It's `null` on other jobs. Receive jobs' `stats` are
 `packets`, `lost`, `concealed`, `late`, `invalid`, `underruns`, `overflows`,
 `buffered_ms`, and `transit_ms` (from the sender's RTCP: time from the
 sender's clock to arrival, `null` until a report arrives; only a true delay

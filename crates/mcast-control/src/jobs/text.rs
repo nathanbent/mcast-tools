@@ -154,6 +154,7 @@ impl Jobs {
             state: JobState::Running,
             group: Some(target.group),
             name: Some(target.announced.clone().unwrap_or_else(|| name.clone())),
+            ssrc: None,
             summary: Some(format!("{doing} on {} as \"{name}\"", target.group)),
             notes: Vec::new(),
             created_ms: now_ms(),

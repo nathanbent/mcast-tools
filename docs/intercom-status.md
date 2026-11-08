@@ -82,10 +82,9 @@ The docs fixes above go in first.
 - It watches configured groups and SAP-announced streams, so the panel's sends are covered.
 - But `MonitorSnapshot` (`crates/mcast-control/src/watch.rs`) has only `groups` and `streams`, so `GET /api/v1/monitor` never shows listeners. Only the `mcast monitor` CLI prints them.
 
-**1a. Core (backwards compatible).** Built on `claude/vibrant-knuth-34bpdf`: `GET /api/v1/monitor` and the `monitor` event now carry `listeners` (`docs/api.md`), tested with a named receiver on a real stream.
+**1a. Core (backwards compatible).** Built on `claude/vibrant-knuth-34bpdf`: `GET /api/v1/monitor` and the `monitor` event now carry `listeners` (`docs/api.md`), tested with a named receiver on a real stream. Audio send jobs also report their `ssrc`, which matches a listener's `about`, so the panel can tell which listeners heard its own page; no `tag` on send requests is needed.
 - Add `listeners: Vec<ListenerRow>` to `MonitorSnapshot`. Each row has the group, ssrc, from, name or cname, the ssrc it reports `about`, loss, jitter, last heard ms and `left`.
 - Test with a sender and an `mcast receive --name` on loopback.
-- A `tag` on send requests, echoed in `JobInfo`, is optional. Decide after 1a whether the group, the stream's ssrc and the run's time window match runs well enough without it.
 
 **1b. Panel:**
 - A zone gains `expected_listeners` (the names `mcast receive --name` sets). Edit them in the Zones tab, offering the names currently heard.
