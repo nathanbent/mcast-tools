@@ -1,40 +1,36 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, late in a second session. That session checked the
-first one's work, then built everything left on the v0.6.0 roadmap, plus two
-follow-ups: last-heard times in the Zones list, and alerts when a speaker
-goes offline between plays. Read this first, then `intercom-roadmap.md`, which has the full plan
-and what each item became.
+Last updated 2026-11-08, at the end of a second session. That session checked
+the first one's work, then built everything left on the v0.6.0 roadmap, plus
+follow-ups: last-heard times in the Zones list, alerts when a speaker goes
+offline between plays, per-site webhooks and monitor, and a webhook delivery
+log. Read this first, then `intercom-roadmap.md`, which has the full plan and
+what each item became.
 
 ## Where things stand
 
 Every item on the roadmap for v0.5.5 and v0.6.0 is built, plus some
-follow-ups. Nothing is merged yet: the work is six PRs, each stacked on the
-one before so its diff shows only its own feature.
+follow-ups. The owner asked for all of it to be merged into `main`. It came
+as six stacked PRs, merged in order with merge commits:
 
-| PR | Branch | What | Based on |
-|---|---|---|---|
-| nathanbent/mcast-tools#38 | `claude/intelligent-hypatia-awklrl` | v0.5.5: tokens, triggers, webhooks, sounds, files, playlists, history, monitor, Panel organizing, kiosks | `main` |
-| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
-| nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
-| nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
-| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site (follow-ups) | #45 |
-| nathanbent/mcast-tools#47 | `claude/intercom-webhook-log` | A delivery log for each webhook (a follow-up) | #46 |
+| PR | Branch | What |
+|---|---|---|
+| nathanbent/mcast-tools#38 | `claude/intelligent-hypatia-awklrl` | v0.5.5: tokens, triggers, webhooks, sounds, files, playlists, history, monitor, Panel organizing, kiosks |
+| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) |
+| nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) |
+| nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) |
+| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site |
+| nathanbent/mcast-tools#47 | `claude/intercom-webhook-log` | A delivery log for each webhook |
 
-- **State:** all are open, with no merge conflicts and no review comments, waiting on the owner.
-  - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
-  - CI was green on #45's code too (`dadf4c0`); its later commits only change this file.
-  - CI was green on #46 too (`ad069d8`). #47 was just opened when this was written; the same checks pass locally there (306 tests).
-- **Changes low in the stack are merged up:** a fix or follow-up on #43 is merged into #44's branch, then #44's into #45's, so the PRs stay consistent. Conflicts so far were neighbouring additions (routes, events, tests, docs), resolved by keeping both. After one, check every `#[tokio::test]` attribute survived: clippy's dead-code error caught one that didn't.
-- **Merging:** merge them in order (#38, then #43, #44, #45, #46, #47). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
-- **`main`** is at v0.5.4 and was last merged into #38 at that version. If `main` moves, merge it into #38's branch and carry it up the stack (merge each branch into the next). Conflicts so far were small, in `announcements.js` and `talk.js`.
-- **After merging:** release v0.5.5 (#38), then v0.6.0 (the rest), or all of it as v0.6.0.
-- **A Claude session was watching all six PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
+- **Before merging,** CI was green on every PR's latest commit, with no merge conflicts and no review comments.
+- **How they were merged:** each PR was merged once the one below it had landed and it had been pointed at `main`.
+- **The version is still 0.5.4** in `Cargo.toml`. Nothing has been released with this work yet.
+- **New work** branches from `main` again.
 
 ## Checked
 
 - **At the start of the session,** on #38's head (`6908d0f`): fmt, clippy (`-D warnings`) and `cargo test --workspace` all passed (271 tests), and GitHub CI was green. Every item listed below is in the code, with no TODOs left.
-- **At the top of the stack** (#45, `dadf4c0`), the same checks pass: 300 tests. #43's branch alone has 287.
+- **At the top of the stack** (#47, `6439eb7`), the same checks pass: 306 tests.
 - **Docs** that had fallen behind the code were fixed in #38: the roadmap's status, item 9 (the Panel is arrangeable too), item 11 (the core didn't expose listener reports yet), and `intercom-tokens.md` (history is persisted).
 
 ## What's built
@@ -155,15 +151,14 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **The owner reviews and merges** #38, #43, #44, #45, #46 and #47, in that order.
-2. **Try the hardware:**
+1. **Try the hardware:**
    - A button on a Pi (#45).
    - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
-3. **Release.**
-4. **Text pages in playlists:**
+2. **Release:** bump the version (0.5.4 → 0.6.0, or 0.5.5 then 0.6.0) and run the release workflow from the Actions tab.
+3. **Text pages in playlists:**
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
-5. **Smaller follow-ups:**
+4. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner
