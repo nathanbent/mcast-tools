@@ -17,6 +17,7 @@ fn view(w: &Webhook, last: Option<&Delivery>) -> Value {
         "url": w.url,
         "events": w.events,
         "enabled": w.enabled,
+        "sites": w.sites,
         "signed": w.secret.is_some(),
         "created_ms": w.created_ms,
         "last_delivery": last,
@@ -43,19 +44,20 @@ fn change(v: &Value) -> ApiResult<HookChange> {
         Some(Value::String(s)) => Ok(Some(s.clone())),
         Some(_) => Err(ApiError::bad(format!("{k}: expected a string"))),
     };
-    let events = match v.get("events") {
-        None | Some(Value::Null) => None,
-        Some(Value::Array(a)) => Some(
-            a.iter()
-                .map(|e| {
-                    e.as_str()
-                        .map(String::from)
-                        .ok_or_else(|| ApiError::bad("events: expected a list of names"))
-                })
-                .collect::<ApiResult<Vec<_>>>()?,
-        ),
-        Some(_) => return Err(ApiError::bad("events: expected a list of names")),
+    let list = |k: &str| -> ApiResult<Option<Vec<String>>> {
+        let wrong = || ApiError::bad(format!("{k}: expected a list of names"));
+        match v.get(k) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Array(a)) => a
+                .iter()
+                .map(|e| e.as_str().map(String::from).ok_or_else(wrong))
+                .collect::<ApiResult<Vec<_>>>()
+                .map(Some),
+            Some(_) => Err(wrong()),
+        }
     };
+    let events = list("events")?;
+    let sites = list("sites")?;
     let enabled = match v.get("enabled") {
         None | Some(Value::Null) => None,
         Some(Value::Bool(b)) => Some(*b),
@@ -66,7 +68,22 @@ fn change(v: &Value) -> ApiResult<HookChange> {
         url: string("url")?,
         events,
         enabled,
+        sites,
     })
+}
+
+/// The sites a change names must be the config's.
+async fn known_sites(s: &AppState, c: &HookChange) -> ApiResult<()> {
+    let Some(sites) = &c.sites else {
+        return Ok(());
+    };
+    let cfg = s.load().await?;
+    for id in sites {
+        if cfg.site(id.trim()).is_none() {
+            return Err(ApiError::bad(format!("sites: no site \"{}\"", id.trim())));
+        }
+    }
+    Ok(())
 }
 
 pub(super) async fn list(State(s): State<AppState>) -> ApiResult<Json<Vec<Value>>> {
@@ -85,6 +102,7 @@ pub(super) async fn create(
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     let Json(v) = body?;
     let c = change(&v)?;
+    known_sites(&s, &c).await?;
     let sign = match v.get("sign") {
         None | Some(Value::Null) => true,
         Some(Value::Bool(b)) => *b,
@@ -109,6 +127,7 @@ pub(super) async fn put(
 ) -> ApiResult<Json<Value>> {
     let Json(v) = body?;
     let c = change(&v)?;
+    known_sites(&s, &c).await?;
     let hooks = s.0.webhooks.clone();
     let w = tokio::task::spawn_blocking(move || hooks.modify(|f| f.change(&id, c)))
         .await?

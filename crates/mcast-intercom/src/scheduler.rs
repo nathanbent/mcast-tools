@@ -303,6 +303,7 @@ impl Shared {
                     "missed: due {} but the panel couldn't play it then",
                     f.when()
                 ),
+                cfg.sites_at(a, s.site.as_deref()),
             );
         }
     }
@@ -318,7 +319,8 @@ impl Shared {
         std::thread::spawn(move || {
             if let Err(e) = runner.play_at(&cfg, &id, trigger.clone(), site.as_deref()) {
                 if let Some(a) = cfg.announcement(&id) {
-                    runner.record(a, trigger, RunState::Failed, e.to_string());
+                    let sites = cfg.sites_at(a, site.as_deref());
+                    runner.record(a, trigger, RunState::Failed, e.to_string(), sites);
                 }
             }
         });

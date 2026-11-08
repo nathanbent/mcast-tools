@@ -51,10 +51,19 @@ function edit(w) {
     h("input", { type: "checkbox", checked: chosen.has(e), onchange: (ev) => { if (ev.target.checked) chosen.add(e); else chosen.delete(e); } }),
     ` ${label} `, h("code", { class: "small muted" }, e))));
   const sign = h("input", { type: "checkbox", checked: true });
+  // Sites, when there are any: tick some to hear only about them.
+  const sites = state.config.sites ?? [];
+  const chosenSites = new Set(w?.sites ?? []);
+  const siteChecks = h("div", { class: "checks" }, sites.map((st) => h("label", { class: "check" },
+    h("input", { type: "checkbox", checked: chosenSites.has(st.id),
+      onchange: (ev) => { if (ev.target.checked) chosenSites.add(st.id); else chosenSites.delete(st.id); } }),
+    ` ${st.name}`)));
   replace(d, h("form", {
     onsubmit: async (e) => {
       e.preventDefault();
       const body = { name: name.value.trim(), url: url.value.trim(), events: [...chosen] };
+      // Keep a filter on a site that's since gone, unless sites can be chosen here.
+      if (sites.length) body.sites = [...chosenSites].filter((id) => sites.some((st) => st.id === id));
       try {
         if (w) {
           await api("PUT", `/webhooks/${encodeURIComponent(w.id)}`, body);
@@ -77,6 +86,10 @@ function edit(w) {
     field("URL", url, "The panel POSTs JSON here"),
     h("fieldset", { class: "part" }, h("legend", {}, "Events"),
       h("p", { class: "muted small" }, "None ticked: all of them."), events),
+    sites.length > 0 && h("fieldset", { class: "part" }, h("legend", {}, "Sites"),
+      h("p", { class: "muted small" },
+        "Tick some to hear only about plays and speakers there. None ticked: every site, and zones at none. The mcast server going away or coming back is always sent."),
+      siteChecks),
     !w && h("label", { class: "check" }, sign, " Sign each delivery (X-Mcast-Signature), so the receiver can check it came from this panel"),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, w ? "Save" : "Add webhook"),
@@ -145,6 +158,11 @@ function lastDelivery(d) {
   ];
 }
 
+const hasSites = () => (state.config.sites ?? []).length > 0 || hooks.some((w) => w.sites?.length);
+const siteNames = (ids) => (ids?.length
+  ? ids.map((id) => (state.config.sites ?? []).find((st) => st.id === id)?.name ?? `${id} (deleted)`).join(", ")
+  : "all");
+
 function render() {
   if (!list) return;
   replace(list,
@@ -152,11 +170,13 @@ function render() {
     hooks.length
       ? h("div", { class: "scroll" }, h("table", { class: "items" },
           h("thead", {}, h("tr", {}, h("th", {}, "Name"), h("th", { class: "wide" }, "URL"),
-            h("th", { class: "wide" }, "Events"), h("th", {}, "Last delivery"), h("th"))),
+            h("th", { class: "wide" }, "Events"), hasSites() && h("th", { class: "wide" }, "Sites"),
+            h("th", {}, "Last delivery"), h("th"))),
           h("tbody", {}, hooks.map((w) => h("tr", { class: w.enabled ? null : "off" },
             h("td", {}, w.name, !w.enabled && h("span", { class: "badge" }, "off")),
             h("td", { class: "wide small mono" }, w.url),
             h("td", { class: "wide small" }, w.events.length ? w.events.join(", ") : "all"),
+            hasSites() && h("td", { class: "wide small" }, siteNames(w.sites)),
             h("td", { class: "small" }, lastDelivery(w.last_delivery)),
             h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
               h("button", { onclick: () => test(w) }, "Test"),
@@ -199,6 +219,6 @@ export function mount() {
   return h("div", {},
     triggerUrls(),
     h("h3", {}, "Webhooks"),
-    h("p", { class: "muted" }, "The panel POSTs JSON to these when announcements start, end or fail, when a schedule is missed, and when the mcast server goes away or comes back. Deliveries time out after 5 s and are tried once more on a network error or a 5xx."),
+    h("p", { class: "muted" }, "The panel POSTs JSON to these when announcements start, end or fail, when a schedule is missed, when speakers miss a play or go offline, and when the mcast server goes away or comes back. With sites, a webhook can hear about just some of them. Deliveries time out after 5 s and are tried once more on a network error or a 5xx."),
     list);
 }

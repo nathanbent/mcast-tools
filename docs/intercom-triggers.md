@@ -58,6 +58,16 @@ one `run_started` and one ending event (`run_ended`, `run_failed` or
 `schedule_missed`); a run that fails before starting gets only `run_failed`.
 A run to zones that list listeners can also get one `listener_silent`.
 
+**Sites.** With sites set up, a hook can be limited to some of them
+(`"sites": ["north"]`, or tick them in Settings → Other systems).
+- **What it gets:** run events for plays that reached a zone at one of
+  those sites, and speaker events for speakers expected by such a zone.
+- **What it misses:** plays to zones at no site.
+- **Always sent:** `backend_down` and `backend_up`, which are about the
+  panel itself.
+- **Where it shows:** each run has `sites`: its zones' sites, or a
+  schedule's own site. Each speaker has `sites` too.
+
 Headers: `Content-Type: application/json`, `User-Agent:
 mcast-intercom/VERSION`, `X-Mcast-Event`, `X-Mcast-Delivery`,
 `X-Mcast-Timestamp` (ms), and for signed hooks `X-Mcast-Signature: sha256=HEX`.

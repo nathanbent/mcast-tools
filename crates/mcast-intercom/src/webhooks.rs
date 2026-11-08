@@ -56,6 +56,10 @@ pub struct Webhook {
     pub events: Vec<String>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Only runs and speakers at these sites (ids); empty for all. Events
+    /// about the panel itself (`backend_down`, `backend_up`) always go.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
     /// Key for the `X-Mcast-Signature` header; `None` for unsigned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
@@ -69,6 +73,15 @@ fn yes() -> bool {
 impl Webhook {
     pub fn wants(&self, event: &str) -> bool {
         self.enabled && (self.events.is_empty() || self.events.iter().any(|e| e == event))
+    }
+
+    /// Whether it wants something at `sites` (`None`: about the panel, not
+    /// a site). Something at no site goes only to hooks for all sites.
+    pub fn covers(&self, sites: Option<&[String]>) -> bool {
+        match sites {
+            None => true,
+            Some(at) => self.sites.is_empty() || at.iter().any(|s| self.sites.contains(s)),
+        }
     }
 }
 
@@ -86,6 +99,27 @@ pub struct HookChange {
     pub url: Option<String>,
     pub events: Option<Vec<String>>,
     pub enabled: Option<bool>,
+    /// Site ids; checked against the config by the caller.
+    pub sites: Option<Vec<String>>,
+}
+
+fn check_sites(sites: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for s in sites {
+        let s = s.trim();
+        if s.is_empty()
+            || s.len() > 64
+            || !s
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            bail!("\"{s}\" isn't a site id");
+        }
+        if !out.iter().any(|x| x == s) {
+            out.push(s.to_string());
+        }
+    }
+    Ok(out)
 }
 
 fn check_url(url: &str) -> Result<String> {
@@ -135,6 +169,7 @@ impl WebhookFile {
         let name = self.check_name(c.name.as_deref().unwrap_or(""), None)?;
         let url = check_url(c.url.as_deref().context("a webhook needs a url")?)?;
         let events = check_events(&c.events.unwrap_or_default())?;
+        let sites = check_sites(&c.sites.unwrap_or_default())?;
         let secret = sign.then(new_secret).transpose()?;
         let id = loop {
             let id = format!("w_{}", hex(&random::<3>()?));
@@ -148,6 +183,7 @@ impl WebhookFile {
             url,
             events,
             enabled: c.enabled.unwrap_or(true),
+            sites,
             secret,
             created_ms: now_ms,
         };
@@ -164,6 +200,7 @@ impl WebhookFile {
         let name = c.name.map(|n| self.check_name(&n, Some(id))).transpose()?;
         let url = c.url.map(|u| check_url(&u)).transpose()?;
         let events = c.events.map(|e| check_events(&e)).transpose()?;
+        let sites = c.sites.map(|s| check_sites(&s)).transpose()?;
         let w = &mut self.webhooks[i];
         if let Some(n) = name {
             w.name = n;
@@ -176,6 +213,9 @@ impl WebhookFile {
         }
         if let Some(on) = c.enabled {
             w.enabled = on;
+        }
+        if let Some(s) = sites {
+            w.sites = s;
         }
         Ok(w.clone())
     }
@@ -197,6 +237,7 @@ impl WebhookFile {
             }
             check_url(&w.url).with_context(|| format!("webhook \"{}\"", w.name))?;
             check_events(&w.events).with_context(|| format!("webhook \"{}\"", w.name))?;
+            check_sites(&w.sites).with_context(|| format!("webhook \"{}\"", w.name))?;
         }
         Ok(())
     }
@@ -356,16 +397,16 @@ impl Webhooks {
 
     /// Hear about a change from the runner; never blocks on the network.
     pub fn observe(&self, c: &Change<'_>) {
-        let events: Vec<(&'static str, Value)> = {
+        let (events, sites): (Vec<(&'static str, Value)>, Option<&[String]>) = {
             let mut st = self.lock();
             match c {
-                Change::Run(run) => run_events(&mut st, run),
-                Change::Backend(status) => backend_events(&mut st, status),
-                Change::Media => Vec::new(),
+                Change::Run(run) => (run_events(&mut st, run), Some(&run.sites)),
+                Change::Backend(status) => (backend_events(&mut st, status), None),
+                Change::Media => (Vec::new(), None),
             }
         };
         for (event, data) in events {
-            self.send(event, data);
+            self.send(event, data, sites);
         }
     }
 
@@ -378,19 +419,24 @@ impl Webhooks {
             } else {
                 "listener_offline"
             };
-            self.send(event, json!({ "speaker": c.speaker }));
+            self.send(
+                event,
+                json!({ "speaker": c.speaker }),
+                Some(&c.speaker.sites),
+            );
         }
     }
 
-    /// Deliver `event` to every hook that wants it.
-    fn send(&self, event: &str, data: Value) {
+    /// Deliver `event` to every hook that wants it, and covers `sites`
+    /// (`None`: not about a site).
+    fn send(&self, event: &str, data: Value, sites: Option<&[String]>) {
         let hooks: Vec<Webhook> = {
             let mut st = self.lock();
             self.refresh(&mut st);
             st.file
                 .webhooks
                 .iter()
-                .filter(|w| w.wants(event))
+                .filter(|w| w.wants(event) && w.covers(sites))
                 .cloned()
                 .collect()
         };
@@ -652,6 +698,44 @@ mod tests {
             names(run_events(&mut st, &both)),
             ["run_ended", "listener_silent"]
         );
+    }
+
+    #[test]
+    fn hooks_limited_to_sites() {
+        let mut f = WebhookFile::default();
+        let c = |name: &str, sites: Option<Vec<&str>>| HookChange {
+            name: Some(name.into()),
+            url: Some("http://x".into()),
+            sites: sites.map(|s| s.into_iter().map(String::from).collect()),
+            ..Default::default()
+        };
+        let all = f.add(c("All", None), false, 1).unwrap();
+        let north = f
+            .add(c("North", Some(vec![" north", "north"])), false, 1)
+            .unwrap();
+        assert_eq!(north.sites, ["north"]);
+        assert!(f.add(c("Bad", Some(vec!["a b"])), false, 1).is_err());
+        let at = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // About the panel: everyone. At no site: only hooks for all sites.
+        for (sites, all_gets, north_gets) in [
+            (None, true, true),
+            (Some(at(&[])), true, false),
+            (Some(at(&["south"])), true, false),
+            (Some(at(&["south", "north"])), true, true),
+        ] {
+            assert_eq!(all.covers(sites.as_deref()), all_gets, "{sites:?}");
+            assert_eq!(north.covers(sites.as_deref()), north_gets, "{sites:?}");
+        }
+        let changed = f
+            .change(
+                &north.id,
+                HookChange {
+                    sites: Some(Vec::new()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(changed.sites.is_empty());
     }
 
     #[test]

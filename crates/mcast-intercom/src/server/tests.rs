@@ -2918,3 +2918,181 @@ async fn says_which_speakers_are_reporting_between_plays() {
     assert!(crate::webhooks::EVENTS.contains(&"listener_offline"));
     assert!(crate::webhooks::EVENTS.contains(&"listener_online"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn webhooks_can_be_limited_to_sites() {
+    let p = panel(None);
+    for (name, zone, group) in [
+        ("North", "N hall", "239.1.1.21:5000"),
+        ("South", "S hall", "239.1.1.22:5000"),
+    ] {
+        let (s, site) = p
+            .call(Method::POST, "/sites", Some(json!({"name": name})))
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{site}");
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/zones",
+                Some(json!({"name": zone, "site": site["id"], "targets": [{"group": group}]})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    for (name, zones) in [
+        ("North bell", json!(["n-hall"])),
+        ("Both bells", json!(["n-hall", "s-hall"])),
+    ] {
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/announcements",
+                Some(json!({"name": name, "audio": "chime_only", "zones": zones})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let (north_url, north) = receiver(204).await;
+    let (south_url, south) = receiver(204).await;
+    let (all_url, all) = receiver(204).await;
+    for (name, url, sites) in [
+        ("North", &north_url, json!(["north"])),
+        ("South", &south_url, json!(["south"])),
+        ("All", &all_url, Value::Null),
+    ] {
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/webhooks",
+                Some(
+                    json!({"name": name, "url": url, "sites": sites, "sign": false,
+                            "events": ["run_ended"]}),
+                ),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Nowhere", "url": all_url, "sites": ["mars"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("mars"), "{v}");
+    let (_, list) = p.call(Method::GET, "/webhooks", None).await;
+    assert_eq!(list[0]["sites"], json!(["north"]));
+
+    // North only: the North and All hooks hear it, South doesn't.
+    let (_, run) = p
+        .call(Method::POST, "/announcements/north-bell/play", None)
+        .await;
+    assert_eq!(run["sites"], json!(["north"]));
+    p.fake.finish_all();
+    let ended = |got: &Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, Value)>>>| {
+        got.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(_, v)| v["run"]["announcement"].as_str().map(String::from))
+            .collect::<Vec<_>>()
+    };
+    wait_for(|| (ended(&north).len() == 1 && ended(&all).len() == 1).then_some(())).await;
+    // Both: everyone.
+    let (_, run) = p
+        .call(Method::POST, "/announcements/both-bells/play", None)
+        .await;
+    assert_eq!(run["sites"], json!(["north", "south"]));
+    p.fake.finish_all();
+    wait_for(|| (ended(&south).len() == 1 && ended(&all).len() == 2).then_some(())).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(ended(&north), ["north-bell", "both-bells"]);
+    assert_eq!(ended(&south), ["both-bells"]);
+
+    // Changing a hook's sites; [] is every site again.
+    let id = list[1]["id"].as_str().unwrap().to_string();
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            &format!("/webhooks/{id}"),
+            Some(json!({"sites": []})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["sites"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_monitor_can_show_one_site() {
+    let p = panel(None);
+    for (name, zone, group, listeners) in [
+        ("North", "N hall", "239.1.1.21:5000", json!(["Lobby"])),
+        ("South", "S hall", "239.1.1.22:5000", json!(["Gym"])),
+    ] {
+        let (_, site) = p
+            .call(Method::POST, "/sites", Some(json!({"name": name})))
+            .await;
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/zones",
+                Some(
+                    json!({"name": zone, "site": site["id"], "targets": [{"group": group}],
+                            "listeners": listeners}),
+                ),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    for (name, zones) in [
+        ("North bell", json!(["n-hall"])),
+        ("Both bells", json!(["n-hall", "s-hall"])),
+    ] {
+        p.call(
+            Method::POST,
+            "/announcements",
+            Some(json!({"name": name, "audio": "chime_only", "zones": zones})),
+        )
+        .await;
+    }
+    for a in ["north-bell", "both-bells"] {
+        p.call(Method::POST, &format!("/announcements/{a}/play"), None)
+            .await;
+        p.fake.finish_all();
+    }
+    // Both written to the history (the monitor being off, the checks end at once).
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (_, v) = p.call(Method::GET, "/monitor?days=1", None).await;
+        if v["totals"]["plays"] == 2 {
+            break;
+        }
+        assert!(Instant::now() < until, "{v}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (_, north) = p
+        .call(Method::GET, "/monitor?days=1&site=north", None)
+        .await;
+    assert_eq!(north["site"], "north");
+    assert_eq!(north["totals"]["plays"], 2);
+    let (_, south) = p
+        .call(Method::GET, "/monitor?days=1&site=south", None)
+        .await;
+    assert_eq!(south["totals"]["plays"], 1);
+    assert_eq!(south["announcements"][0]["id"], "both-bells");
+    // Only its zones, and its speakers.
+    let zones: Vec<&str> = south["zones"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|z| z["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(zones, ["S hall"]);
+    assert!(south["listeners"]["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["name"] == "Gym"));
+    let (s, _) = p.call(Method::GET, "/monitor?days=1&site=mars", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}

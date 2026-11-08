@@ -386,6 +386,28 @@ impl History {
     }
 }
 
+/// Whether a logged run played at site `id`: by the sites it recorded, or,
+/// for runs logged before runs recorded them, by the zones its groups are
+/// in now.
+pub fn at_site(run: &Value, id: &str, cfg: &crate::model::Config) -> bool {
+    if let Some(sites) = run["sites"].as_array() {
+        return sites.iter().any(|s| s == id);
+    }
+    if run.get("sites").is_some() {
+        return false;
+    }
+    // No `sites`: an older run, or one at no site. Look at its groups.
+    run["targets"].as_array().into_iter().flatten().any(|t| {
+        let group = t["group"].as_str().unwrap_or("").trim();
+        cfg.zones.iter().any(|z| {
+            z.site.as_deref() == Some(id)
+                && z.targets
+                    .iter()
+                    .any(|zt| zt.group.trim().eq_ignore_ascii_case(group))
+        })
+    })
+}
+
 /// What the Monitor tab shows, from `runs` (logged runs, any order):
 /// totals; plays a day (`days`: (date, start ms, end ms), oldest first); by
 /// announcement; by zone (`zones_of` names the zones, as (id, name), a
@@ -902,6 +924,30 @@ mod tests {
         );
         assert_eq!(u["outages"], json!([{"from_ms": 600, "to_ms": 700}]));
         assert_eq!(uptime(&[], 0, 10)["uptime"], Value::Null);
+    }
+
+    #[test]
+    fn tells_which_site_a_run_played_at() {
+        let cfg: crate::model::Config = serde_json::from_value(json!({
+            "sites": [{"id": "north", "name": "North"}, {"id": "south", "name": "South"}],
+            "zones": [
+                {"id": "n", "name": "N", "site": "north", "targets": [{"group": "g-north"}]},
+                {"id": "s", "name": "S", "site": "south", "targets": [{"group": "g-south"}]},
+                {"id": "x", "name": "X", "targets": [{"group": "g-none"}]}
+            ]
+        }))
+        .unwrap();
+        // Recorded: as it says.
+        let r = json!({"sites": ["north"], "targets": [{"group": "g-south"}]});
+        assert!(at_site(&r, "north", &cfg));
+        assert!(!at_site(&r, "south", &cfg));
+        // Older, without `sites`: by its groups' zones now.
+        let old = json!({"targets": [{"group": "G-SOUTH "}, {"group": "g-none"}]});
+        assert!(at_site(&old, "south", &cfg));
+        assert!(!at_site(&old, "north", &cfg));
+        // At no site.
+        let none = json!({"targets": [{"group": "g-none"}]});
+        assert!(!at_site(&none, "north", &cfg) && !at_site(&none, "south", &cfg));
     }
 
     #[test]

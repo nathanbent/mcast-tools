@@ -8,9 +8,9 @@ and what each item became.
 
 ## Where things stand
 
-Every item on the roadmap for v0.5.5 and v0.6.0 is built. Nothing is merged
-yet: the work is four PRs, each stacked on the one before so its diff shows
-only its own feature.
+Every item on the roadmap for v0.5.5 and v0.6.0 is built, plus some
+follow-ups. Nothing is merged yet: the work is five PRs, each stacked on the
+one before so its diff shows only its own feature.
 
 | PR | Branch | What | Based on |
 |---|---|---|---|
@@ -18,15 +18,17 @@ only its own feature.
 | nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
 | nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
 | nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
+| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site (follow-ups) | #45 |
 
-- **State:** all four are open, with no merge conflicts and no review comments, waiting on the owner.
+- **State:** all are open, with no merge conflicts and no review comments, waiting on the owner.
   - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
-  - On #45 (`dadf4c0`), `shellcheck` passed and the Rust job was still running when this was written. The same checks pass locally there.
+  - CI was green on #45's code too (`dadf4c0`); its later commits only change this file.
+  - #46 was just opened when this was written; the same checks pass locally there (302 tests).
 - **Changes low in the stack are merged up:** a fix or follow-up on #43 is merged into #44's branch, then #44's into #45's, so the PRs stay consistent. Conflicts so far were neighbouring additions (routes, events, tests, docs), resolved by keeping both. After one, check every `#[tokio::test]` attribute survived: clippy's dead-code error caught one that didn't.
-- **Merging:** merge them in order (#38, then #43, #44, #45). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
+- **Merging:** merge them in order (#38, then #43, #44, #45, #46). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
 - **`main`** is at v0.5.4 and was last merged into #38 at that version. If `main` moves, merge it into #38's branch and carry it up the stack (merge each branch into the next). Conflicts so far were small, in `announcements.js` and `talk.js`.
 - **After merging:** release v0.5.5 (#38), then v0.6.0 (the rest), or all of it as v0.6.0.
-- **A Claude session was watching all four PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
+- **A Claude session was watching all five PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
 
 ## Checked
 
@@ -102,6 +104,20 @@ The v0.5.5 items, plus requests that came up along the way:
   - An end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver.
   - Checked in a browser with the real binaries: the alerts with real receivers (one never running, one stopped and restarted) and a local webhook receiver.
 
+### In #46: per-site webhooks and monitor (follow-ups)
+
+- **The setting:** a webhook's `sites` (Settings → Other systems, ticked per site) limits it to plays that reached a zone at one of those sites, and to speakers expected by such zones.
+- **No sites set:** the hook gets everything, as before. Plays to zones at no site go only to such hooks.
+- **Always sent:** `backend_down` and `backend_up`, which are about the panel itself.
+- **What runs and speakers record:** each run has `sites` (its zones' sites, or the schedule's site), and each speaker has `sites`.
+- **Validation:** unknown sites are refused when a hook is saved. A filter on a site deleted later is kept, and shows as "(deleted)".
+- **Tests:** a unit test of the filter, and an API test with three receivers (North, South, all) and plays to one site and to both. The form was checked in a browser.
+- **The Monitor tab for one site:** a site picker (remembered per screen), backed by `GET /monitor?site=ID`.
+  - It keeps plays at that site: by a run's `sites`, or for older runs, by the zones its groups are in now.
+  - It counts only that site's groups (a play to two sites counts once in each), and lists only its zones and expected speakers.
+  - The mcast server's uptime stays panel-wide.
+  - Tested by unit and API tests, and in a browser with real plays.
+
 ### In #44: backup and restore (roadmap item 13)
 
 - **What a backup holds:** the owner chose `intercom.json` alone, or a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history.
@@ -131,7 +147,7 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **The owner reviews and merges** #38, #43, #44 and #45, in that order.
+1. **The owner reviews and merges** #38, #43, #44, #45 and #46, in that order.
 2. **Try the hardware:**
    - A button on a Pi (#45).
    - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
@@ -140,9 +156,7 @@ The v0.5.5 items, plus requests that came up along the way:
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
 5. **Smaller follow-ups:**
-   - Per-site webhook filters.
    - A webhook delivery log (the last N deliveries per hook).
-   - Monitor charts per site.
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner
