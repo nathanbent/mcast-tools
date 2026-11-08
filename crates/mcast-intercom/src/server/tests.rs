@@ -3404,3 +3404,64 @@ async fn webhooks_keep_a_log_of_their_deliveries() {
     let file = std::fs::read_to_string(p.path.with_file_name("webhook-log.jsonl")).unwrap();
     assert!(!file.contains(&id), "{file}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_webhook_log_is_in_the_order_deliveries_were_sent() {
+    let p = panel(None);
+    p.set_up().await;
+    // A receiver that's slow to answer the first delivery, so the second
+    // finishes first.
+    let order: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let heard = order.clone();
+    let app = Router::new().route(
+        "/hook",
+        post(move |body: axum::body::Bytes| {
+            let heard = heard.clone();
+            async move {
+                let v: Value = serde_json::from_slice(&body).unwrap();
+                let event = v["event"].as_str().unwrap().to_string();
+                if event == "run_started" {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                heard.lock().unwrap().push(event);
+                StatusCode::NO_CONTENT
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/hook", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Slow", "url": url, "sign": false,
+                        "events": ["run_started", "run_ended"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["webhook"]["id"].as_str().unwrap().to_string();
+
+    p.call(Method::POST, "/announcements/bell/play", None).await;
+    p.fake.finish_all();
+    let v = wait_for(|| {
+        let state = p.state.clone();
+        let v = serde_json::to_value(state.0.webhooks.deliveries(&id)).unwrap();
+        (v.as_array().unwrap().len() == 2).then_some(v)
+    })
+    .await;
+    // They finished the other way round...
+    assert_eq!(*order.lock().unwrap(), ["run_ended", "run_started"]);
+    // ...but the log, newest first, is in the order they were sent.
+    let events: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(events, ["run_ended", "run_started"], "{v}");
+    assert!(v[0]["delivery"].as_u64() > v[1]["delivery"].as_u64(), "{v}");
+    // And the hook's last delivery is the last one sent.
+    let (_, hooks) = p.call(Method::GET, "/webhooks", None).await;
+    assert_eq!(hooks[0]["last_delivery"]["event"], "run_ended", "{hooks}");
+}
