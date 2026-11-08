@@ -19,6 +19,12 @@ use std::sync::Mutex;
 pub const DEFAULT_DAYS: u32 = 90;
 /// Most runs one query returns.
 pub const MAX_LIMIT: usize = 1000;
+/// Where connection changes go, beside the day files.
+const CONNECTION_FILE: &str = "connection.jsonl";
+/// Connection changes kept.
+const MAX_CONNECTION_LINES: usize = 5000;
+/// A scheduled play that starts this much after its time counts as late.
+pub const LATE_MS: u64 = 5000;
 
 /// `history/` beside the config file.
 pub fn default_dir(config: &Path) -> PathBuf {
@@ -104,13 +110,52 @@ impl History {
         self.st.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Hear about a change from the runner: write a run once it's over.
+    /// Hear about a change from the runner: write a run once it's over,
+    /// and note when the mcast server comes and goes.
     pub fn observe(&self, c: &Change<'_>) {
-        if let Change::Run(run) = c {
-            if run.state.is_over() {
-                self.write(run);
-            }
+        match c {
+            Change::Run(run) if run.state.is_over() => self.write(run),
+            Change::Backend(status) => self.connection(Some(status.connected), status.since_ms),
+            _ => {}
         }
+    }
+
+    /// The panel started or stopped: what the connection was until the next
+    /// change isn't known.
+    pub fn panel_up_or_down(&self) {
+        self.connection(None, now_ms());
+    }
+
+    /// `connection.jsonl`: `{"at_ms", "connected"}` lines, `null` for unknown.
+    fn connection(&self, connected: Option<bool>, at_ms: u64) {
+        let _held = self.lock();
+        let line = json!({ "at_ms": at_ms, "connected": connected }).to_string();
+        let path = self.dir.join(CONNECTION_FILE);
+        let wrote = std::fs::create_dir_all(&self.dir).and_then(|_| {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            f.write_all(format!("{line}\n").as_bytes())
+        });
+        if let Err(e) = wrote {
+            eprintln!("mcast intercom: writing {}: {e}", path.display());
+        }
+    }
+
+    /// The connection log, oldest first: (at_ms, connected or unknown).
+    pub fn connection_log(&self) -> Vec<(u64, Option<bool>)> {
+        let Ok(f) = std::fs::File::open(self.dir.join(CONNECTION_FILE)) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u64, Option<bool>)> = std::io::BufReader::new(f)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
+            .filter_map(|v| Some((v["at_ms"].as_u64()?, v["connected"].as_bool())))
+            .collect();
+        out.sort_by_key(|(at, _)| *at);
+        out
     }
 
     fn write(&self, run: &Run) {
@@ -148,8 +193,16 @@ impl History {
         }
     }
 
-    /// Delete days older than the ones kept.
+    /// Delete days older than the ones kept, and keep the connection log short.
     fn prune(&self, today: jiff::civil::Date) {
+        let conn = self.dir.join(CONNECTION_FILE);
+        if let Ok(text) = std::fs::read_to_string(&conn) {
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() > MAX_CONNECTION_LINES {
+                let keep = lines[lines.len() - MAX_CONNECTION_LINES..].join("\n") + "\n";
+                let _ = std::fs::write(&conn, keep);
+            }
+        }
         let days = self.keep_days.load(Ordering::Relaxed);
         if days == 0 {
             return;
@@ -329,6 +382,185 @@ impl History {
             "last_24h": { "busy_groups": busy, "failed_groups": failed },
         })
     }
+}
+
+/// What the Monitor tab shows, from `runs` (logged runs, any order):
+/// totals; plays a day (`days`: (date, start ms, end ms), oldest first); by
+/// announcement; by zone (`zones_of` names the zones, as (id, name), a
+/// group is in); how schedules kept time; and what started plays.
+pub fn summarize(
+    runs: &[Value],
+    days: &[(String, u64, u64)],
+    zones_of: &dyn Fn(&str) -> Vec<(String, String)>,
+) -> Value {
+    use std::collections::BTreeMap;
+    let mut totals = Counts::default();
+    let mut per_day: Vec<Counts> = vec![Counts::default(); days.len()];
+    let mut anns: BTreeMap<String, (String, Counts)> = BTreeMap::new();
+    #[derive(Default)]
+    struct Zone {
+        name: String,
+        sends: u64,
+        played: u64,
+        busy: u64,
+        failed: u64,
+        taken_over: u64,
+    }
+    let mut zones: BTreeMap<String, Zone> = BTreeMap::new();
+    let (mut on_time, mut late, mut missed, mut worst_late) = (0u64, 0u64, 0u64, 0u64);
+    let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
+    let mut by: BTreeMap<String, u64> = BTreeMap::new();
+    for r in runs {
+        let started = r["started_ms"].as_u64().unwrap_or(0);
+        totals.add(r);
+        if let Some(i) = days
+            .iter()
+            .position(|(_, from, to)| started >= *from && started < *to)
+        {
+            per_day[i].add(r);
+        }
+        let id = r["announcement"].as_str().unwrap_or("").to_string();
+        let name = r["name"].as_str().unwrap_or("").to_string();
+        anns.entry(id)
+            .or_insert_with(|| (name, Counts::default()))
+            .1
+            .add(r);
+        for t in r["targets"].as_array().into_iter().flatten() {
+            let group = t["group"].as_str().unwrap_or("");
+            let mut found = zones_of(group);
+            if found.is_empty() {
+                found.push((String::new(), format!("{group} (in no zone now)")));
+            }
+            for (zid, zname) in found {
+                let key = if zid.is_empty() { zname.clone() } else { zid };
+                let z = zones.entry(key).or_insert_with(|| Zone {
+                    name: zname,
+                    ..Default::default()
+                });
+                z.sends += 1;
+                if t["played"].as_u64().unwrap_or(0) > 0 {
+                    z.played += 1;
+                }
+                match t["state"].as_str() {
+                    Some("busy") => z.busy += 1,
+                    Some("failed") => z.failed += 1,
+                    Some("preempted") => z.taken_over += 1,
+                    _ => {}
+                }
+            }
+        }
+        let kind = r["trigger"]["type"]
+            .as_str()
+            .unwrap_or("manual")
+            .to_string();
+        if kind == "schedule" {
+            if r["state"] == "missed" {
+                missed += 1;
+            } else {
+                let due = r["trigger"]["at_ms"].as_u64().unwrap_or(started);
+                let behind = started.saturating_sub(due);
+                worst_late = worst_late.max(behind);
+                if behind > LATE_MS {
+                    late += 1;
+                } else {
+                    on_time += 1;
+                }
+            }
+        }
+        *kinds.entry(kind).or_default() += 1;
+        if let Some(b) = r["trigger"]["by"].as_str() {
+            *by.entry(b.to_string()).or_default() += 1;
+        }
+    }
+    let mut anns: Vec<Value> = anns
+        .into_iter()
+        .map(|(id, (name, c))| {
+            let mut v = serde_json::to_value(c).unwrap_or_default();
+            v["id"] = id.into();
+            v["name"] = name.into();
+            v
+        })
+        .collect();
+    anns.sort_by_key(|v| std::cmp::Reverse(v["plays"].as_u64().unwrap_or(0)));
+    let mut zones: Vec<Value> = zones
+        .into_iter()
+        .map(|(id, z)| {
+            json!({ "id": id, "name": z.name, "sends": z.sends, "played": z.played,
+                    "busy": z.busy, "failed": z.failed, "taken_over": z.taken_over })
+        })
+        .collect();
+    zones.sort_by_key(|v| std::cmp::Reverse(v["sends"].as_u64().unwrap_or(0)));
+    let mut by: Vec<(String, u64)> = by.into_iter().collect();
+    by.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    by.truncate(10);
+    json!({
+        "totals": totals,
+        "days": days.iter().zip(per_day).map(|((date, _, _), c)| {
+            let mut v = serde_json::to_value(c).unwrap_or_default();
+            v["date"] = date.clone().into();
+            v
+        }).collect::<Vec<_>>(),
+        "announcements": anns,
+        "zones": zones,
+        "schedules": { "on_time": on_time, "late": late, "missed": missed, "late_after_ms": LATE_MS, "most_late_ms": worst_late },
+        "triggers": kinds,
+        "by": by.into_iter().map(|(name, plays)| json!({ "name": name, "plays": plays })).collect::<Vec<_>>(),
+    })
+}
+
+/// How long the mcast server was reachable between `from_ms` and `to_ms`,
+/// from the connection log: `{"known_ms", "up_ms", "uptime", "outages":
+/// [{"from_ms", "to_ms"}]}`. Time the panel wasn't running isn't known and
+/// isn't counted; `uptime` is `null` when none of it is known.
+pub fn uptime(log: &[(u64, Option<bool>)], from_ms: u64, to_ms: u64) -> Value {
+    // The state at `from_ms`: the last change before it.
+    let mut state = log
+        .iter()
+        .rev()
+        .find(|(at, _)| *at <= from_ms)
+        .and_then(|(_, c)| *c);
+    let mut at = from_ms;
+    let (mut known, mut up) = (0u64, 0u64);
+    let mut outages: Vec<(u64, Option<u64>)> = Vec::new();
+    if state == Some(false) {
+        outages.push((from_ms, None));
+    }
+    let mut span = |state: Option<bool>, from: u64, to: u64| {
+        if let Some(c) = state {
+            known += to.saturating_sub(from);
+            if c {
+                up += to.saturating_sub(from);
+            }
+        }
+    };
+    for (t, c) in log.iter().filter(|(t, _)| *t > from_ms && *t < to_ms) {
+        span(state, at, *t);
+        if state == Some(false) && *c != Some(false) {
+            if let Some(o) = outages.last_mut() {
+                o.1 = Some(*t);
+            }
+        }
+        if *c == Some(false) && state != Some(false) {
+            outages.push((*t, None));
+        }
+        state = *c;
+        at = *t;
+    }
+    span(state, at, to_ms);
+    if state != Some(false) {
+        // An outage the panel didn't see the end of (it stopped) ends unknown.
+        if let Some(o) = outages.last_mut().filter(|o| o.1.is_none()) {
+            o.1 = Some(at);
+        }
+    }
+    let n = outages.len();
+    json!({
+        "known_ms": known,
+        "up_ms": up,
+        "uptime": (known > 0).then(|| up as f64 / known as f64),
+        "outages": outages[n.saturating_sub(20)..].iter().rev()
+            .map(|(f, t)| json!({ "from_ms": f, "to_ms": t })).collect::<Vec<_>>(),
+    })
 }
 
 /// A run as a CSV row, times in `tz`: see [`CSV_HEADER`].
@@ -542,6 +774,113 @@ mod tests {
         let none = h.stats(now - 3_600_000, now - 6 * day, now - day, |_| false);
         assert_eq!(none["week"]["plays"], 0);
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn uptime_counts_only_what_was_seen() {
+        let log = vec![
+            (0, None),          // panel started
+            (100, Some(true)),  // connected
+            (500, Some(false)), // lost
+            (700, Some(true)),  // back
+            (900, None),        // panel stopped
+            (1500, None),       // started again
+            (1600, Some(true)),
+        ];
+        let u = uptime(&log, 0, 2000);
+        // Known: 100-900 (800) and 1600-2000 (400); up: 400 + 200 + 400.
+        assert_eq!(
+            (u["known_ms"].clone(), u["up_ms"].clone()),
+            (json!(1200), json!(1000))
+        );
+        assert_eq!(u["outages"], json!([{"from_ms": 500, "to_ms": 700}]));
+        // Starting mid-outage.
+        let u = uptime(&log, 600, 800);
+        assert_eq!(
+            (u["known_ms"].clone(), u["up_ms"].clone()),
+            (json!(200), json!(100))
+        );
+        assert_eq!(u["outages"], json!([{"from_ms": 600, "to_ms": 700}]));
+        assert_eq!(uptime(&[], 0, 10)["uptime"], Value::Null);
+    }
+
+    #[test]
+    fn summarizes_by_day_announcement_zone_and_schedule() {
+        let r = |id: u64, ann: &str, started: u64, state: &str, trigger: Value, targets: Value| {
+            json!({"id": id, "announcement": ann, "name": ann.to_uppercase(), "started_ms": started,
+                   "state": state, "trigger": trigger, "targets": targets})
+        };
+        let t = |group: &str, state: &str, played: u64| json!({"group": group, "state": state, "played": played});
+        let runs = vec![
+            r(
+                1,
+                "bell",
+                10,
+                "done",
+                json!({"type": "schedule", "at_ms": 9}),
+                json!([t("g1", "done", 1), t("g2", "done", 1)]),
+            ),
+            r(
+                2,
+                "bell",
+                20_000,
+                "done",
+                json!({"type": "schedule", "at_ms": 10_000}),
+                json!([t("g1", "done", 1)]),
+            ),
+            r(
+                3,
+                "bell",
+                30,
+                "missed",
+                json!({"type": "schedule", "at_ms": 30}),
+                json!([]),
+            ),
+            r(
+                4,
+                "fire",
+                110,
+                "failed",
+                json!({"type": "api", "by": "Doorbell"}),
+                json!([t("g1", "busy", 0), t("old", "failed", 0)]),
+            ),
+        ];
+        let days = vec![("d1".to_string(), 0, 100), ("d2".to_string(), 100, 100_000)];
+        let zones_of = |g: &str| match g {
+            "g1" => vec![("hall".to_string(), "Hall".to_string())],
+            "g2" => vec![
+                ("hall".to_string(), "Hall".to_string()),
+                ("yard".to_string(), "Yard".to_string()),
+            ],
+            _ => vec![],
+        };
+        let m = summarize(&runs, &days, &zones_of);
+        assert_eq!(m["totals"]["plays"], 4);
+        assert_eq!(m["days"][0]["plays"], 2);
+        assert_eq!(m["days"][1]["failed"], 1);
+        assert_eq!(m["announcements"][0]["id"], "bell");
+        assert_eq!(m["announcements"][0]["missed"], 1);
+        let hall = m["zones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|z| z["id"] == "hall")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            hall,
+            json!({"id": "hall", "name": "Hall", "sends": 4, "played": 3, "busy": 1, "failed": 0, "taken_over": 0})
+        );
+        assert!(m["zones"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|z| z["name"] == "old (in no zone now)"));
+        assert_eq!(m["schedules"]["on_time"], 1);
+        assert_eq!(m["schedules"]["late"], 1);
+        assert_eq!(m["schedules"]["missed"], 1);
+        assert_eq!(m["triggers"], json!({"api": 1, "schedule": 3}));
+        assert_eq!(m["by"], json!([{"name": "Doorbell", "plays": 1}]));
     }
 
     #[test]

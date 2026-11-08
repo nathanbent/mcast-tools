@@ -177,3 +177,74 @@ pub(super) async fn stats(
     .await?;
     Ok(Json(v))
 }
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MonitorParams {
+    /// How many days back, today included (1 to 366; default 7).
+    days: Option<u32>,
+}
+
+/// The Monitor tab: what [`crate::history::summarize`] makes of the last
+/// `days` days (in the panel's time zone), and how long the mcast server was
+/// reachable (`connection`, see [`crate::history::uptime`]). A token limited
+/// to categories sees only its announcements' plays.
+pub(super) async fn monitor(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Params(p): Params<MonitorParams>,
+) -> ApiResult<Json<Value>> {
+    let n = p.days.unwrap_or(7);
+    if !(1..=366).contains(&n) {
+        return Err(ApiError::bad("days must be 1 to 366"));
+    }
+    let cfg = s.load().await?;
+    let tz = cfg.tz().unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let now = jiff::Timestamp::now();
+    let today = now.to_zoned(tz.clone()).date();
+    let start = |d: jiff::civil::Date| -> ApiResult<u64> {
+        d.to_zoned(tz.clone())
+            .map(|z| z.timestamp().as_millisecond().max(0) as u64)
+            .map_err(|e| ApiError::internal(e.to_string()))
+    };
+    let mut days = Vec::new();
+    for back in (0..n).rev() {
+        let d = today
+            .checked_sub(jiff::Span::new().days(back as i64))
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let next = d
+            .tomorrow()
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        days.push((d.to_string(), start(d)?, start(next)?));
+    }
+    let from_ms = days[0].1;
+    let now_ms = now.as_millisecond().max(0) as u64;
+    let history = s.0.history.clone();
+    let v = tokio::task::spawn_blocking(move || {
+        let mut runs = Vec::new();
+        history.scan(from_ms, |r| {
+            if caller.may_play(&cfg, r["announcement"].as_str().unwrap_or("")) {
+                runs.push(r.clone());
+            }
+        });
+        // The zones a group (as written in a zone) is in now.
+        let zones_of = |group: &str| -> Vec<(String, String)> {
+            cfg.zones
+                .iter()
+                .filter(|z| {
+                    z.targets
+                        .iter()
+                        .any(|t| t.group.trim().eq_ignore_ascii_case(group.trim()))
+                })
+                .map(|z| (z.id.clone(), z.name.clone()))
+                .collect()
+        };
+        let mut v = crate::history::summarize(&runs, &days, &zones_of);
+        v["from_ms"] = from_ms.into();
+        v["to_ms"] = now_ms.into();
+        v["connection"] = crate::history::uptime(&history.connection_log(), from_ms, now_ms);
+        v
+    })
+    .await?;
+    Ok(Json(v))
+}

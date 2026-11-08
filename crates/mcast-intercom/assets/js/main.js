@@ -6,6 +6,7 @@ import { h, replace, toast } from "./dom.js";
 import { refreshAll, refreshUpcoming, apply, state, subscribe, onRunEnded, can, TABS } from "./store.js";
 import * as panel from "./panel.js";
 import * as history from "./history.js";
+import * as monitor from "./monitor.js";
 import * as announcements from "./announcements.js";
 import * as zones from "./zones.js";
 import * as schedules from "./schedules.js";
@@ -146,6 +147,7 @@ async function start() {
   const mounts = {
     panel: () => panel.mount($("panel")),
     history: () => history.mount($("history")),
+    monitor: () => monitor.mount($("monitor")),
     announcements: () => announcements.mount($("announcements")),
     zones: () => zones.mount($("zones")),
     schedules: () => schedules.mount($("schedules"), $("days-off"), $("schedule-groups")),

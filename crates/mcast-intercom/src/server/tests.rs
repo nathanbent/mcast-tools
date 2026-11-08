@@ -875,6 +875,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/history"),
     ("GET", "/history.csv"),
     ("GET", "/stats"),
+    ("GET", "/monitor"),
     ("GET", "/upcoming"),
     ("GET", "/settings"),
     ("PUT", "/settings"),
@@ -2303,7 +2304,11 @@ async fn history_is_kept_on_disk_and_filtered() {
     assert_eq!(v["more"], false);
     // On disk, beside the config.
     let dir = p.path.with_file_name("history");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    let days = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_name() != "connection.jsonl")
+        .count();
+    assert_eq!(days, 1, "a file a day, beside the connection log");
 
     let (_, v) = p
         .call_with(Method::GET, "/history?announcement=gate", None, admin)
@@ -2410,6 +2415,36 @@ async fn history_is_kept_on_disk_and_filtered() {
     );
     let (_, st) = p.call_with(Method::GET, "/stats", None, Some(&desk)).await;
     assert_eq!(st["today"]["plays"], 1, "only its category");
+
+    // The Monitor tab adds it all up.
+    let (s, m) = p
+        .call_with(Method::GET, "/monitor?days=7", None, admin)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{m}");
+    assert_eq!(m["days"].as_array().unwrap().len(), 7);
+    assert_eq!(m["days"][6]["plays"], 3, "today is last");
+    assert_eq!(m["totals"]["failed"], 2);
+    assert_eq!(m["announcements"][0]["id"], "bell");
+    let hall = m["zones"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|z| z["id"] == "hall")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (hall["sends"].clone(), hall["busy"].clone()),
+        (json!(2), json!(1))
+    );
+    assert!(m["connection"].get("uptime").is_some());
+    let (s, _) = p
+        .call_with(Method::GET, "/monitor?days=0", None, admin)
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, m) = p
+        .call_with(Method::GET, "/monitor", None, Some(&desk))
+        .await;
+    assert_eq!(m["totals"]["plays"], 1, "only its category");
 
     // How long it's kept.
     let (_, v) = p.call_with(Method::GET, "/settings", None, admin).await;

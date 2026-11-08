@@ -216,6 +216,8 @@ pub async fn serve(
         })
         .await?
     };
+    // What the connection was while the panel wasn't running isn't known.
+    state.0.history.panel_up_or_down();
     // Write out how much tokens were used now and then, not on every request.
     let flusher = {
         let tokens = tokens.clone();
@@ -272,6 +274,7 @@ pub async fn serve(
         }
     );
     let served = server.await;
+    state.0.history.panel_up_or_down();
     flusher.abort();
     let t = tokens.clone();
     if let Ok(Err(e)) = tokio::task::spawn_blocking(move || t.flush()).await {
@@ -351,6 +354,7 @@ pub fn router(state: AppState) -> Router {
         .route("/history", get(history::list))
         .route("/history.csv", get(history::csv))
         .route("/stats", get(history::stats))
+        .route("/monitor", get(history::monitor))
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))

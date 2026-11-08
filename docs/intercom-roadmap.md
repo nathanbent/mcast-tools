@@ -244,6 +244,15 @@ Storage would be a `panel` object in `intercom.json` (size, mode, what to show),
 
 ### 10. Monitor page
 
+**Built.**
+- **`GET /monitor?days=N`** adds up the history: totals, plays a day by outcome, per announcement, per zone (each send to a zone's group: played, busy, failed, taken over, using the zones the group is in now), schedule timeliness (on time, late over 5 s, missed, the latest start), and what started plays (type, and the top token names).
+- **Connection uptime:** the panel logs connection changes and its own start and stop to `history/connection.jsonl`. Uptime counts only time the panel was running, and lists outages.
+- **Monitor tab** (admins and operators): 7, 30 or 90 days, headline tiles, a stacked plays-a-day chart in status colors with a legend, hover details and a table view, and tables for announcements, zones, schedules, who started plays, and outages.
+- A category-limited token sees only its own categories.
+- **Still to do:** delivery confirmation from probes (item 11), which would add whether speakers heard each play.
+
+The plan:
+
 - Plays per announcement and per zone over time.
 - Outcome rates per zone (played, busy, failed).
 - Schedule reliability: on time vs late vs missed.
