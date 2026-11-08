@@ -3135,20 +3135,31 @@ async fn webhooks_keep_a_log_of_their_deliveries() {
     let (s, v) = log(&p.app).await;
     assert_eq!((s, v), (StatusCode::OK, json!([])));
 
+    // Each delivery goes out (and is logged) on its own thread, so let each
+    // one land in the log before setting off the next: otherwise they can be
+    // logged in any order under load.
+    let logged = |n: usize| {
+        let app = &p.app;
+        async move {
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                let (_, v) = log(app).await;
+                if v.as_array().is_some_and(|a| a.len() == n) {
+                    break v;
+                }
+                assert!(Instant::now() < until, "waiting for {n}: {v}");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    };
     p.call(Method::POST, "/announcements/bell/play", None).await;
+    logged(1).await;
     p.fake.finish_all();
-    wait_for(|| (got.lock().unwrap().len() == 2).then_some(())).await;
+    logged(2).await;
+    assert_eq!(got.lock().unwrap().len(), 2);
     p.call(Method::POST, &format!("/webhooks/{id}/test"), None)
         .await;
-    let until = Instant::now() + Duration::from_secs(5);
-    let v = loop {
-        let (_, v) = log(&p.app).await;
-        if v.as_array().is_some_and(|a| a.len() == 3) {
-            break v;
-        }
-        assert!(Instant::now() < until, "{v}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
+    let v = logged(3).await;
     // Newest first, each with what it was about and how it went.
     let events: Vec<&str> = v
         .as_array()
