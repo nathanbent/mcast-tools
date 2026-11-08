@@ -70,7 +70,7 @@ export function upload(name, file, onProgress) {
   });
 }
 
-const EVENT_TYPES = ["run", "config_changed", "backend", "media_changed", "inputs", "speakers", "lagged"];
+const EVENT_TYPES = ["run", "config_changed", "backend", "media_changed", "inputs", "speakers", "display", "lagged"];
 
 // Follow server-sent events. `onStatus` gets "live" (refetch then: events may
 // have been missed) or "offline". Reconnects on its own.

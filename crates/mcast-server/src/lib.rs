@@ -197,6 +197,15 @@ pub async fn serve(
             ""
         }
     );
+    eprintln!(
+        "text to speech: {}",
+        match state.0.tts.as_ref().map(|t| t.engine()) {
+            Some(mcast_audio::tts::Engine::Piper { voices, .. }) =>
+                format!("Piper, voices in {}", voices.display()),
+            Some(e) => e.name().to_string(),
+            None => "none (install Piper and a voice, or eSpeak NG)".into(),
+        }
+    );
     let app = router(state.clone()).merge(extra);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

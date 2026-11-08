@@ -598,3 +598,20 @@ ul.ears { display: grid; gap: 2px; }
 ul.ears .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); vertical-align: middle; }
 ul.ears .dot.on { background: var(--ok); }
 ul.ears .dot.off { background: var(--bad); }
+
+/* Text pages in a playlist, and the display page. */
+ol.playlist-items li.text { cursor: default; align-items: flex-start; }
+ol.playlist-items li.text .handle { cursor: grab; }
+.text-item { display: flex; flex-direction: column; gap: 6px; }
+.text-item textarea { width: 100%; resize: vertical; font: inherit; }
+.text-item .row { flex-wrap: wrap; gap: 12px; align-items: center; }
+body.display-mode header h1, body.display-mode #backend { display: none; }
+body.display-mode header { border-bottom: 0; background: transparent; justify-content: flex-end; }
+body.display-mode main { padding: 0; }
+#display { min-height: calc(100vh - 64px); display: flex; align-items: center; justify-content: center; text-align: center; padding: 4vh 5vw; }
+.display-page, .display-idle { display: flex; flex-direction: column; gap: 2vh; max-width: 100%; }
+.display-page p, .display-idle p { margin: 0; overflow-wrap: anywhere; }
+.display-text { font-size: clamp(28px, 6vw, 96px); font-weight: 600; line-height: 1.15; }
+.display-from { font-size: clamp(16px, 2.2vw, 32px); color: var(--muted); }
+.display-clock { font-size: clamp(48px, 12vw, 200px); font-weight: 300; font-variant-numeric: tabular-nums; }
+body.display-mode #tab-display { border: 0; background: transparent; box-shadow: none; padding: 0; }
