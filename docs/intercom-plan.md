@@ -5,6 +5,7 @@ speakers), **announcements** (audio, chimes and where they go) and
 **schedules**, then play announcements from big buttons, a schedule, another
 system, or push to talk.
 
+- Where things stand (handoff): `intercom-status.md`.
 - What's planned next: `intercom-roadmap.md`.
 - Design notes: `intercom-tokens.md` (access tokens and roles),
   `intercom-triggers.md` (the trigger API and webhooks).
