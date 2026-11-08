@@ -412,6 +412,24 @@ If the mcast server runs with `--no-monitor`, or can't be asked, the run's
 `listeners.error` says so and nobody is called silent. Plays to zones that
 list no listeners aren't checked.
 
+### Speakers going offline
+
+Between plays, receivers keep sending reports every few seconds, so the
+panel can tell when an expected speaker stops.
+- **How it checks:** it asks the monitor every 10 seconds who is reporting
+  (`GET /speakers`).
+- **Offline:** a speaker that hasn't reported for a minute. It's unplugged,
+  switched off, off the network, or not running `mcast receive`.
+- **What happens then:**
+  - a `listener_offline` webhook;
+  - a toast;
+  - "Speakers: Office offline" on the Panel's stats strip;
+  - a red dot in the Zones list, with how long it's been gone.
+- **When it reports again:** `listener_online` and another toast.
+- **Not known:** while the monitor is off or the mcast server is
+  unreachable, nobody is called offline. The `backend_down` webhook covers
+  the mcast server being away.
+
 ## Schedules
 
 A schedule plays when it's on, its group (if any) is on, its site (if any)
@@ -480,6 +498,7 @@ only their runs.
 | `GET /live/{id}` | A WebSocket that talks on live announcement `{id}`: it plays the announcement, then passes each binary message (16-bit little-endian mono PCM at 48 kHz, best in 20 ms chunks) on to every group. Text messages from the panel: `{"type": "started", "run", "groups", "rate"}`, and `{"type": "ended", "reason"}` when it was stopped or couldn't start. Send `end` (text) or close the socket to end the page. Only the panel's own page may open it (`Origin` must match) |
 | `GET /runs`, `GET /runs/{id}` | Runs playing and recently ended, newest first |
 | `DELETE /runs/{id}` | Stop one; `DELETE /runs` stops them all |
+| `GET /speakers` | Whether each speaker zones expect is reporting between plays: `{"known", "error", "speakers": [{"name", "zones", "online", "since_ms", "last_seen_ms"}]}`. `online` is `null` until known (a minute for one never seen). The `speakers` event sends the same, with `changes: [{"speaker", "online"}]` |
 | `GET /listeners` | The receivers `mcast serve`'s monitor hears now (`[{"group", "name", "cname", "about", "loss_percent", "last_heard_ms", "left"}]`), for choosing a zone's listeners; 404 if its monitor is off |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
 | `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error", "tags"}], "folders": [{"name", "hidden"}], "tags": [{"tag", "files"}]}`; `used_by` names the announcements (and "the defaults") that use a file; `audio` is `{"codec", "rate", "channels", "duration_s"}`, or `audio_error` says why the mcast server can't play it (`null` both with an mcast server before 0.5.5) |

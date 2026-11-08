@@ -96,7 +96,8 @@ On `claude/vibrant-knuth-34bpdf`, on top of #38. "Probes" means speakers running
   - Runner, history, webhook and summary unit tests, plus an API test, against the fake.
   - An end-to-end test in `tests/server.rs`: a real `mcast serve` with its monitor on and a real named receiver.
   - Checked by hand in a browser with the real binaries: the zone form, the toast, History and Monitor, in light and dark, at desktop and phone widths.
-- **The Zones list** shows each expected listener's state: reporting now or not (from `GET /listeners`), and when it last heard a page (from the history, over 30 days).
+- **The Zones list** shows each expected listener's state: reporting now or offline (from `GET /speakers`), and when it last heard a page (from the history, over 30 days).
+- **Speakers going offline between plays** (`crate::presence`): the panel asks the monitor every 10 s. A speaker missing for a minute is offline: a `listener_offline` webhook, a toast and the Panel's stats strip. It gets `listener_online` when back. Nothing is called offline while the monitor can't be asked.
 
 ### 2. Backup and restore, roadmap item 13
 
@@ -136,7 +137,7 @@ Then release v0.6.0.
 
 ## Questions still open for the owner
 
-1. Probes: how much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added. Should listeners be checked between runs too? Receivers report every few seconds even when idle (`about` is then `null`), so a "speaker offline" alert is possible.
+1. Probes: how much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
 2. GPIO: a small ioctl wrapper of our own, or the `gpiocdev` crate?
 3. Backup: `.tar.gz` with the sounds (a new `tar` dependency), or JSON only?
 4. Text pages in playlists: displays, TTS, or both?

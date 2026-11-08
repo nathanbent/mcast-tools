@@ -168,8 +168,10 @@ function statsStrip(next) {
   const bad = (text) => h("span", { class: "bad" }, text);
   const problems = (c) => [c.failed > 0 && bad(` · ${c.failed} failed`), c.missed > 0 && bad(` · ${c.missed} missed`)];
   const t = stats?.today, w = stats?.week, d = stats?.last_24h;
+  const offline = state.speakers.speakers.filter((s) => s.online === false);
   return h("div", { class: "stats-strip" },
     b && !b.connected && item("mcast server", bad("unreachable")),
+    offline.length > 0 && item("Speakers", bad(`${offline.map((s) => s.name).join(", ")} offline`)),
     look().show_next && next && item("Next", h("strong", {}, next.name), next.site && ` at ${siteName(next.site)}`,
       ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
     t && item("Today", plural(t.plays, "play"), problems(t)),
@@ -229,7 +231,7 @@ export function mount(el) {
   subscribe(["server"], render);
   // A tag that's gone shows everything.
   if (filter && !state.view.tag && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";
-  subscribe(["config", "runs", "upcoming"], render);
+  subscribe(["config", "runs", "upcoming", "speakers"], render);
   onTalk((t) => {
     const changed = t?.id !== talkState?.id || t?.phase !== talkState?.phase || t?.latched !== talkState?.latched;
     talkState = t;

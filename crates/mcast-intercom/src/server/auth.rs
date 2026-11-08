@@ -307,6 +307,7 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/upcoming"
         | "/phonebook"
         | "/listeners"
+        | "/speakers"
         | "/history"
         | "/history.csv"
         | "/stats"
