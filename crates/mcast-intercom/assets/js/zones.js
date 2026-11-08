@@ -88,6 +88,35 @@ function listenersPart(initial) {
   return { el, value: () => names };
 }
 
+// Text displays: groups that get the text pages of what plays here, as
+// real-time text (`mcast text recv -g GROUP` shows them).
+function displaysPart(initial) {
+  const groups = [...initial];
+  const has = (g) => groups.some((x) => x.toLowerCase() === g.toLowerCase());
+  const chips = h("div", { class: "tag-bar" });
+  const input = h("input", { maxLength: 64, placeholder: "Phonebook name or 239.x.x.x:port", list: "phonebook-groups",
+    "aria-label": "Display group",
+    onkeydown: (e) => { if (e.key === "Enter") { e.preventDefault(); add(input.value); } } });
+  const add = (g) => {
+    g = g.trim();
+    if (g && !has(g) && groups.length < 20) groups.push(g);
+    input.value = "";
+    render();
+  };
+  const render = () => replace(chips, groups.length
+    ? groups.map((g) => h("button", { type: "button", class: "tag", title: `Remove ${g}`,
+        onclick: () => { groups.splice(groups.indexOf(g), 1); render(); } }, g, " ×"))
+    : [h("span", { class: "muted small" }, "None. The panel's display page can still show this zone's text pages.")]);
+  render();
+  const el = h("fieldset", { class: "part" }, h("legend", {}, "Text displays"),
+    h("p", { class: "small muted" },
+      "Groups that get the text pages of playlists played here, as real-time text: run mcast text recv -g GROUP on a screen. A browser can show them too: Settings → Panel → Display page."),
+    chips,
+    h("div", { class: "listener-add" }, input,
+      h("button", { type: "button", onclick: () => add(input.value) }, "Add")));
+  return { el, value: () => groups };
+}
+
 function form(z, save, cancel) {
   const name = h("input", { value: z?.name ?? "", required: true, maxLength: 64 });
   const sites = state.config.sites ?? [];
@@ -120,6 +149,7 @@ function form(z, save, cancel) {
   const render = () => replace(rowsEl, rows.map((r) => r.el));
 
   const listeners = listenersPart(z?.listeners ?? []);
+  const displays = displaysPart(z?.displays ?? []);
   for (const t of z?.targets ?? []) addRow(t);
   if (!rows.length) addRow();
 
@@ -137,6 +167,7 @@ function form(z, save, cancel) {
         interface: r.iface.value.trim() || null,
       })),
       listeners: listeners.value(),
+      displays: displays.value(),
     });
   };
 
@@ -151,6 +182,7 @@ function form(z, save, cancel) {
       h("div", { class: "buttons", style: { marginTop: "10px" } },
         h("button", { type: "button", onclick: () => addRow() }, "Add group"))),
     listeners.el,
+    displays.el,
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));
@@ -206,6 +238,8 @@ export function mount(el) {
       ...((state.config.sites ?? []).length ? [["Site", (z) => (z.site ? siteName(z.site) : "—"), true]] : []),
       ["Groups", (z) => z.targets.map(describe).join(", "), true],
       ["Listeners", listenersCell, true],
+      ...(state.config.zones.some((z) => z.displays?.length)
+        ? [["Displays", (z) => (z.displays?.length ? z.displays.join(", ") : "—"), true]] : []),
     ],
     form,
   });

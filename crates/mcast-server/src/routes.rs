@@ -5,7 +5,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use mcast_control::request::{ChimeRequest, SinkRequest, SourceRequest};
+use mcast_control::request::{ChimeRequest, FileItem, SinkRequest, SourceRequest};
 use mcast_control::{JobId, RecvRequest, SendRequest};
 use serde::Serialize;
 use serde_json::json;
@@ -92,14 +92,41 @@ pub(crate) async fn start_sender(
             "render is only available from the command line",
         ));
     }
+    let mut speak = Vec::new();
     match &mut req.source {
         SourceRequest::File { path, .. } => *path = s.media_path(path)?,
         SourceRequest::Files { paths, .. } => {
-            for path in paths {
-                *path = s.media_path(path)?;
+            for (i, item) in paths.iter_mut().enumerate() {
+                match item {
+                    FileItem::Path(path) => *path = s.media_path(path)?,
+                    FileItem::Say { say, voice } => {
+                        if s.0.tts.is_none() {
+                            return Err(ApiError::bad(
+                                "text to speech isn't available: install Piper and a voice, or eSpeak NG",
+                            ));
+                        }
+                        speak.push((i, say.clone(), voice.clone()));
+                    }
+                }
             }
         }
         _ => {}
+    }
+    if !speak.is_empty() {
+        let tts = s.0.tts.clone().expect("checked above");
+        let spoken = tokio::task::spawn_blocking(move || {
+            speak
+                .into_iter()
+                .map(|(i, text, voice)| Ok((i, tts.speak(&text, voice.as_deref())?)))
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .await?
+        .map_err(|e| ApiError::bad(format!("speaking: {e:#}")))?;
+        if let SourceRequest::Files { paths, .. } = &mut req.source {
+            for (i, file) in spoken {
+                paths[i] = FileItem::Path(file);
+            }
+        }
     }
     for chime in [&mut req.chime, &mut req.end_chime] {
         if let Some(ChimeRequest::File(path)) = chime {
@@ -108,6 +135,17 @@ pub(crate) async fn start_sender(
     }
     let info = tokio::task::spawn_blocking(move || s.0.jobs.start_sender_as(req, shown)).await??;
     Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// The text-to-speech engine, and the voices `{"say": ..., "voice": ...}` can name.
+pub(crate) async fn voices(State(s): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let Some(tts) = s.0.tts.clone() else {
+        return Ok(Json(
+            json!({ "engine": null, "voices": [], "default_voice": null }),
+        ));
+    };
+    let info = tokio::task::spawn_blocking(move || tts.describe()).await?;
+    Ok(Json(serde_json::to_value(info).unwrap_or_default()))
 }
 
 pub(crate) async fn start_receiver(

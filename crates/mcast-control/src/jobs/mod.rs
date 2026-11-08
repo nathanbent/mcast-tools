@@ -84,6 +84,9 @@ pub struct SendStats {
     pub seconds: f64,
     /// Captured samples dropped because processing fell behind (known at the end).
     pub capture_dropped: u64,
+    /// A `files` source's item being played (its index), once the first starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -204,6 +207,7 @@ impl Job {
                 send_errors: p.send_errors.load(Ordering::Relaxed),
                 seconds: (packets * fpp) as f64 / *rate as f64,
                 capture_dropped: prev,
+                item: p.item(),
             }));
         }
     }

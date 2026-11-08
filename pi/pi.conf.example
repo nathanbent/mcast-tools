@@ -25,6 +25,15 @@ MCAST_IFACE="any"
 # Extra arguments for "mcast serve", e.g. "--watch 239.192.2.1:10000".
 MCAST_EXTRA_ARGS=""
 
+# Text to speech, for text pages in intercom playlists that are spoken:
+# "espeak" (eSpeak NG: small, robotic), "piper" (Piper: natural voices,
+# about 60 MB per voice, fine on a Pi 4 or 5; eSpeak NG is installed too),
+# or "none".
+TEXT_TO_SPEECH=espeak
+# The Piper voice to download (https://huggingface.co/rhasspy/piper-voices),
+# e.g. "en_GB-alba-medium" or "de_DE-thorsten-medium".
+PIPER_VOICE="en_US-lessac-medium"
+
 # --- Intercom panel --------------------------------------------------------
 # Run "mcast intercom serve": buttons and schedules for announcements, played
 # through mcast serve on this Pi. Needs INSTALL_MCAST=yes. Its zones,

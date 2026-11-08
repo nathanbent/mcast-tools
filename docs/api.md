@@ -67,6 +67,7 @@ Errors are JSON: `{"error": "message"}`.
 | PUT | `/chimes` | `{"hidden": ["klaxon", ...]}`: hide exactly these from lists (and show the rest); returns the list |
 | PUT | `/chimes/{name}` | `{"hidden": true}` or `false`: hide or show one; returns it |
 | GET | `/chimes/{name}/preview` | The chime as a WAV file (24 kHz mono), to listen to before choosing it |
+| GET | `/voices` | The text-to-speech engine and its voices (see Text to speech) |
 | GET | `/events` | Server-sent events (below) |
 
 In every request below, `group` can be a phonebook name in place of an
@@ -102,7 +103,7 @@ Every field is optional; the defaults match `mcast audio send`.
 | `opus_mode` | follows `mode` | `voice` or `music` |
 | `opus_bandwidth` | | `nb`, `wb`, `swb`, `fb` |
 | `opus_fec` | `true` | |
-| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "files", "paths": ["NAME", ...], "gap_ms": 0}` (up to 100 files one after another as one stream, at the first one's rate and channels, with `gap_ms` of silence between them; loudness is measured over them all), `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
+| `source` | 440 Hz tone | `{"type": "tone", "frequency": 440, "level_dbfs": -12}`, `{"type": "pad", "level_dbfs": -12}` (a soft chord progression), `{"type": "file", "path": "NAME", "loop": false}`, `{"type": "files", "paths": ["NAME", ...], "gap_ms": 0}` (up to 100 files one after another as one stream, at the first one's rate and channels, with `gap_ms` of silence between them; loudness is measured over them all; an item can be text to speak instead, `{"say": "TEXT", "voice": "NAME"}`: see Text to speech), `{"type": "capture", "device": "USB"}`, `{"type": "chime"}` (no audio, just the chime(s); the default chime if neither `chime` nor `end_chime` is set), or `{"type": "live", "rate": 48000, "channels": 1}` (audio streamed in with `POST /jobs/{id}/live`; the defaults are shown) |
 | `mode` | `"none"` | `voice`, `music` or `none` |
 | `volume_db` | | Volume change after processing, with a limiter; chimes too |
 | `input_gain_db` | | Gain on the source before processing (not the chimes), -40 to 40, e.g. `12` for a quiet microphone; a boost is limited |
@@ -123,6 +124,29 @@ Every field is optional; the defaults match `mcast audio send`.
 
 File and chime paths are names of uploaded media files, with their folders (`bells/lunch.wav`). `render` exists in
 the request type but is only available from the CLI.
+
+### Text to speech
+
+A `files` source's items can be text: `{"say": "The library closes in ten
+minutes"}`, with an optional `voice`. The server speaks each into a WAV
+before the sender starts (so `POST /senders` takes longer the first time),
+and keeps it in a cache, so the same words in the same voice are spoken
+once. Up to 2000 characters per item; the job's `request` shows the text.
+
+The engine is found when the server starts:
+
+1. `--tts-command CMD` (`MCAST_TTS_COMMAND`): run with `sh -c`, the text on
+   stdin, a WAV on stdout, the voice asked for in `$MCAST_TTS_VOICE`.
+2. Piper, if `piper` is on the `PATH` and `--tts-voices DIR` (default
+   `/usr/local/share/mcast/voices`) holds at least one voice (`NAME.onnx`
+   with its `NAME.onnx.json`). `voice` names one; the default is
+   `--tts-voice`, else the first by name.
+3. eSpeak NG (`espeak-ng`), whose `voice` is a language such as `en-us`.
+
+Without one, a request with text to speak fails with `400`, as does text
+the engine can't speak. `GET /voices` says which engine there is and its
+voices: `{"engine": "piper"|"espeak-ng"|"command"|null, "voices": [...],
+"default_voice"}`.
 
 A live page: start a sender with a `live` source, then stream audio into
 it. Audio that arrives during the opening chime is kept and played after it.
@@ -272,7 +296,10 @@ event.
 `file_recv`. `state` is `starting`, `running`, `stopping`, `finished` (source ended),
 `stopped` (on request) or `failed` (see `error`). `ssrc` is set on audio
 send jobs once they start: the RTP SSRC of the stream, which listeners'
-reports in the monitor name as `about`. It's `null` on other jobs. Receive jobs' `stats` are
+reports in the monitor name as `about`. It's `null` on other jobs. A
+sender with a `files` source has `item` in its `stats` while it plays: the
+index of the item playing, from when the first one starts (after the
+chime), with a `job_updated` event as each starts. Receive jobs' `stats` are
 `packets`, `lost`, `concealed`, `late`, `invalid`, `underruns`, `overflows`,
 `buffered_ms`, and `transit_ms` (from the sender's RTCP: time from the
 sender's clock to arrival, `null` until a report arrives; only a true delay
@@ -328,7 +355,7 @@ its data is JSON with that `type` too:
 | Type | Data |
 |---|---|
 | `job_started` | `{"job": JOB}` |
-| `job_updated` | `{"job": JOB}`, about once a second while running, and on stop requests |
+| `job_updated` | `{"job": JOB}`, about once a second while running, on stop requests, and as each item of a `files` source starts |
 | `job_ended` | `{"job": JOB}` |
 | `stream_added`, `stream_changed` | `{"stream": STREAM}` |
 | `stream_removed` | `{"stream": STREAM, "reason": "deleted"\|"expired"}` |

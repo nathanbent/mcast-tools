@@ -155,8 +155,54 @@ pub struct Run {
     /// Who heard it, when its zones list the listeners they expect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listeners: Option<Box<Listeners>>,
+    /// The text pages shown so far, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shown: Vec<ShownText>,
+    /// What to show where, by part: from its playlist's text pages.
+    #[serde(skip)]
+    displays: Vec<PartDisplays>,
     #[serde(skip)]
     gap: Duration,
+}
+
+/// A text page a run showed.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ShownText {
+    /// Which part's playlist it's from (from 1); `None` for the announcement's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<usize>,
+    pub round: u32,
+    /// The playlist item heard as it was shown (counting only items heard).
+    pub item: usize,
+    pub text: Vec<String>,
+    pub at_ms: u64,
+}
+
+/// Where a part's text pages go.
+#[derive(Debug, Clone, Default)]
+struct PartDisplays {
+    part: Option<usize>,
+    /// By the playlist's items heard: what to show as each starts.
+    texts: Vec<Vec<String>>,
+    /// Its zones (ids), for the panel's display page.
+    zones: Vec<String>,
+    /// Its zones' display groups, as written.
+    groups: Vec<String>,
+}
+
+/// A text page to show now: on the panel's display page for `zones`, and
+/// as real-time text to the `groups`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Shown {
+    pub run: RunId,
+    pub announcement: String,
+    pub name: String,
+    pub zones: Vec<String>,
+    /// Display groups (phonebook names or addresses).
+    #[serde(skip)]
+    pub groups: Vec<String>,
+    pub text: Vec<String>,
+    pub at_ms: u64,
 }
 
 impl Run {
@@ -228,6 +274,8 @@ impl Run {
             targets: Vec::new(),
             sites: Vec::new(),
             listeners: None,
+            shown: Vec::new(),
+            displays: Vec::new(),
             gap: Duration::ZERO,
         }
     }
@@ -242,6 +290,8 @@ struct State {
     listening: bool,
     /// Ended jobs that weren't (yet) ours.
     early: VecDeque<Job>,
+    /// Items that started on jobs that weren't (yet) ours: (job, item).
+    early_items: VecDeque<(u64, usize)>,
 }
 
 /// Whether the runner can hear from the mcast server.
@@ -262,6 +312,8 @@ pub enum Change<'a> {
     Backend(&'a BackendStatus),
     /// Media files or folders changed on the mcast server.
     Media,
+    /// A run reached a text page to show.
+    Shown(&'a Shown),
 }
 
 /// Why an announcement couldn't be played at all.
@@ -328,6 +380,7 @@ impl Runner {
                 jobs: HashMap::new(),
                 listening: false,
                 early: VecDeque::new(),
+                early_items: VecDeque::new(),
             }),
             status: Mutex::new(BackendStatus {
                 connected: false,
@@ -347,6 +400,7 @@ impl Runner {
                     inner.reconcile();
                 }
                 Feed::JobEnded(job) => inner.job_ended(job),
+                Feed::JobItem { job, item } => inner.job_item(job, item),
                 Feed::Disconnected(e) => inner.set_status(false, Some(e)),
                 Feed::MediaChanged => (inner.on_change)(Change::Media),
             }
@@ -376,6 +430,7 @@ impl Runner {
             .with_defaults(&cfg.defaults);
         let targets = self.0.targets(cfg, a, site)?;
         let sites = cfg.sites_at(a, site);
+        let displays = part_displays(cfg, a, site);
         let id = {
             let mut st = self.0.lock();
             st.next_id += 1;
@@ -402,6 +457,8 @@ impl Runner {
                     }),
                     targets,
                     sites,
+                    shown: Vec::new(),
+                    displays,
                     gap: Duration::from_secs_f64(a.repeat_gap_s.max(0.0)),
                 },
             );
@@ -447,6 +504,8 @@ impl Runner {
                     targets: Vec::new(),
                     sites,
                     listeners: None,
+                    shown: Vec::new(),
+                    displays: Vec::new(),
                     gap: Duration::ZERO,
                 },
             );
@@ -716,7 +775,7 @@ impl Inner {
     }
 
     fn started(self: &Arc<Self>, id: RunId, i: usize, job: Job) {
-        let (stop_now, ended) = {
+        let (stop_now, ended, items) = {
             let mut st = self.lock();
             let stop_now = match st.runs.get_mut(&id) {
                 Some(run) => {
@@ -740,14 +799,80 @@ impl Inner {
                 Some(p) => st.early.remove(p),
                 None => job.is_over().then(|| job.clone()),
             };
-            (stop_now, ended)
+            let items: Vec<usize> = st
+                .early_items
+                .iter()
+                .filter(|(j, _)| *j == job.id)
+                .map(|(_, n)| *n)
+                .collect();
+            st.early_items.retain(|(j, _)| *j != job.id);
+            (stop_now, ended, items)
         };
+        for item in items {
+            self.job_item(job.id, item);
+        }
         self.emit(id);
         if let Some(j) = ended {
             self.job_ended(j);
         } else if stop_now {
             self.stop_job(job.id);
         }
+    }
+
+    /// A sender started an item of its list: show its text pages.
+    fn job_item(self: &Arc<Self>, job: u64, item: usize) {
+        let shown = {
+            let mut st = self.lock();
+            let Some(&(id, i)) = st.jobs.get(&job) else {
+                // Not ours, or not yet: `started` looks here.
+                st.early_items.push_back((job, item));
+                while st.early_items.len() > KEEP_EARLY {
+                    st.early_items.pop_front();
+                }
+                return;
+            };
+            let Some(run) = st.runs.get_mut(&id) else {
+                return;
+            };
+            let Some(part) = run.targets.get(i).map(|t| t.part) else {
+                return;
+            };
+            let Some(d) = run.displays.iter().find(|d| d.part == part) else {
+                return;
+            };
+            let Some(text) = d.texts.get(item).filter(|t| !t.is_empty()) else {
+                return;
+            };
+            // Every group of the part says so: show it once a round.
+            let round = run.round;
+            if run
+                .shown
+                .iter()
+                .any(|s| s.part == part && s.round == round && s.item == item)
+            {
+                return;
+            }
+            let at_ms = now_ms();
+            let shown = Shown {
+                run: id,
+                announcement: run.announcement.clone(),
+                name: run.name.clone(),
+                zones: d.zones.clone(),
+                groups: d.groups.clone(),
+                text: text.clone(),
+                at_ms,
+            };
+            run.shown.push(ShownText {
+                part,
+                round,
+                item,
+                text: text.clone(),
+                at_ms,
+            });
+            shown
+        };
+        self.emit(shown.run);
+        (self.on_change)(Change::Shown(&shown));
     }
 
     fn job_ended(self: &Arc<Self>, job: Job) {
@@ -1033,6 +1158,33 @@ fn note_heard(run: &mut Run, listeners: &[Listener]) -> bool {
         }
     }
     news
+}
+
+/// Where each part of `a` shows its playlist's text pages, for parts
+/// whose playlist has any.
+fn part_displays(cfg: &Config, a: &Announcement, site: Option<&str>) -> Vec<PartDisplays> {
+    let mut out = Vec::new();
+    for (i, (audio, zones)) in a.sections().into_iter().enumerate() {
+        let crate::model::Audio::Playlist(p) = audio else {
+            continue;
+        };
+        let Some(p) = cfg.playlist(p).filter(|p| p.shows_text()) else {
+            continue;
+        };
+        let mut d = PartDisplays {
+            part: (i > 0).then_some(i),
+            texts: p.texts_by_item(),
+            ..Default::default()
+        };
+        for z in cfg.zones_in(zones, site) {
+            d.zones.push(z.id.clone());
+            for g in &z.displays {
+                add_name(&mut d.groups, g);
+            }
+        }
+        out.push(d);
+    }
+    out
 }
 
 fn finish(run: &mut Run, state: RunState) {

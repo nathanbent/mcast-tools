@@ -8,7 +8,8 @@ export const state = {
   // on an open panel: admin, with no name.
   me: { name: null, role: "admin", announcements: [], categories: [] },
   // This screen's view, from the URL: ?kiosk (only the Panel, full screen),
-  // categories=a,b and tag=x (what it shows), size= and mode= (how).
+  // categories=a,b and tag=x (what it shows), size= and mode= (how);
+  // ?display (the display page: text pages, full screen) for zones=a,b.
   view: (() => {
     const q = new URLSearchParams(location.search);
     const list = (k) => (q.get(k) ?? "").split(",").map((x) => x.trim()).filter(Boolean);
@@ -18,6 +19,8 @@ export const state = {
       tag: q.get("tag") || null,
       size: ["small", "medium", "large"].includes(q.get("size")) ? q.get("size") : null,
       mode: ["tiles", "list"].includes(q.get("mode")) ? q.get("mode") : null,
+      display: q.has("display") && q.get("display") !== "0",
+      zones: list("zones"),
     };
   })(),
   config: { zones: [], announcements: [] },
@@ -39,6 +42,9 @@ export const state = {
   // Expected speakers between plays (GET /speakers): { known, error,
   // speakers: [{ name, zones, online, since_ms, last_seen_ms }] }.
   speakers: { known: false, error: null, speakers: [] },
+  // Text pages up on displays (GET /display): [{ run, announcement, name,
+  // zones, text, at_ms, until_ms }], newest first.
+  pages: [],
 };
 
 // What the signed-in token may do (the server checks too).
@@ -163,7 +169,16 @@ export function isHidden(name) {
   return (state.config.hidden_media ?? []).some((h) => name === h || name.startsWith(`${h}/`));
 }
 
+export function refreshPages() {
+  const zones = state.view.zones.join(",");
+  return api("GET", `/display${zones ? `?zones=${encodeURIComponent(zones)}` : ""}`).then((v) => {
+    state.pages = v.pages;
+    changed("display");
+  });
+}
+
 export function refreshAll() {
+  if (state.view.display) return Promise.all([refreshConfig().catch(() => {}), refreshPages()]);
   // A media token sees only the Sounds tab.
   if (!can.operate()) return refreshLibrary();
   // What's coming up depends on the sites in the config.
@@ -217,6 +232,15 @@ export function apply(ev) {
       changed("speakers");
       if (ev.changes.length) for (const fn of speakerListeners) fn(ev.changes);
       break;
+    case "display": {
+      const p = ev.page;
+      const wanted = !state.view.zones.length || p.zones.some((z) => state.view.zones.includes(z));
+      if (!wanted) break;
+      state.pages = [p, ...state.pages.filter((x) => !(x.run === p.run && x.at_ms === p.at_ms))]
+        .sort((a, b) => b.at_ms - a.at_ms);
+      changed("display");
+      break;
+    }
     case "lagged":
       refreshAll();
       break;

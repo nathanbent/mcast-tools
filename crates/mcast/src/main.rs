@@ -505,6 +505,21 @@ struct ServeArgs {
     /// (for working on crates/mcast-web/assets)
     #[arg(long, value_name = "DIR", conflicts_with = "no_web")]
     web_dir: Option<PathBuf>,
+    /// Text to speech: Piper voices (NAME.onnx with NAME.onnx.json)
+    /// [default: /usr/local/share/mcast/voices]. Without Piper or a voice,
+    /// eSpeak NG is used if installed
+    #[arg(long, value_name = "DIR", env = "MCAST_TTS_VOICES")]
+    tts_voices: Option<PathBuf>,
+    /// Text to speech: the voice used when a request names none
+    #[arg(long, value_name = "NAME", env = "MCAST_TTS_VOICE")]
+    tts_voice: Option<String>,
+    /// Text to speech by this command instead (run with sh -c): text on
+    /// stdin, a WAV on stdout, the voice asked for in $MCAST_TTS_VOICE
+    #[arg(long, value_name = "COMMAND", env = "MCAST_TTS_COMMAND")]
+    tts_command: Option<String>,
+    /// Where spoken text is kept, so it's synthesized once [default: under the temporary directory]
+    #[arg(long, value_name = "DIR", env = "MCAST_TTS_CACHE")]
+    tts_cache: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1263,6 +1278,12 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
         phonebook: mcast_control::phonebook::default_path()?,
         chimes: mcast_control::chimes::default_path()?,
         max_upload: a.max_upload_mb.saturating_mul(1 << 20),
+        tts: mcast_audio::tts::TtsConfig {
+            command: a.tts_command,
+            voices: a.tts_voices,
+            voice: a.tts_voice,
+            cache: a.tts_cache,
+        },
     };
     let web = if a.no_web {
         axum::Router::new()

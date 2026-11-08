@@ -30,6 +30,9 @@ panel-specific:
 - **Push to talk:** the `live` source.
 - **Delivery confirmation:** the monitor's `listeners` (receivers heard on
   RTCP), and send jobs' `ssrc`, which a listener's `about` names.
+- **Text pages:** `{"say": ...}` items in a `files` source (text to speech,
+  `GET /voices`), and senders' `stats.item`, so pages show in step. Displays
+  get text through the existing text channels (`POST /texts`).
 
 ## The crate
 
@@ -45,6 +48,8 @@ crates/mcast-intercom/src/
                 delivery, and the delivery log (webhook-log.jsonl)
   history.rs    the play history and connection log (history/), stats and the monitor
   presence.rs   whether the speakers zones expect are reporting between plays
+  displays.rs   text pages: the display page's board, and real-time text to
+                zones' display groups (a text channel per group)
   inputs.rs     GPIO buttons and contacts (gpiocdev on Linux; a fake for tests)
   backup.rs     backups (intercom.json, or a .tar.gz with the sounds) and restoring
   cli.rs        mcast intercom list|check|upcoming|play|token|backup|restore

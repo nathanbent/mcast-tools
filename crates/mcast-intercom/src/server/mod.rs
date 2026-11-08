@@ -84,6 +84,8 @@ pub enum Event {
         status: crate::presence::Speakers,
         changes: Vec<crate::presence::SpeakerChange>,
     },
+    /// A text page went up on displays, or was given its end (`until_ms`).
+    Display { page: crate::displays::Page },
 }
 
 pub(crate) struct Inner {
@@ -105,6 +107,8 @@ pub(crate) struct Inner {
     pub(crate) inputs: crate::inputs::Inputs,
     /// Whether expected speakers are there between plays.
     pub(crate) presence: crate::presence::Presence,
+    /// Text pages on displays.
+    pub(crate) displays: Arc<crate::displays::Displays>,
     closing: watch::Receiver<bool>,
 }
 
@@ -176,18 +180,31 @@ impl AppState {
             crate::history::default_dir(&config),
             store::load(&config).map_or(crate::history::DEFAULT_DAYS, |c| c.history_days()),
         ));
+        let displays = {
+            let tx = events.clone();
+            Arc::new(crate::displays::Displays::start(
+                backend.clone(),
+                move |page| {
+                    let _ = tx.send(Event::Display { page: page.clone() });
+                },
+            ))
+        };
         let runner = {
             let tx = events.clone();
             let hooks = webhooks.clone();
             let past = history.clone();
+            let shown = displays.clone();
             Runner::new(backend.clone(), move |c| {
                 hooks.observe(&c);
                 past.observe(&c);
+                shown.observe(&c);
                 // No subscribers is fine.
                 let _ = tx.send(match c {
                     Change::Run(run) => Event::Run { run: run.clone() },
                     Change::Backend(s) => Event::Backend { status: s.clone() },
                     Change::Media => Event::MediaChanged,
+                    // As a `display` event, from the displays.
+                    Change::Shown(_) => return,
                 });
             })
         };
@@ -227,6 +244,7 @@ impl AppState {
             history,
             inputs,
             presence,
+            displays,
             closing,
         }))
     }
@@ -459,6 +477,8 @@ pub fn router(state: AppState) -> Router {
         .route("/backup", get(backup::download))
         .route("/restore", post(backup::restore))
         .route("/speakers", get(routes::speakers))
+        .route("/display", get(routes::display))
+        .route("/voices", get(routes::voices))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))
         .route("/events", get(events))
@@ -524,6 +544,9 @@ async fn events(
                         match &e {
                             Event::ConfigChanged => *c = s.load().await.unwrap_or_default(),
                             Event::Run { run } if !caller.may_play(c, &run.announcement) => {
+                                continue
+                            }
+                            Event::Display { page } if !caller.may_play(c, &page.announcement) => {
                                 continue
                             }
                             _ => {}

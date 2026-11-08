@@ -13,6 +13,7 @@ import * as schedules from "./schedules.js";
 import * as settings from "./settings.js";
 import * as sounds from "./sounds.js";
 import * as playlists from "./playlists.js";
+import * as display from "./display.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -184,6 +185,7 @@ async function start() {
     $("fatal").textContent = `"${state.me.name}" is a trigger token, for other systems to play announcements through the API. Sign out and use an operator or admin token to use this page.`;
     return;
   }
+  if (state.view.display) return displayMode();
   if (can.operate()) $("all-stop").onclick = allStop;
   else $("all-stop").hidden = true;
 
@@ -236,6 +238,25 @@ async function start() {
     // Revoked or expired meanwhile: back to signing in.
     if (s === "offline") api("GET", "/health").catch((e) => { if (e.status === 401) location.reload(); });
     // Events may have been missed while disconnected.
+    if (s === "live" && !first) refreshAll().catch(() => {});
+    if (s === "live") first = false;
+  });
+}
+
+// The display page: text pages for some zones, full screen, and nothing else.
+async function displayMode() {
+  document.body.classList.add("display-mode");
+  kiosk();
+  $("all-stop").hidden = true;
+  $("tab-panel").hidden = true;
+  $("tab-display").hidden = false;
+  document.title = "Intercom display";
+  await refreshAll().catch((e) => toast(`Can't load the text pages: ${e.message}`, "error"));
+  display.mount($("display"));
+  let first = true;
+  follow(apply, (s) => {
+    setStatus(s);
+    if (s === "offline") api("GET", "/health").catch((e) => { if (e.status === 401) location.reload(); });
     if (s === "live" && !first) refreshAll().catch(() => {});
     if (s === "live") first = false;
   });

@@ -43,9 +43,9 @@ A page with a tab for each part:
 | **History** | Every play, and how each group fared, kept on disk (a file a day in `history/` beside `intercom.json`, for 90 days or as set in Settings → History): filter by date, announcement, outcome and who started it, page back, and **download a CSV** |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
 | **Announcements** | Listed under their categories, with the **categories** themselves below. Each one in sections: General (name, audio: a sound, a playlist, chime only or live), On the Panel (category, tags), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
-| **Playlists** | Sounds that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them |
+| **Playlists** | Sounds and **text pages** that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them. Each text page is spoken, shown on displays, or both, with a voice from the mcast server's (see *Text pages* below) |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
-| **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need, and the **listeners** expected to hear it (see *Who heard it* below), with the receivers the mcast server hears now offered to add. The list shows each listener's state: reporting to the mcast server now or not, and when it last heard a page |
+| **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need, the **listeners** expected to hear it (see *Who heard it* below), with the receivers the mcast server hears now offered to add, and its **text displays**. The list shows each listener's state: reporting to the mcast server now or not, and when it last heard a page |
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), **buttons and contacts** (GPIO inputs), **backup and restore**, and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
 The setup tabs (Playlists, Sounds, Zones, Settings) are under **More** in
@@ -83,6 +83,38 @@ an operator token limited to those categories.
 ```
 https://pager.local:8651/?kiosk=1&categories=reception&size=large#panel
 ```
+
+**Display page.** `?display=1&zones=hall,gym` makes the page a sign for a TV
+or tablet: full screen, kept awake, showing the text pages of what plays to
+those zones (all zones without `zones=`) in large type as the playlist
+reaches them, and the time in between. Sign it in with an operator token;
+one limited to categories shows only theirs. Settings → Panel builds the
+link.
+
+### Text pages
+
+A playlist item can be a text page, spoken, shown, or both (the default):
+
+- **Spoken** by the mcast server's text to speech, as the playlist reaches
+  it, in the announcement's stream (chimes, processing and volume apply).
+  `mcast serve` uses Piper if it's installed with a voice, else eSpeak NG
+  (see `docs/api.md`, *Text to speech*); `GET /voices` lists what it has.
+  It keeps what it spoke, so a page is only synthesized the first time.
+- **Shown** as the playlist reaches it: when the page is spoken, as its
+  speech starts; a page that's only shown appears with the next item heard
+  (or with the last, at the end). It goes to:
+  - each zone's **text displays**: groups that get it as real-time text
+    (RFC 4103), shown by `mcast text recv -g GROUP` on any screen. The
+    panel keeps a text channel open per group (named "Intercom") while it's
+    used, and closes it after five idle minutes;
+  - the **display page** (above), and the run card.
+
+  A page stays up while the run plays, and for 30 s after it ends; a
+  stopped run's come down at once.
+- **Parts** show their own playlist's pages, on their own zones' displays.
+
+It needs an mcast server from 0.5.5 on: older ones refuse spoken items,
+and don't say when each item starts.
 
 ### Access tokens
 
@@ -333,6 +365,8 @@ its speakers need: `encoding`, `volume_db` (added to the announcement's),
 out to use the server's default. `site`: the site it's at, if any.
 `listeners`: the names of the speakers expected to hear its pages (see
 *Who heard it*), e.g. `["Lobby", "Office"]`; up to 100, each once.
+`displays`: text displays, groups (phonebook names or addresses) that get
+the text pages of what plays here (see *Text pages*); up to 20.
 
 **Announcements.** `id`, `name` and `zones` (zone ids), then:
 
@@ -368,17 +402,23 @@ all).
 "confirm_emergency": false}` (the defaults; `mode` can be `list`). Set it in
 Settings → Panel, or with `PUT /settings` (`"panel"`, replaced whole).
 
-**Playlists.** `[{"id", "name", "items", "gap_ms"}]`: sounds that play one
-after another, as one stream, with the announcement's chimes before and
-after. `items` are `{"type": "sound", "media": "NAME"}` (up to 100), `gap_ms`
-the silence between them (default 0, up to 60000). Files at another sample
-rate or channel count than the first are converted to it. A playlist an
-announcement uses can't be deleted or left empty. They need an mcast server
-that plays a list of files (0.5.5 or later).
+**Playlists.** `[{"id", "name", "items", "gap_ms"}]`: sounds and text pages
+that play one after another, as one stream, with the announcement's chimes
+before and after. `items` (up to 100) are `{"type": "sound", "media":
+"NAME"}` or `{"type": "text", "text": "...", "speak": true, "show": true,
+"voice": "NAME"}` (a text page, up to 2000 characters, spoken, shown or
+both: see *Text pages*; `voice` unset is the server's default). `gap_ms` is
+the silence between the items heard (default 0, up to 60000). Files at
+another sample rate or channel count than the first are converted to it. A
+playlist an announcement uses can't be deleted, or left with nothing heard
+(a sound or a spoken page). They need an mcast server that plays a list of
+files (0.5.5 or later).
 
 ```json
 "playlists": [{"id": "closing", "name": "Closing", "gap_ms": 500, "items": [
-  {"type": "sound", "media": "en/closing.wav"}, {"type": "sound", "media": "en/thanks.wav"}]}],
+  {"type": "sound", "media": "en/closing.wav"},
+  {"type": "text", "text": "The library closes in ten minutes."},
+  {"type": "text", "text": "Please return books to the front desk.", "speak": false}]}],
 "announcements": [{"id": "closing", "name": "Closing time", "audio": {"playlist": "closing"},
   "zones": ["building-a"],
   "parts": [{"zones": ["building-b"], "audio": {"media": "es/closing.wav"}}]}]
@@ -574,6 +614,8 @@ only their runs.
 | `GET /backup` | The config as `intercom.json` (admin); `?sounds=1`: a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history |
 | `POST /restore` | Put a backup back (admin): the raw body is a `.tar.gz` or an `intercom.json`. `?dry_run=1` only says what would change. Returns `{"plan": {"lists": {LIST: {"added", "changed", "removed"}}, "settings", "sounds_in_backup", "upload", "missing", "same"}, "applied", "uploaded", "kept", "server_error"}`; the config before is kept as `intercom.json.bak` |
 | `GET /speakers` | Whether each speaker zones expect is reporting between plays: `{"known", "error", "speakers": [{"name", "zones", "online", "since_ms", "last_seen_ms"}]}`. `online` is `null` until known (a minute for one never seen). The `speakers` event sends the same, with `changes: [{"speaker", "online"}]` |
+| `GET /display?zones=a,b` | The text pages up on displays now, newest first (with `zones`, those shown in any of them): `{"pages": [{"run", "announcement", "name", "zones", "text", "at_ms", "until_ms"}]}`; `until_ms` is `null` while the run plays. The `display` event sends each page as it goes up and as it's given its end. A token limited to categories sees only theirs |
+| `GET /voices` | The mcast server's text to speech: `{"engine", "voices", "default_voice"}` (`engine` is `piper`, `espeak-ng`, `command` or `null`) |
 | `GET /listeners` | The receivers `mcast serve`'s monitor hears now (`[{"group", "name", "cname", "about", "loss_percent", "last_heard_ms", "left"}]`), for choosing a zone's listeners; 404 if its monitor is off |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
 | `GET /library` | The Sounds tab: `{"files": [{"name", "bytes", "modified_ms", "hidden", "used_by", "audio", "audio_error", "tags"}], "folders": [{"name", "hidden"}], "tags": [{"tag", "files"}]}`; `used_by` names the announcements (and "the defaults") that use a file; `audio` is `{"codec", "rate", "channels", "duration_s"}`, or `audio_error` says why the mcast server can't play it (`null` both with an mcast server before 0.5.5) |
@@ -583,7 +625,7 @@ only their runs.
 | `PUT /media-hidden` | `{"name", "hidden"}`: hide a file or folder from the lists, or show it again |
 | `PUT /media-tags` | `{"names", "add", "remove"}`: tag or untag files, many at once (tags are up to 32 characters, no commas, and match without regard to case). Returns each file's tags: `{NAME: [tags]}`. Tags are kept in `intercom.json` (`media_tags`), follow a file when it's moved, and go when it's deleted |
 | `GET /chimes`, `PUT /chimes`, `GET /chimes/{name}/preview` | The mcast server's built-in chimes: list them, hide some from the lists (`{"hidden": [...]}`, kept on the mcast server), and a WAV to listen to |
-| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed` (also when tokens change), `backend` (`{"status"}`), `media_changed`, `lagged` |
+| `GET /events` | Server-sent events: `run` (`{"run"}`), `config_changed` (also when tokens change), `backend` (`{"status"}`), `media_changed`, `display` (`{"page"}`), `lagged` |
 | `GET`, `POST /trigger/{id or name}` | Play it now (`201`, the run), as another system. Overrides for this play: `zones` (some of its zones) and `repeat`, in the query or a JSON body. `GET` takes a trigger token in the URL; `HEAD` and other methods get `405`. Not for live announcements (`422`) |
 | `GET`, `POST /trigger/{id or name}/stop` | Stop it wherever it's playing; the runs stopped |
 | `GET`, `POST /stop-all` | Stop everything the token may stop; the runs stopped |
@@ -606,7 +648,9 @@ A run:
 ```
 
 A target's `part` says which of the announcement's parts it plays (from 1;
-missing for its own audio). A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
+missing for its own audio). A run that showed text pages has `shown`:
+`[{"part", "round", "item", "text", "at_ms"}]`, each with the item heard
+(counting only items heard) it came up with. A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
 button, push to talk or the command line, `{"type": "api", "by"}` for the
 trigger API (or a trigger token on the play route), and `{"type": "schedule", "id", "at_ms"}` for a schedule, with the time
 it was due. `by` is the token's name (`"startup token"` for the startup

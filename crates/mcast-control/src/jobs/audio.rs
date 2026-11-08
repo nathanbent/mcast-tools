@@ -86,6 +86,36 @@ impl Jobs {
             }
         }
 
+        // As each item of a files source starts, say so at once (rather
+        // than with the next second's stats), so clients can keep anything
+        // shown alongside it in step.
+        let progress = Arc::new(Progress::default());
+        let weak = Arc::downgrade(&self.shared);
+        let _ = progress.on_item.set(Box::new(move |item| {
+            let Some(shared) = weak.upgrade() else {
+                return;
+            };
+            let info = {
+                let mut st = shared.lock();
+                let Some(job) = st.jobs.get_mut(&id) else {
+                    return;
+                };
+                job.refresh();
+                // Before the job has its progress (a source with no chime
+                // starts at once), its stats can't say yet.
+                match &mut job.info.stats {
+                    Some(JobStats::Send(s)) => s.item = Some(item),
+                    stats => {
+                        *stats = Some(JobStats::Send(SendStats {
+                            item: Some(item),
+                            ..Default::default()
+                        }))
+                    }
+                }
+                job.info.clone()
+            };
+            shared.emit(Event::JobUpdated { job: info });
+        }));
         let (ready_tx, ready_rx) = mpsc::channel();
         let shared = self.shared.clone();
         let thread = std::thread::Builder::new()
@@ -98,7 +128,6 @@ impl Jobs {
                         return;
                     }
                 };
-                let progress = Arc::new(Progress::default());
                 let rate = sender.spec().sample_rate;
                 let ready = (
                     crate::describe::send_summary(&sender, &req),
@@ -117,6 +146,7 @@ impl Jobs {
                         send_errors: s.send_errors,
                         seconds: s.frames as f64 / rate as f64,
                         capture_dropped: s.capture_dropped,
+                        item: None,
                     }))
                 });
                 shared.finish(id, result);

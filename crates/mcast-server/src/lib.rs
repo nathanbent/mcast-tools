@@ -64,6 +64,8 @@ pub struct ServerConfig {
     pub phonebook: PathBuf,
     /// Which built-in chimes are hidden from lists, shared with the CLI.
     pub chimes: PathBuf,
+    /// How to speak `{"say": ...}` items of a `files` source.
+    pub tts: mcast_audio::tts::TtsConfig,
 }
 
 struct Inner {
@@ -82,6 +84,8 @@ struct Inner {
     chimes_lock: tokio::sync::Mutex<()>,
     /// What each media file holds, as last probed (see `media::audio_info`).
     audio_info: media::AudioCache,
+    /// Text to speech, if an engine was found.
+    tts: Option<mcast_audio::tts::Tts>,
     closing: watch::Receiver<bool>,
 }
 
@@ -134,6 +138,7 @@ impl AppState {
             chimes: cfg.chimes.clone(),
             chimes_lock: tokio::sync::Mutex::new(()),
             audio_info: Default::default(),
+            tts: mcast_audio::tts::Tts::detect(&cfg.tts),
             closing,
         })))
     }
@@ -192,6 +197,15 @@ pub async fn serve(
             ""
         }
     );
+    eprintln!(
+        "text to speech: {}",
+        match state.0.tts.as_ref().map(|t| t.engine()) {
+            Some(mcast_audio::tts::Engine::Piper { voices, .. }) =>
+                format!("Piper, voices in {}", voices.display()),
+            Some(e) => e.name().to_string(),
+            None => "none (install Piper and a voice, or eSpeak NG)".into(),
+        }
+    );
     let app = router(state.clone()).merge(extra);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -239,6 +253,7 @@ pub fn router(state: AppState) -> Router {
         .route("/chimes", get(list_chimes).put(put_chimes))
         .route("/chimes/{name}", axum::routing::put(put_chime))
         .route("/chimes/{name}/preview", get(chime_preview))
+        .route("/voices", get(voices))
         .route("/events", get(events))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
         .layer(middleware::from_fn_with_state(state.clone(), auth))

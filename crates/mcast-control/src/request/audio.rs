@@ -75,9 +75,10 @@ pub enum SourceRequest {
         looped: bool,
     },
     /// Audio files one after another, as one stream (a playlist), with
-    /// `gap_ms` of silence between them.
+    /// `gap_ms` of silence between them. Items can also be text to speak
+    /// (`{"say": "..."}`), which a server turns into files before starting.
     Files {
-        paths: Vec<PathBuf>,
+        paths: Vec<FileItem>,
         #[serde(default)]
         gap_ms: u32,
     },
@@ -102,6 +103,25 @@ pub enum SourceRequest {
 
 /// Most files a `files` source plays.
 pub const MAX_FILES: usize = 100;
+
+/// One item of a `files` source: a file (`"bells/lunch.wav"`), or text to
+/// speak (`{"say": "The library closes in ten minutes", "voice": "en-gb"}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FileItem {
+    Path(PathBuf),
+    Say {
+        say: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<String>,
+    },
+}
+
+impl From<PathBuf> for FileItem {
+    fn from(p: PathBuf) -> Self {
+        FileItem::Path(p)
+    }
+}
 
 fn default_live_rate() -> u32 {
     48_000
@@ -373,8 +393,17 @@ impl SendRequest {
                 if *gap_ms > 60_000 {
                     bail!("gap_ms is at most 60000");
                 }
+                let paths = paths
+                    .iter()
+                    .map(|p| match p {
+                        FileItem::Path(p) => Ok(p.clone()),
+                        FileItem::Say { .. } => Err(anyhow::anyhow!(
+                            "text to speak must be spoken before sending"
+                        )),
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
                 sender::Source::Files {
-                    paths: paths.clone(),
+                    paths,
                     gap: Duration::from_millis(*gap_ms as u64),
                 }
             }

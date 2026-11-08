@@ -30,6 +30,11 @@ fn server() -> Server {
 
 /// With the monitor on, watching these groups.
 fn server_watching(monitor: Option<Vec<std::net::SocketAddr>>) -> Server {
+    server_with(monitor, None)
+}
+
+/// Speaking with `tts` (run in the server's directory), if set.
+fn server_with(monitor: Option<Vec<std::net::SocketAddr>>, tts: Option<&str>) -> Server {
     let dir = std::env::temp_dir().join(format!(
         "mcast-intercom-server-test-{}",
         mcast_core::random_u32()
@@ -48,6 +53,11 @@ fn server_watching(monitor: Option<Vec<std::net::SocketAddr>>) -> Server {
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor,
         max_upload: 1 << 20,
+        tts: mcast_audio::tts::TtsConfig {
+            command: tts.map(|c| format!("cd '{}' && {c}", dir.display())),
+            cache: Some(dir.join("tts")),
+            ..Default::default()
+        },
         phonebook: dir.join("phonebook.conf"),
         chimes: dir.join("chimes.json"),
     };
@@ -100,6 +110,7 @@ fn config() -> Config {
         zones: vec![
             Zone {
                 listeners: Vec::new(),
+                displays: Vec::new(),
                 site: None,
                 id: "both".into(),
                 name: "Both".into(),
@@ -112,6 +123,7 @@ fn config() -> Config {
             },
             Zone {
                 listeners: Vec::new(),
+                displays: Vec::new(),
                 site: None,
                 id: "busy".into(),
                 name: "Busy".into(),
@@ -451,6 +463,106 @@ fn plays_a_playlist_and_a_part_together() {
     assert!(run.targets.iter().all(|t| t.played == 1), "{run:#?}");
 }
 
+/// A short tone, as a WAV.
+fn tone(path: &std::path::Path, rate: u32) {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut w = hound::WavWriter::create(path, spec).unwrap();
+    for i in 0..rate / 4 {
+        w.write_sample(((i % 50) as i16 - 25) * 300).unwrap();
+    }
+    w.finalize().unwrap();
+}
+
+#[test]
+fn speaks_and_shows_text_pages_in_step() {
+    // "Speech" is a tone, and what it was asked to say is logged.
+    let srv = server_with(None, Some("cat >> said; cat speech.wav"));
+    let media = srv.dir.join("media");
+    std::fs::create_dir_all(&media).unwrap();
+    tone(&media.join("bell.wav"), 16_000);
+    tone(&srv.dir.join("speech.wav"), 22_050);
+    let display = "239.255.77.91:5004";
+    let backend = Arc::new(HttpBackend::new(&srv.url, Some("secret".into())));
+
+    // Something on the display group to see what's shown there.
+    let agent = ureq::agent();
+    let auth = "Bearer secret";
+    let watcher: serde_json::Value = agent
+        .post(&format!("{}/api/v1/texts", srv.url))
+        .set("Authorization", auth)
+        .send_json(json!({"group": display, "send": false, "name": "Lobby sign"}))
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let watcher = watcher["id"].as_u64().unwrap();
+
+    let cfg: Config = serde_json::from_value(json!({
+        "zones": [{"id": "hall", "name": "Hall", "displays": [display],
+            "targets": [{"group": "239.255.77.92:5004", "encoding": "g711u"}]}],
+        "playlists": [{"id": "pl", "name": "PL", "gap_ms": 100, "items": [
+            {"type": "sound", "media": "bell.wav"},
+            {"type": "text", "text": "The library closes in ten minutes"},
+            {"type": "text", "text": "Thank you", "speak": false}]}],
+        "announcements": [{"id": "closing", "name": "Closing", "audio": {"playlist": "pl"},
+            "zones": ["hall"]}]
+    }))
+    .unwrap();
+    cfg.validate().unwrap();
+    let displays = Arc::new(mcast_intercom::displays::Displays::start(
+        backend.clone(),
+        |_| {},
+    ));
+    let seen = displays.clone();
+    let r = Runner::new(backend, move |c| seen.observe(&c));
+    let run = r
+        .play(&cfg, "closing", Trigger::Manual { by: None })
+        .unwrap();
+    assert!(run.targets.iter().all(|t| t.error.is_none()), "{run:#?}");
+    let run = wait_for(&r, run.id, "it to end", |r| r.state.is_over());
+    assert_eq!(run.state, RunState::Done, "{run:#?}");
+    assert_eq!(
+        std::fs::read_to_string(srv.dir.join("said")).unwrap(),
+        "The library closes in ten minutes\n"
+    );
+    // Shown as the spoken page started, with the page after it (the last).
+    assert_eq!(run.shown.len(), 1, "{run:#?}");
+    assert_eq!(run.shown[0].item, 1);
+    assert_eq!(
+        run.shown[0].text,
+        ["The library closes in ten minutes", "Thank you"]
+    );
+    let page = &displays.pages(None)[0];
+    assert!(page.until_ms.is_some(), "{page:?}");
+    // The display group got it as real-time text.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let lines: serde_json::Value = agent
+            .get(&format!("{}/api/v1/jobs/{watcher}/text", srv.url))
+            .set("Authorization", auth)
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap();
+        let texts: Vec<&str> = lines
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|l| l["text"].as_str())
+            .collect();
+        if texts == ["The library closes in ten minutes", "Thank you"] {
+            assert_eq!(lines[0]["from"], "Intercom", "{lines}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the display got {lines}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn says_which_receivers_heard_a_page() {
     let group: std::net::SocketAddr = "239.255.77.74:5004".parse().unwrap();
@@ -482,6 +594,7 @@ fn says_which_receivers_heard_a_page() {
     let mut cfg = config();
     cfg.zones.push(Zone {
         listeners: vec!["Lobby".into(), "Hall".into()],
+        displays: Vec::new(),
         site: None,
         id: "ears".into(),
         name: "Ears".into(),

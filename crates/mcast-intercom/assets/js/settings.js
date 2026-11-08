@@ -128,7 +128,8 @@ function panelLook() {
         h("div", { class: "buttons" },
           h("button", { type: "submit", class: "primary" }, "Save"),
           h("button", { type: "button", onclick: draw }, "Undo changes"))),
-      kioskLink());
+      kioskLink(),
+      displayLink());
   };
   draw();
   subscribe(["config"], () => { if (!dirty) draw(); });
@@ -167,6 +168,33 @@ function kioskLink() {
       [...cats, { id: "other", name: "Other (none)" }].map((c) => h("label", { class: "check" },
         h("input", { type: "checkbox", onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); } }), ` ${c.name}`))),
     h("div", { class: "row" }, field("Tag", tag), field("Button size", size), field("Layout", mode)),
+    h("div", { class: "kiosk-link" }, out,
+      h("button", { type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(url()); toast("Copied", "ok"); } catch { toast("Select the link and copy it", "info"); }
+      } }, "Copy"),
+      h("a", { href: "#", class: "link", onclick: (e) => { e.preventDefault(); window.open(url(), "_blank", "noopener"); } }, "Open")));
+  update();
+  return box;
+}
+
+// A link for a sign: the display page, showing the text pages of what
+// plays to the chosen zones (all of them if none are chosen).
+function displayLink() {
+  const chosen = new Set();
+  const out = h("code", {});
+  const url = () => {
+    const q = new URLSearchParams({ display: "1" });
+    if (chosen.size) q.set("zones", [...chosen].join(","));
+    return `${location.origin}${location.pathname}?${q.toString().replace(/%2C/g, ",")}`;
+  };
+  const update = () => { out.textContent = url(); };
+  const box = h("fieldset", { class: "part", onchange: update },
+    h("legend", {}, "Display page"),
+    h("p", { class: "muted small" },
+      "A full-screen sign for a TV or tablet: it shows the text pages of playlists as they play to its zones, and the time in between. Sign it in with an operator token. Zones can also send text pages to text displays (Zones → Text displays)."),
+    h("div", { class: "checks" }, h("span", { class: "muted small" }, "Zones:"),
+      state.config.zones.map((z) => h("label", { class: "check" },
+        h("input", { type: "checkbox", onchange: (e) => { if (e.target.checked) chosen.add(z.id); else chosen.delete(z.id); } }), ` ${z.name}`))),
     h("div", { class: "kiosk-link" }, out,
       h("button", { type: "button", onclick: async () => {
         try { await navigator.clipboard.writeText(url()); toast("Copied", "ok"); } catch { toast("Select the link and copy it", "info"); }

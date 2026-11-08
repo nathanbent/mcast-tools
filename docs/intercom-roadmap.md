@@ -38,7 +38,7 @@ datasheets), so the cells are approximate.
 | Logs / play history | ✓ | ✓ | ✓ | in memory only |
 | Backup and restore | ✓ | ✓ | ✓ | — (copy `intercom.json` by hand) |
 | Users and roles | single admin | ✓ | ✓ | single token |
-| Text-to-speech, visual alerts | some models | — | ✓ | — (`mcast text` exists) |
+| Text-to-speech, visual alerts | some models | — | ✓ | ✓ text pages, spoken and shown (item 8) |
 
 Gaps worth closing beyond the original wish list: **persistent history**
 (stats and monitoring depend on it) and **scoped tokens** (so a webhook or an
@@ -179,7 +179,12 @@ The plan:
 - **Core:** `mcast serve` has a `files` source that plays up to 100 files as one stream, with no gap or SAP churn between them. It uses the first file's format and converts the rest, with an optional `gap_ms`. Loudness is measured over the whole list.
 - **Panel:** playlists (`{"type": "sound"}` items, `gap_ms`) in a Playlists tab, with drag-to-reorder and lengths. An announcement's audio can be a playlist.
 - **Parts:** each part sends other audio (a sound, a playlist or chime only) to other zones in the same run. Targets say which part they play. The trigger API's zone override narrows across parts.
-- **Next:** text pages as playlist items.
+- **Text pages** (built after; the owner chose both speech and displays, chosen per page, and shown in step with the audio):
+  - A playlist item `{"type": "text", "text", "speak", "show", "voice"}`, both on by default.
+  - **Speech is in the core:** a `files` source's items can be `{"say": TEXT, "voice"}`. `mcast serve` speaks them before starting, with Piper when it has a voice (the owner's choice), else eSpeak NG, or `--tts-command`, and caches the WAVs. `GET /voices`.
+  - **In step:** senders report the item playing (`stats.item`, with a `job_updated` event as each starts). The panel shows a run's pages as each spoken page starts; a page only shown waits for the next item heard.
+  - **Displays** (the owner chose both): a zone's `displays` get pages as real-time text through a text channel the panel keeps per group (`mcast text recv` shows them), and `?display=1&zones=...` is a full-screen display page in the browser.
+  - The Pi installer installs eSpeak NG, or Piper and a voice (`TEXT_TO_SPEECH`).
 
 The plan before building:
 
@@ -317,10 +322,9 @@ Tokens, webhooks and history are never in a backup. The plan:
 ## Later / out of scope
 
 - Users and roles beyond scoped tokens.
-- Text-to-speech announcements.
 - SIP paging.
-- Text to displays alongside an announcement, through `mcast text`. That
-  would be unusual among these products.
+- (Text to speech and text to displays were built as text pages in
+  playlists: see item 8.)
 
 ## Decisions
 

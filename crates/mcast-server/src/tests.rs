@@ -19,6 +19,14 @@ impl Drop for Harness {
 }
 
 fn harness(token: Option<&str>) -> Harness {
+    harness_with(token, |_| Default::default())
+}
+
+/// With text to speech set up by `tts`, given the media directory.
+fn harness_with(
+    token: Option<&str>,
+    tts: impl FnOnce(&std::path::Path) -> mcast_audio::tts::TtsConfig,
+) -> Harness {
     let dir = std::env::temp_dir().join(format!("mcast-server-test-{}", mcast_core::random_u32()));
     let cfg = ServerConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
@@ -30,6 +38,7 @@ fn harness(token: Option<&str>) -> Harness {
         max_upload: 1 << 20,
         phonebook: dir.join("phonebook.conf"),
         chimes: dir.join("chimes.json"),
+        tts: tts(&dir),
     };
     let (closing, rx) = watch::channel(false);
     let state = AppState::start(&cfg, rx).unwrap();
@@ -266,6 +275,7 @@ async fn refuses_to_listen_publicly_without_a_token() {
         sap_groups: Vec::new(),
         monitor: None,
         max_upload: 0,
+        tts: Default::default(),
         phonebook: PathBuf::from("phonebook.conf"),
         chimes: PathBuf::from("chimes.json"),
     };
@@ -1049,4 +1059,105 @@ async fn sends_a_list_of_files_as_one_stream() {
     // Three 0.2 s files and two 0.2 s gaps: about a second.
     let secs = done["stats"]["seconds"].as_f64().unwrap();
     assert!((0.9..1.6).contains(&secs), "{done}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn speaks_text_items_and_says_which_item_plays() {
+    // "Speech" is a WAV the command prints, and what it was asked to say
+    // goes to a log.
+    let h = harness_with(None, |dir| mcast_audio::tts::TtsConfig {
+        command: Some(format!(
+            "cat >> '{0}/said'; cat '{0}/speech.wav'",
+            dir.display()
+        )),
+        cache: Some(dir.join(".tts-cache")),
+        ..Default::default()
+    });
+    std::fs::create_dir_all(&h.dir).unwrap();
+    std::fs::write(h.dir.join("speech.wav"), wav()).unwrap();
+    assert_eq!(put_media(&h, "a.wav", wav()).await, StatusCode::CREATED);
+
+    let (_, v) = call(&h, "GET", "/api/v1/voices", None, None).await;
+    assert_eq!(v["engine"], "command", "{v}");
+
+    let mut events = h.state.0.events.subscribe();
+    let items = json!(["a.wav", {"say": "Library closes in ten minutes"}, "a.wav"]);
+    let (s, job) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(json!({
+            "group": "239.255.77.24:5004", "sap": false, "encoding": "g711u", "tail_ms": 0,
+            "source": {"type": "files", "paths": items, "gap_ms": 100}
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{job}");
+    // The job shows the request as asked, not the cache's paths.
+    assert_eq!(job["request"]["source"]["paths"], items, "{job}");
+    let id = job["id"].as_u64().unwrap();
+    let mut seen = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let e = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("the job ends")
+            .unwrap();
+        match e {
+            Event::JobUpdated { job } if job.id == id => {
+                if let Some(mcast_control::jobs::JobStats::Send(s)) = &job.stats {
+                    if let Some(i) = s.item {
+                        if seen.last() != Some(&i) {
+                            seen.push(i);
+                        }
+                    }
+                }
+            }
+            Event::JobEnded { job } if job.id == id => {
+                assert_eq!(job.state, mcast_control::JobState::Finished, "{job:?}");
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(seen, [0, 1, 2]);
+    assert_eq!(
+        std::fs::read_to_string(h.dir.join("said")).unwrap(),
+        "Library closes in ten minutes\n"
+    );
+
+    // Spoken once: the second time comes from the cache.
+    let (s, _) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(json!({
+            "group": "239.255.77.25:5004", "sap": false, "tail_ms": 0,
+            "source": {"type": "files", "paths": [{"say": "Library closes in ten minutes"}]}
+        })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert_eq!(
+        std::fs::read_to_string(h.dir.join("said")).unwrap(),
+        "Library closes in ten minutes\n"
+    );
+
+    // An engine that fails is a bad request, saying why.
+    std::fs::remove_file(h.dir.join("speech.wav")).unwrap();
+    let (s, v) = call(
+        &h,
+        "POST",
+        "/api/v1/senders",
+        Some(json!({
+            "group": "239.255.77.26:5004", "sap": false,
+            "source": {"type": "files", "paths": [{"say": "Something new"}]}
+        })),
+        None,
+    )
+    .await;
+    assert!(s.is_client_error(), "{s} {v}");
+    assert!(v["error"].as_str().unwrap().contains("speaking"), "{v}");
 }

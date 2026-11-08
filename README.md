@@ -744,6 +744,12 @@ A page to a group that one of its jobs is already sending to is refused with
 Listening on anything but loopback requires a token. See
 [docs/api.md](docs/api.md) for every route and field.
 
+A list of files to play can include text to speak (`{"say": "The library
+closes in ten minutes"}`). `mcast serve` speaks it with Piper when it's
+installed with a voice (`--tts-voices DIR`), else eSpeak NG, or any command
+you give it (`--tts-command`), and keeps what it spoke so the same words are
+synthesized once. It says at start which one it found.
+
 The GUI pages from uploaded files, live input, a test tone or the chord pad;
 chats on real-time text channels; sends files and pictures and receives them
 into its media list (with thumbnails); shows what's playing with a stop
@@ -794,7 +800,10 @@ in a time zone you choose, and only while the panel runs. They can all be
 paused at once, skip days off (holidays, breaks), and sit in groups that
 switch on and off together. Several sites can each have their own zones,
 schedules, time zone and days off. A Sounds tab manages the mcast server's
-sound files in folders. Live announcements are push to talk from the
+sound files in folders. Playlists play sounds and text pages in order; a text
+page is spoken by `mcast serve`, shown on the zones' text displays (`mcast
+text recv`) and on a full-screen display page (`?display=1`), or both, as the
+playlist reaches it. Live announcements are push to talk from the
 browser's microphone, which browsers only allow over HTTPS:
 `--tls-self-signed` (or `--tls-cert`/`--tls-key`) serves the panel that way.
 It is its own server with its own token (`--panel-token`); `--url` and

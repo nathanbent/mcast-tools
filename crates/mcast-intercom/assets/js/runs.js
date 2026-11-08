@@ -68,6 +68,9 @@ export function runCard(run) {
       !isOver(run) && h("button", { class: "danger", onclick: () => stopRun(run) }, "Stop")),
     run.error && h("div", { class: "error small" }, run.error),
     heardLine(run.listeners),
+    run.shown?.length > 0 && h("div", { class: "muted small shown" },
+      `Shown: ${run.shown.at(-1).text.join(" · ")}`,
+      run.shown.length > 1 && ` (${run.shown.length} pages)`),
     h("div", { class: "targets" },
       run.targets.flatMap((t) => [
         h("span", { class: "mono" }, targetName(t)),

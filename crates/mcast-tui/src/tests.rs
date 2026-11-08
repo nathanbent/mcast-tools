@@ -34,6 +34,7 @@ fn server(token: Option<&str>) -> Server {
         sap_groups: mcast_core::sap::default_listen_groups(),
         monitor: None,
         max_upload: 1 << 20,
+        tts: Default::default(),
         phonebook: dir.join("phonebook.conf"),
         chimes: dir.join("chimes.json"),
     };
