@@ -895,6 +895,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("PUT", "/media-tags"),
     ("GET", "/phonebook"),
     ("GET", "/listeners"),
+    ("GET", "/backup"),
+    ("POST", "/restore"),
     ("GET", "/speakers"),
     ("GET", "/chimes"),
     ("PUT", "/chimes"),
@@ -2631,6 +2633,149 @@ async fn says_which_listeners_heard_a_play() {
     assert_eq!(m["listeners"]["with_silent"], 1);
     assert_eq!(m["listeners"]["list"][0]["name"], "Office");
     assert_eq!(m["listeners"]["list"][0]["missed"], 1);
+}
+
+impl Panel {
+    /// A raw body in and out, with the response's headers.
+    async fn raw(
+        &self,
+        method: Method,
+        path: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let req = Request::builder()
+            .method(method)
+            .uri(format!("{API_PREFIX}{path}"))
+            .body(Body::from(body))
+            .unwrap();
+        let resp = self.app.clone().oneshot(req).await.unwrap();
+        let (status, headers) = (resp.status(), resp.headers().clone());
+        let bytes = axum::body::to_bytes(resp.into_body(), 64 << 20)
+            .await
+            .unwrap();
+        (status, headers, bytes.to_vec())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backs_up_and_restores_the_config_and_sounds() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/announcements",
+            Some(json!({"name": "Lunch", "audio": {"media": "lunch.wav"}, "zones": ["hall"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // The config alone: intercom.json as it is.
+    let (s, h, body) = p.raw(Method::GET, "/backup", Vec::new()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "application/json");
+    let cd = h[header::CONTENT_DISPOSITION].to_str().unwrap();
+    assert!(
+        cd.starts_with("attachment; filename=\"intercom-") && cd.ends_with(".json\""),
+        "{cd}"
+    );
+    let saved = crate::store::load(&p.path).unwrap();
+    assert_eq!(serde_json::from_slice::<Config>(&body).unwrap(), saved);
+    let config_only = body;
+
+    // With the sounds: every file on the mcast server.
+    let (s, h, archive) = p.raw(Method::GET, "/backup?sounds=1", Vec::new()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(h[header::CONTENT_TYPE], "application/gzip");
+    let b = crate::backup::read(&archive).unwrap();
+    assert_eq!(b.config, saved);
+    assert_eq!(b.sounds.keys().collect::<Vec<_>>(), ["lunch.wav"]);
+    assert_eq!(b.sounds["lunch.wav"].len(), 1000);
+
+    // Things change: Lunch goes, a zone comes, and lunch.wav is lost.
+    p.call(Method::DELETE, "/announcements/lunch", None).await;
+    p.call(
+        Method::POST,
+        "/zones",
+        Some(json!({"name": "Yard", "targets": [{"group": "239.1.1.9:5000"}]})),
+    )
+    .await;
+    p.call(Method::DELETE, "/media/lunch.wav", None).await;
+
+    // A dry run says what would change, and changes nothing.
+    let before = std::fs::read(&p.path).unwrap();
+    let (s, v) = p
+        .raw(Method::POST, "/restore?dry_run=1", config_only.clone())
+        .await
+        .into_json();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["applied"], false);
+    assert_eq!(
+        v["plan"]["lists"]["announcements"]["added"],
+        json!(["Lunch"])
+    );
+    assert_eq!(v["plan"]["lists"]["zones"]["removed"], json!(["Yard"]));
+    // Lunch's sound is neither on the server nor in a config-only backup.
+    assert_eq!(v["plan"]["missing"], json!(["lunch.wav"]));
+    assert_eq!(std::fs::read(&p.path).unwrap(), before);
+
+    // The archive puts the sound back, then the config; the old one is kept.
+    let (s, v) = p
+        .raw(Method::POST, "/restore", archive.clone())
+        .await
+        .into_json();
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["applied"], true);
+    assert_eq!(v["uploaded"], json!(["lunch.wav"]));
+    assert_eq!(v["kept"], "intercom.json.bak");
+    assert_eq!(crate::store::load(&p.path).unwrap(), saved);
+    assert_eq!(
+        std::fs::read(p.path.with_file_name("intercom.json.bak")).unwrap(),
+        before
+    );
+    assert!(p.fake.media().unwrap().contains(&"lunch.wav".to_string()));
+
+    // Again: nothing to do.
+    let (_, v) = p
+        .raw(Method::POST, "/restore?dry_run=1", archive)
+        .await
+        .into_json();
+    assert_eq!(v["plan"]["same"], true, "{v}");
+
+    // Not a backup; a sound that isn't audio leaves the config alone.
+    let (s, v) = p
+        .raw(Method::POST, "/restore", b"hello".to_vec())
+        .await
+        .into_json();
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let mut bad = Vec::new();
+    crate::backup::write_archive(
+        &Config::default(),
+        [("x.wav", &b"not audio"[..])],
+        0,
+        &mut bad,
+    )
+    .unwrap();
+    let (s, v) = p.raw(Method::POST, "/restore", bad).await.into_json();
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("wasn't changed"),
+        "{v}"
+    );
+    assert_eq!(crate::store::load(&p.path).unwrap(), saved);
+}
+
+trait IntoJson {
+    fn into_json(self) -> (StatusCode, Value);
+}
+
+impl IntoJson for (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    fn into_json(self) -> (StatusCode, Value) {
+        (
+            self.0,
+            serde_json::from_slice(&self.2).unwrap_or(Value::Null),
+        )
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

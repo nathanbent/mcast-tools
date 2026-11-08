@@ -98,6 +98,18 @@ export function follow(onEvent, onStatus) {
 }
 
 // Save what `path` returns as a file (with the token in a header, not the URL).
+// POST a file as the raw body (a backup to restore), and read the JSON reply.
+export async function postFile(path, file) {
+  const t = token();
+  let res;
+  try {
+    res = await fetch(`${PREFIX}${path}`, { method: "POST", headers: t ? { Authorization: `Bearer ${t}` } : {}, body: file });
+  } catch (e) {
+    throw new ApiError(0, { error: `can't reach the panel: ${e.message}` });
+  }
+  return parse(res);
+}
+
 export async function download(path, filename) {
   const t = token();
   const res = await fetch(`${PREFIX}${path}`, { headers: t ? { Authorization: `Bearer ${t}` } : {} });

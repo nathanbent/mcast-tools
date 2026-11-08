@@ -5,7 +5,7 @@ use crate::model::{Audio, Config, Day, Target, When, NO_CHIME};
 use crate::runner::{Run, RunState, Runner, TargetState, Trigger};
 use crate::scheduler;
 use crate::store;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -311,6 +311,90 @@ fn server_problems(
         }
     }
     Ok(problems)
+}
+
+/// Write a backup of the config, with every sound on the mcast server if
+/// `sounds`, to `out` (default: `intercom-DATE.json` or `.tar.gz` here).
+pub fn backup(
+    path: &Path,
+    backend: &HttpBackend,
+    sounds: bool,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let cfg = store::load(path)?;
+    let date = jiff::Zoned::now().date();
+    let ext = if sounds { "tar.gz" } else { "json" };
+    let out = out.unwrap_or_else(|| format!("intercom-{date}.{ext}").into());
+    if sounds {
+        let files = backend
+            .media_files()
+            .with_context(|| format!("listing the sounds on {}", backend.base()))?;
+        let mut data = Vec::with_capacity(files.len());
+        for f in &files {
+            let (_, bytes) = backend
+                .download_media(&f.name)
+                .with_context(|| format!("downloading {}", f.name))?;
+            data.push((f.name.as_str(), bytes));
+        }
+        let file =
+            std::fs::File::create(&out).with_context(|| format!("creating {}", out.display()))?;
+        crate::backup::write_archive(
+            &cfg,
+            data.iter().map(|(n, d)| (*n, d.as_slice())),
+            crate::now_ms(),
+            std::io::BufWriter::new(file),
+        )?;
+        let n = files.len();
+        println!(
+            "{}: the config and {n} sound{}",
+            out.display(),
+            if n == 1 { "" } else { "s" }
+        );
+    } else {
+        let mut json = serde_json::to_vec_pretty(&cfg)?;
+        json.push(b'\n');
+        std::fs::write(&out, json).with_context(|| format!("writing {}", out.display()))?;
+        println!("{}: the config", out.display());
+    }
+    println!("(Access tokens, webhooks and the play history aren't in it.)");
+    Ok(())
+}
+
+/// Restore a backup (a `.tar.gz` or an `intercom.json`): say what would
+/// change, then, unless `dry_run`, upload its sounds the mcast server lacks
+/// and replace the config, keeping the old one as `.bak`.
+pub fn restore(path: &Path, backend: &HttpBackend, file: &Path, dry_run: bool) -> Result<()> {
+    let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+    let b = crate::backup::read(&bytes).with_context(|| format!("in {}", file.display()))?;
+    let now = store::load(path)?;
+    let on_server = backend.media_files();
+    if let Err(e) = &on_server {
+        if !b.sounds.is_empty() && !dry_run {
+            bail!(
+                "the backup has sounds, but {} can't be asked: {e}",
+                backend.base()
+            );
+        }
+        println!("Couldn't ask {} about its sounds: {e}", backend.base());
+    }
+    let plan = crate::backup::plan(&now, &b, on_server.as_deref().ok());
+    println!("Restoring {} over {}:", file.display(), path.display());
+    for line in plan.describe() {
+        println!("  {line}");
+    }
+    if dry_run || plan.same {
+        return Ok(());
+    }
+    let done = crate::backup::apply(path, &b, &plan, backend)?;
+    if !done.uploaded.is_empty() {
+        let n = done.uploaded.len();
+        println!("Uploaded {n} sound{}.", if n == 1 { "" } else { "s" });
+    }
+    match done.kept {
+        Some(k) => println!("Restored. The config before is in {}.", k.display()),
+        None => println!("Restored."),
+    }
+    Ok(())
 }
 
 /// Play an announcement and follow it to the end. Setting `stop` (Ctrl-C)

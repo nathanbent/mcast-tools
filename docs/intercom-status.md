@@ -99,15 +99,19 @@ On `claude/vibrant-knuth-34bpdf`, on top of #38. "Probes" means speakers running
 - **The Zones list** shows each expected listener's state: reporting now or offline (from `GET /speakers`), and when it last heard a page (from the history, over 30 days).
 - **Speakers going offline between plays** (`crate::presence`): the panel asks the monitor every 10 s. A speaker missing for a minute is offline: a `listener_offline` webhook, a toast and the Panel's stats strip. It gets `listener_online` when back. Nothing is called offline while the monitor can't be asked.
 
-### 2. Backup and restore, roadmap item 13
+### 2. Backup and restore, roadmap item 13: built
 
-- `GET /backup` (admin) downloads `intercom.json` with a version and date. With `?sounds=1` it's an archive with the media folder.
-- Never include `tokens.json`, `webhooks.json` or history.
-- `POST /restore?dry_run=1` validates with the same checks as `mcast intercom check`. It returns what would change (announcements, zones, schedules and playlists added, changed or removed, and missing sounds).
-- Without `dry_run`, it applies atomically and keeps the old file as `intercom.json.bak`.
-- `mcast intercom backup` and `mcast intercom restore [--dry-run]`.
-- Settings → Backup: download, and an upload that shows the dry run before applying.
-- The workspace has `flate2` but no zip or tar crate. The recommendation is `.tar.gz` (adding `tar`); the other choice is JSON only.
+On the local branch `backup-restore`, on top of #43; not pushed yet (see the note for the owner below).
+- **The owner chose** config plus optional sounds. It adds the `tar` crate (with `filetime`; `flate2` was already in the tree).
+- **`crate::backup`** holds the shared logic:
+  - writing and reading the `.tar.gz` (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`), with safe paths, at most 1 GiB and 10,000 files;
+  - reading a plain `intercom.json` as a backup too;
+  - `media_used`, `plan` (lists added, changed and removed by id; other settings; sounds to upload; missing sounds) and `apply` (upload, keep `.bak`, save).
+- **API:** `GET /backup[?sounds=1]` and `POST /restore[?dry_run=1]`, admin only, under the config lock.
+- **CLI:** `mcast intercom backup [--sounds] [-o FILE]` and `mcast intercom restore FILE [--dry-run]`.
+- **Page:** Settings → Backup and restore. Download either form, or choose a file to see what it would change, then Restore.
+- **Tests:** unit tests (round trip, refusing bad archives and `../` paths, planning) and an API test (download both forms, dry run, restore with a sound, `.bak`, a bad file, a sound that isn't audio).
+- **Checked by hand:** the CLI against a real `mcast serve` with a real WAV, and the page in a browser (download, preview, restore, a junk file, phone width and dark).
 
 ### 3. Triggers from the room (GPIO), roadmap item 12
 
@@ -139,9 +143,8 @@ Then release v0.6.0.
 
 1. Probes: how much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
 2. GPIO: a small ioctl wrapper of our own, or the `gpiocdev` crate?
-3. Backup: `.tar.gz` with the sounds (a new `tar` dependency), or JSON only?
-4. Text pages in playlists: displays, TTS, or both?
-5. Roll "Arrange this page" out to more tabs?
+3. Text pages in playlists: displays, TTS, or both?
+4. Roll "Arrange this page" out to more tabs?
 
 ## How to work on it
 

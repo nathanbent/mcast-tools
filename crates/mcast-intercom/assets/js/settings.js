@@ -3,7 +3,7 @@
 // the time zone schedules are in, which chimes the lists show, and the
 // connection to the mcast server.
 
-import { api } from "./api.js";
+import { api, download, postFile } from "./api.js";
 import { h, replace, toast } from "./dom.js";
 import { state, subscribe } from "./store.js";
 import { field, select, numberInput, num, mountEditor, SIZES } from "./editor.js";
@@ -302,6 +302,87 @@ function connection() {
   return el;
 }
 
+// What a restore would change, a line each.
+function planLines(p) {
+  const LIST = { zones: "Zones", announcements: "Announcements", schedules: "Schedules", playlists: "Playlists",
+    categories: "Categories", sites: "Sites", schedule_groups: "Schedule groups" };
+  const lines = Object.entries(p.lists).map(([k, c]) => [LIST[k] ?? k,
+    [["added", c.added], ["changed", c.changed], ["removed", c.removed]]
+      .filter(([, n]) => n.length).map(([w, n]) => `${w} ${n.join(", ")}`).join("; ")]);
+  if (p.settings.length) lines.push(["Settings", p.settings.map((s) => s.replaceAll("_", " ")).join(", ")]);
+  if (p.sounds_in_backup) {
+    lines.push(["Sounds", `${p.sounds_in_backup} in the backup; ${p.upload.length ? `${p.upload.length} to upload (${p.upload.join(", ")})` : "all already on the mcast server"}`]);
+  }
+  return lines;
+}
+
+// Download the config (and sounds), or put a backup back after seeing what
+// it would change.
+function backupRestore() {
+  const el = h("div");
+  const result = h("div");
+  const today = () => new Date().toISOString().slice(0, 10);
+  const get = (sounds) => {
+    toast(sounds ? "Gathering the sounds…" : "Downloading…", "info");
+    download(sounds ? "/backup?sounds=1" : "/backup", `intercom-${today()}.${sounds ? "tar.gz" : "json"}`)
+      .catch((e) => toast(`Couldn't download the backup: ${e.message}`, "error"));
+  };
+  const file = h("input", { type: "file", accept: ".json,.gz,.tgz,application/json,application/gzip",
+    "aria-label": "Backup file to restore", onchange: () => preview() });
+
+  const preview = async () => {
+    const f = file.files[0];
+    if (!f) return;
+    replace(result, h("p", { class: "muted" }, `Reading ${f.name}…`));
+    let v;
+    try {
+      v = await postFile("/restore?dry_run=1", f);
+    } catch (e) {
+      replace(result, h("p", { class: "error" }, `Can't restore ${f.name}: ${e.message}`));
+      return;
+    }
+    const p = v.plan;
+    const cancel = () => { file.value = ""; replace(result); };
+    const apply = async (btn) => {
+      btn.disabled = true;
+      btn.textContent = "Restoring…";
+      try {
+        const done = await postFile("/restore", f);
+        const up = done.uploaded.length;
+        toast(`Restored ${f.name}${up ? `, with ${up} sound${up > 1 ? "s" : ""}` : ""}. The config before is kept as ${done.kept ?? "nothing (there was none)"}.`, "ok");
+        cancel();
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = "Restore";
+        toast(`Couldn't restore: ${e.message}`, "error");
+      }
+    };
+    replace(result, h("div", { class: "restore-plan" },
+      h("h3", {}, `Restoring ${f.name} would…`),
+      p.same
+        ? h("p", {}, "change nothing: it's the same as now.")
+        : h("dl", { class: "facts" }, planLines(p).map(([k, line]) => [h("dt", {}, k), h("dd", {}, line)])),
+      p.missing.length > 0 && h("p", { class: "warn" },
+        `${p.missing.join(", ")} ${p.missing.length > 1 ? "are" : "is"} used but neither on the mcast server nor in the backup, so ${p.missing.length > 1 ? "they" : "it"} won't play.`),
+      v.server_error && h("p", { class: "warn" }, `Couldn't ask the mcast server about its sounds: ${v.server_error}`),
+      !p.same && h("p", { class: "muted small" }, "It replaces the whole config: anything made since the backup goes. The config now is kept as intercom.json.bak beside it."),
+      h("div", { class: "buttons" },
+        !p.same && h("button", { class: "danger", onclick: (e) => apply(e.currentTarget) }, "Restore"),
+        h("button", { onclick: cancel }, p.same ? "Close" : "Cancel"))));
+  };
+
+  replace(el,
+    h("p", { class: "muted small" },
+      "A backup holds the config: zones, announcements, schedules, playlists, sites and these settings. Access tokens, webhooks and the play history are never in it."),
+    h("div", { class: "buttons" },
+      h("button", { onclick: () => get(false) }, "Download the config"),
+      h("button", { onclick: () => get(true) }, "Download with the sounds")),
+    h("h3", { style: { marginTop: "16px" } }, "Restore"),
+    h("p", { class: "muted small" }, "Choose a backup (.json or .tar.gz): you'll see what it changes before anything does."),
+    file, result);
+  return el;
+}
+
 export function mount(el) {
   // Names for the time zone field, where the browser knows them.
   try {
@@ -317,6 +398,7 @@ export function mount(el) {
     ["history", "History", historyDays],
     ["tokens", "Access tokens", tokens.mount],
     ["other-systems", "Other systems", webhooks.mount],
+    ["backup", "Backup and restore", backupRestore],
     ["connection", "Connection", connection],
   ].map(([id, title, make]) => ({ id, title, el: card(title, make()) }));
   el.replaceChildren(arrangeable("settings", sections));

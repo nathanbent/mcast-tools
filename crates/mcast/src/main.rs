@@ -535,7 +535,9 @@ Examples:
   mcast intercom upcoming               # what the schedules play next
   mcast intercom play lunch             # by id or name; Ctrl-C stops it
   mcast intercom token add Doorbell --role trigger --announcement doorbell
-  mcast intercom token list"
+  mcast intercom token list
+  mcast intercom backup --sounds        # intercom-DATE.tar.gz: the config and every sound
+  mcast intercom restore intercom-2026-11-08.tar.gz --dry-run"
 )]
 struct IntercomArgs {
     #[command(subcommand)]
@@ -584,6 +586,25 @@ enum IntercomCommand {
     /// Access tokens for the panel: named keys, each with a role
     #[command(subcommand)]
     Token(TokenCommand),
+    /// Save the config (and with --sounds, every sound on the mcast server) to a file.
+    /// Access tokens, webhooks and the play history are never in it
+    Backup {
+        /// Include the sounds: a .tar.gz instead of an intercom.json
+        #[arg(long)]
+        sounds: bool,
+        /// Where to write it (default: intercom-DATE.json or .tar.gz here)
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+    },
+    /// Put a backup back: upload its sounds the mcast server lacks, then replace the
+    /// config (the old one is kept as intercom.json.bak). A running panel picks it up
+    Restore {
+        /// A .tar.gz or intercom.json from `mcast intercom backup` or the panel
+        file: PathBuf,
+        /// Only say what would change
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -699,6 +720,12 @@ fn intercom(a: IntercomArgs, stop: Arc<AtomicBool>) -> Result<()> {
         IntercomCommand::List => mcast_intercom::cli::list(&path),
         IntercomCommand::Upcoming { n } => mcast_intercom::cli::upcoming(&path, n),
         IntercomCommand::Check => mcast_intercom::cli::check(&path, &backend),
+        IntercomCommand::Backup { sounds, output } => {
+            mcast_intercom::cli::backup(&path, &backend, sounds, output)
+        }
+        IntercomCommand::Restore { file, dry_run } => {
+            mcast_intercom::cli::restore(&path, &backend, &file, dry_run)
+        }
         IntercomCommand::Play { announcement } => {
             mcast_intercom::cli::play(&path, Arc::new(backend), &announcement, &stop)
         }

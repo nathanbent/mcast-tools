@@ -5,6 +5,7 @@
 //! server only through a [`Backend`].
 
 mod auth;
+mod backup;
 mod history;
 mod hooks;
 mod library;
@@ -402,6 +403,8 @@ pub fn router(state: AppState) -> Router {
         .route("/media-tags", axum::routing::put(library::tag))
         .route("/phonebook", get(phonebook))
         .route("/listeners", get(routes::listeners))
+        .route("/backup", get(backup::download))
+        .route("/restore", post(backup::restore))
         .route("/speakers", get(routes::speakers))
         .route("/chimes", get(chimes).put(put_chimes))
         .route("/chimes/{name}/preview", get(chime_preview))
