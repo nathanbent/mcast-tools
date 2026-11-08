@@ -13,8 +13,8 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
   - a webhook delivery log.
-- **No PRs are open** for the intercom.
-- **The version is 0.5.5** in `Cargo.toml`. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. The bump is in the PR after #47 (on `claude/vibrant-knuth-34bpdf`). Once that's merged, the release is ready to cut (see What's next).
+- **No intercom feature PRs are open;** only the version bump (#48).
+- **The version is 0.5.5** in `Cargo.toml`. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. The bump is in nathanbent/mcast-tools#48 (`claude/vibrant-knuth-34bpdf`). Once that's merged, the release is ready to cut (see What's next).
 - **New work** branches from `main`.
 
 The work came as six stacked PRs, merged in order with merge commits:
@@ -156,7 +156,7 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Merge the version bump.** Its PR (0.5.4 → 0.5.5, with these docs) is the only one open.
+1. **Merge the version bump:** nathanbent/mcast-tools#48 (0.5.4 → 0.5.5, with these docs), the only one open. Once it's merged, this step is done.
 2. **Try the hardware before releasing.** Nothing here has run on real hardware:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
