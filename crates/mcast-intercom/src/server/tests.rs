@@ -924,6 +924,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("PUT", "/webhooks/{id}"),
     ("DELETE", "/webhooks/{id}"),
     ("POST", "/webhooks/{id}/test"),
+    ("GET", "/webhooks/{id}/deliveries"),
 ];
 
 #[test]
@@ -3095,4 +3096,88 @@ async fn the_monitor_can_show_one_site() {
         .all(|e| e["name"] == "Gym"));
     let (s, _) = p.call(Method::GET, "/monitor?days=1&site=mars", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn webhooks_keep_a_log_of_their_deliveries() {
+    let p = panel(None);
+    p.set_up().await;
+    let (url, got) = receiver(204).await;
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/webhooks",
+            Some(json!({"name": "Logger", "url": url, "sign": false,
+                        "events": ["run_started", "run_ended"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["webhook"]["id"].as_str().unwrap().to_string();
+    let log = |app: &Router| {
+        let path = format!("/webhooks/{id}/deliveries");
+        let p = app.clone();
+        async move {
+            let req = Request::builder()
+                .uri(format!("{API_PREFIX}{path}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = p.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let b = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let (s, v) = log(&p.app).await;
+    assert_eq!((s, v), (StatusCode::OK, json!([])));
+
+    p.call(Method::POST, "/announcements/bell/play", None).await;
+    p.fake.finish_all();
+    wait_for(|| (got.lock().unwrap().len() == 2).then_some(())).await;
+    p.call(Method::POST, &format!("/webhooks/{id}/test"), None)
+        .await;
+    let until = Instant::now() + Duration::from_secs(5);
+    let v = loop {
+        let (_, v) = log(&p.app).await;
+        if v.as_array().is_some_and(|a| a.len() == 3) {
+            break v;
+        }
+        assert!(Instant::now() < until, "{v}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    // Newest first, each with what it was about and how it went.
+    let events: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["event"].as_str().unwrap())
+        .collect();
+    assert_eq!(events, ["test", "run_ended", "run_started"]);
+    assert_eq!(v[1]["about"], "Bell");
+    assert_eq!(v[1]["status"], 204);
+    assert_eq!(v[1]["ok"], true);
+    assert!(v[1]["delivery"].as_u64().unwrap() > 0);
+    // The list shows the last one.
+    let (_, list) = p.call(Method::GET, "/webhooks", None).await;
+    assert_eq!(list[0]["last_delivery"]["event"], "test");
+
+    // A panel started on the same files still has them.
+    let (_tx, rx) = watch::channel(false);
+    let again = router(AppState::new(p.fake.clone(), p.path.clone(), None, rx));
+    let (_, v2) = log(&again).await;
+    assert_eq!(v2.as_array().unwrap().len(), 3);
+
+    // Deleted: so is its log.
+    let (s, _) = p
+        .call(Method::DELETE, &format!("/webhooks/{id}"), None)
+        .await;
+    assert!(s.is_success());
+    let (s, _) = log(&p.app).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let file = std::fs::read_to_string(p.path.with_file_name("webhook-log.jsonl")).unwrap();
+    assert!(!file.contains(&id), "{file}");
 }

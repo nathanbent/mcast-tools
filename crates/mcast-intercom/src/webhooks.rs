@@ -41,6 +41,10 @@ pub const EVENTS: [&str; 9] = [
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Before the one retry.
 const RETRY_AFTER: Duration = Duration::from_secs(3);
+/// Deliveries kept per hook, newest last.
+pub const LOG_PER_HOOK: usize = 50;
+/// The log file is cut back to the newest lines when it grows past this.
+const LOG_FILE_MAX: usize = 5000;
 /// Deliveries under way at once; more are dropped (and say so).
 const MAX_IN_FLIGHT: usize = 32;
 
@@ -282,18 +286,161 @@ pub fn save(path: &Path, f: &WebhookFile) -> Result<()> {
     crate::store::save_private(path, f)
 }
 
-/// How a hook's last delivery went.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// How a delivery went.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Delivery {
+    /// The `X-Mcast-Delivery` number (they start again after a restart).
+    #[serde(default)]
+    pub delivery: u64,
     pub event: String,
+    /// What it was about: the announcement, or the speaker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
     pub at_ms: u64,
     pub ok: bool,
     /// The receiver's HTTP status, if it answered.
+    #[serde(default)]
     pub status: Option<u16>,
+    #[serde(default)]
     pub error: Option<String>,
     /// Including the retry.
+    #[serde(default)]
     pub attempts: u32,
+    #[serde(default)]
     pub took_ms: u64,
+}
+
+/// A delivery as the log file keeps it.
+#[derive(Serialize, Deserialize)]
+struct Logged {
+    hook: String,
+    #[serde(flatten)]
+    d: Delivery,
+}
+
+/// The hooks' recent deliveries, in memory and in `webhook-log.jsonl`
+/// beside `webhooks.json` (owner-only), so they outlive a restart.
+struct Log {
+    path: PathBuf,
+    hooks: HashMap<String, VecDeque<Delivery>>,
+    lines: usize,
+}
+
+impl Log {
+    fn open(path: PathBuf) -> Self {
+        let mut log = Log {
+            path,
+            hooks: HashMap::new(),
+            lines: 0,
+        };
+        if let Ok(text) = std::fs::read_to_string(&log.path) {
+            for line in text.lines() {
+                log.lines += 1;
+                if let Ok(l) = serde_json::from_str::<Logged>(line) {
+                    log.keep(l.hook, l.d);
+                }
+            }
+        }
+        log
+    }
+
+    fn keep(&mut self, hook: String, d: Delivery) {
+        let q = self.hooks.entry(hook).or_default();
+        q.push_back(d);
+        while q.len() > LOG_PER_HOOK {
+            q.pop_front();
+        }
+    }
+
+    /// Note a delivery, and append it to the file (cutting the file back to
+    /// what's kept once it's long).
+    fn add(&mut self, hook: &str, d: Delivery) {
+        self.keep(hook.to_string(), d.clone());
+        let line = serde_json::to_string(&Logged {
+            hook: hook.to_string(),
+            d,
+        })
+        .unwrap_or_default();
+        let wrote = if self.lines + 1 > LOG_FILE_MAX {
+            self.rewrite()
+        } else {
+            append_private(&self.path, &line).map(|_| self.lines += 1)
+        };
+        if let Err(e) = wrote {
+            eprintln!("mcast intercom: writing {}: {e}", self.path.display());
+        }
+    }
+
+    /// The file, from what's kept.
+    fn rewrite(&mut self) -> std::io::Result<()> {
+        let mut all: Vec<(&String, &Delivery)> = self
+            .hooks
+            .iter()
+            .flat_map(|(h, q)| q.iter().map(move |d| (h, d)))
+            .collect();
+        all.sort_by_key(|(_, d)| d.at_ms);
+        let mut text = String::new();
+        for (hook, d) in &all {
+            let l = Logged {
+                hook: (*hook).clone(),
+                d: (*d).clone(),
+            };
+            text.push_str(&serde_json::to_string(&l).unwrap_or_default());
+            text.push('\n');
+        }
+        let mut tmp = self.path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        write_private(&tmp, text.as_bytes())?;
+        std::fs::rename(&tmp, &self.path)?;
+        self.lines = all.len();
+        Ok(())
+    }
+
+    /// Forget a deleted hook's deliveries.
+    fn forget(&mut self, hook: &str) {
+        if self.hooks.remove(hook).is_some() {
+            if let Err(e) = self.rewrite() {
+                eprintln!("mcast intercom: writing {}: {e}", self.path.display());
+            }
+        }
+    }
+}
+
+fn private_options() -> std::fs::OpenOptions {
+    let mut o = std::fs::OpenOptions::new();
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o
+}
+
+fn append_private(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = private_options().create(true).append(true).open(path)?;
+    f.write_all(format!("{line}\n").as_bytes())
+}
+
+fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = private_options()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    f.write_all(data)
+}
+
+/// The log beside `webhooks.json`.
+pub fn log_path(webhooks: &Path) -> PathBuf {
+    webhooks.with_file_name("webhook-log.jsonl")
+}
+
+/// What a delivery is about, for the log.
+fn about(data: &Value) -> Option<String> {
+    data["run"]["name"]
+        .as_str()
+        .or(data["speaker"]["name"].as_str())
+        .map(String::from)
 }
 
 /// The running panel's hooks.
@@ -303,7 +450,7 @@ pub struct Webhooks {
     st: Mutex<State>,
     in_flight: Arc<AtomicUsize>,
     next_delivery: AtomicU64,
-    last: Arc<Mutex<HashMap<String, Delivery>>>,
+    log: Arc<Mutex<Log>>,
 }
 
 #[derive(Default)]
@@ -334,7 +481,6 @@ impl Webhooks {
             ..Default::default()
         };
         Self {
-            path,
             agent: ureq::AgentBuilder::new()
                 .timeout(TIMEOUT)
                 .redirects(0)
@@ -343,7 +489,8 @@ impl Webhooks {
             st: Mutex::new(st),
             in_flight: Arc::new(AtomicUsize::new(0)),
             next_delivery: AtomicU64::new(1),
-            last: Arc::default(),
+            log: Arc::new(Mutex::new(Log::open(log_path(&path)))),
+            path,
         }
     }
 
@@ -374,14 +521,31 @@ impl Webhooks {
             self.refresh(&mut st);
             st.file.webhooks.clone()
         };
-        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
         hooks
             .into_iter()
             .map(|w| {
-                let d = last.get(&w.id).cloned();
+                let d = log.hooks.get(&w.id).and_then(|q| q.back().cloned());
                 (w, d)
             })
             .collect()
+    }
+
+    /// A hook's recent deliveries, newest first (at most [`LOG_PER_HOOK`]).
+    pub fn deliveries(&self, id: &str) -> Vec<Delivery> {
+        let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        log.hooks
+            .get(id)
+            .map(|q| q.iter().rev().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// A hook was deleted: forget what it was sent.
+    pub fn forget(&self, id: &str) {
+        self.log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .forget(id);
     }
 
     /// Change the file (read afresh first). Blocks on the disk.
@@ -476,11 +640,13 @@ impl Webhooks {
         }
         let body = body.to_string().into_bytes();
         let event = event.to_string();
-        let last = self.last.clone();
+        let about = about(&data);
+        let log = self.log.clone();
+        let hook = w.id.clone();
         let record = move |d: Delivery| {
-            last.lock()
+            log.lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(w.id.clone(), d.clone());
+                .add(&hook, d.clone());
             if let Some(tx) = &done {
                 let _ = tx.send(d);
             }
@@ -488,7 +654,9 @@ impl Webhooks {
         if self.in_flight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT {
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             record(Delivery {
+                delivery: id,
                 event,
+                about,
                 at_ms,
                 error: Some("dropped: too many deliveries under way".into()),
                 ..Default::default()
@@ -502,7 +670,9 @@ impl Webhooks {
             .spawn(move || {
                 let started = std::time::Instant::now();
                 let mut d = Delivery {
+                    delivery: id,
                     event: event.clone(),
+                    about,
                     at_ms,
                     ..Default::default()
                 };
@@ -698,6 +868,54 @@ mod tests {
             names(run_events(&mut st, &both)),
             ["run_ended", "listener_silent"]
         );
+    }
+
+    #[test]
+    fn the_delivery_log_keeps_the_newest_and_outlives_a_restart() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcast-hook-log-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("webhook-log.jsonl");
+        let d = |n: u64, event: &str| Delivery {
+            delivery: n,
+            event: event.into(),
+            about: Some(format!("Bell {n}")),
+            at_ms: n,
+            ok: n % 2 == 0,
+            status: Some(204),
+            ..Default::default()
+        };
+        let mut log = Log::open(path.clone());
+        for n in 1..=60 {
+            log.add("w_a", d(n, "run_ended"));
+        }
+        log.add("w_b", d(100, "test"));
+        assert_eq!(log.hooks["w_a"].len(), LOG_PER_HOOK);
+        assert_eq!(log.hooks["w_a"].front().unwrap().delivery, 11);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // Read back after a restart: the same.
+        let again = Log::open(path.clone());
+        assert_eq!(again.hooks, log.hooks);
+        assert_eq!(again.lines, 61);
+        // Cut back to what's kept; a deleted hook's go.
+        log.rewrite().unwrap();
+        assert_eq!(Log::open(path.clone()).lines, LOG_PER_HOOK + 1);
+        log.forget("w_b");
+        let after = Log::open(path.clone());
+        assert!(!after.hooks.contains_key("w_b"));
+        assert_eq!(
+            after.hooks["w_a"].back().unwrap().about.as_deref(),
+            Some("Bell 60")
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -129,6 +129,44 @@ async function test(w) {
   refresh();
 }
 
+// A hook's recent deliveries, newest first.
+async function showLog(w) {
+  const d = dialog(`Deliveries to ${w.name}`);
+  const body = h("div", {}, h("p", { class: "muted" }, "Loading…"));
+  const load = async () => {
+    let list;
+    try {
+      list = await api("GET", `/webhooks/${encodeURIComponent(w.id)}/deliveries`);
+    } catch (e) {
+      replace(body, h("p", { class: "error" }, `Couldn't read them: ${e.message}`));
+      return;
+    }
+    replace(body, list.length
+      ? h("div", { class: "scroll" }, h("table", { class: "items" },
+          h("thead", {}, h("tr", {}, h("th", {}, "When"), h("th", {}, "Event"), h("th", {}, "About"),
+            h("th", {}, "Result"), h("th", { class: "wide" }, "Tries"), h("th", { class: "wide" }, "Took"))),
+          h("tbody", {}, list.map((x) => h("tr", {},
+            h("td", { class: "small", title: new Date(x.at_ms).toLocaleString() }, ago(x.at_ms)),
+            h("td", { class: "small mono" }, x.event),
+            h("td", { class: "small" }, x.about ?? "—"),
+            h("td", { class: "small" },
+              h("span", { class: `badge ${x.ok ? "done" : "failed"}` }, x.ok ? `HTTP ${x.status}` : x.status ? `HTTP ${x.status}` : "failed"),
+              !x.ok && x.error && h("div", { class: "error small" }, x.error)),
+            h("td", { class: "wide small" }, String(x.attempts || "—")),
+            h("td", { class: "wide small" }, x.took_ms != null && x.attempts ? `${x.took_ms} ms` : "—"))))))
+      : h("p", { class: "muted" }, "Nothing sent to it yet."));
+  };
+  replace(d, h("div", {},
+    h("div", { class: "dialog-head" }, h("h2", {}, `Deliveries to ${w.name}`), closeBtn(d)),
+    h("p", { class: "muted small" }, "The last 50, newest first. They're kept beside webhooks.json (webhook-log.jsonl), so they outlive a restart."),
+    body,
+    h("div", { class: "buttons" },
+      h("button", { type: "button", onclick: load }, "Refresh"),
+      h("button", { type: "button", onclick: () => d.close() }, "Done"))));
+  d.showModal();
+  load();
+}
+
 async function toggle(w) {
   try {
     await api("PUT", `/webhooks/${encodeURIComponent(w.id)}`, { enabled: !w.enabled });
@@ -180,6 +218,7 @@ function render() {
             h("td", { class: "small" }, lastDelivery(w.last_delivery)),
             h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
               h("button", { onclick: () => test(w) }, "Test"),
+              h("button", { onclick: () => showLog(w) }, "Log"),
               h("button", { onclick: () => toggle(w) }, w.enabled ? "Turn off" : "Turn on"),
               h("button", { onclick: () => edit(w) }, "Change"),
               h("button", { class: "danger", onclick: () => remove(w) }, "Delete"))))))))

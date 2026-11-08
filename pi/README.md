@@ -86,7 +86,8 @@ sudo -u mcast env MCAST_INTERCOM=/var/lib/mcast/intercom.json mcast intercom tok
 ```
 
 Tokens are kept, hashed, in `/var/lib/mcast/tokens.json`, webhooks (Settings →
-Other systems) in `/var/lib/mcast/webhooks.json`, and the play history in
+Other systems) in `/var/lib/mcast/webhooks.json` with their recent deliveries
+in `webhook-log.jsonl`, and the play history in
 `/var/lib/mcast/history/` (a file a day, kept 90 days unless Settings → History says otherwise).
 
 Zones, announcements and schedules are kept in `/var/lib/mcast/intercom.json`;

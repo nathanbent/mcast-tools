@@ -88,6 +88,16 @@ carries them. Admin only: `GET`/`POST /webhooks`, `PUT`/`DELETE
 /webhooks/{id}`, `POST /webhooks/{id}/test`. The panel refuses to start with
 a broken `webhooks.json`, and notices changes to it while running.
 
+**Delivery log.** Each hook keeps its last 50 deliveries, newest first, in
+`GET /webhooks/{id}/deliveries` (admin) and behind each hook's *Log* button.
+- **Each one has:** `delivery` (the `X-Mcast-Delivery` number), `event`,
+  `about` (the announcement or speaker), `at_ms`, `ok`, `status` (the
+  receiver's HTTP status), `error`, `attempts` and `took_ms`.
+- **Where it's kept:** in `webhook-log.jsonl` beside `webhooks.json`, owner
+  only, so it outlives a restart. The file is cut back once it passes 5000
+  lines, and a deleted hook's deliveries go with it.
+- **What it never holds:** the bodies sent, and so no secrets.
+
 Not done (yet): retries beyond one, a delivery log, filtering by
 announcement or zone, and sending to a hook only for some sites.
 

@@ -1,39 +1,36 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, late in a second session. That session checked the
-first one's work, then built everything left on the v0.6.0 roadmap, plus two
-follow-ups: last-heard times in the Zones list, and alerts when a speaker
-goes offline between plays. Read this first, then `intercom-roadmap.md`, which has the full plan
-and what each item became.
+Last updated 2026-11-08, at the end of a second session. That session checked
+the first one's work, then built everything left on the v0.6.0 roadmap, plus
+follow-ups: last-heard times in the Zones list, alerts when a speaker goes
+offline between plays, per-site webhooks and monitor, and a webhook delivery
+log. Read this first, then `intercom-roadmap.md`, which has the full plan and
+what each item became.
 
 ## Where things stand
 
 Every item on the roadmap for v0.5.5 and v0.6.0 is built, plus some
-follow-ups. Nothing is merged yet: the work is five PRs, each stacked on the
-one before so its diff shows only its own feature.
+follow-ups. The owner asked for all of it to be merged into `main`. It came
+as six stacked PRs, merged in order with merge commits:
 
-| PR | Branch | What | Based on |
-|---|---|---|---|
-| nathanbent/mcast-tools#38 | `claude/intelligent-hypatia-awklrl` | v0.5.5: tokens, triggers, webhooks, sounds, files, playlists, history, monitor, Panel organizing, kiosks | `main` |
-| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
-| nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
-| nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
-| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site (follow-ups) | #45 |
+| PR | Branch | What |
+|---|---|---|
+| nathanbent/mcast-tools#38 | `claude/intelligent-hypatia-awklrl` | v0.5.5: tokens, triggers, webhooks, sounds, files, playlists, history, monitor, Panel organizing, kiosks |
+| nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) |
+| nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) |
+| nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) |
+| nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site |
+| nathanbent/mcast-tools#47 | `claude/intercom-webhook-log` | A delivery log for each webhook |
 
-- **State:** all are open, with no merge conflicts and no review comments, waiting on the owner.
-  - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
-  - CI was green on #45's code too (`dadf4c0`); its later commits only change this file.
-  - #46 was just opened when this was written; the same checks pass locally there (302 tests).
-- **Changes low in the stack are merged up:** a fix or follow-up on #43 is merged into #44's branch, then #44's into #45's, so the PRs stay consistent. Conflicts so far were neighbouring additions (routes, events, tests, docs), resolved by keeping both. After one, check every `#[tokio::test]` attribute survived: clippy's dead-code error caught one that didn't.
-- **Merging:** merge them in order (#38, then #43, #44, #45, #46). When one merges and its branch is deleted, GitHub retargets the next PR to the merged one's base. If the branch is kept, change the next PR's base by hand.
-- **`main`** is at v0.5.4 and was last merged into #38 at that version. If `main` moves, merge it into #38's branch and carry it up the stack (merge each branch into the next). Conflicts so far were small, in `announcements.js` and `talk.js`.
-- **After merging:** release v0.5.5 (#38), then v0.6.0 (the rest), or all of it as v0.6.0.
-- **A Claude session was watching all five PRs** (reviews, CI) and fixing what came up. A new session won't be; ask it to subscribe if wanted.
+- **Before merging,** CI was green on every PR's latest commit, with no merge conflicts and no review comments.
+- **How they were merged:** each PR was merged once the one below it had landed and it had been pointed at `main`.
+- **The version is still 0.5.4** in `Cargo.toml`. Nothing has been released with this work yet.
+- **New work** branches from `main` again.
 
 ## Checked
 
 - **At the start of the session,** on #38's head (`6908d0f`): fmt, clippy (`-D warnings`) and `cargo test --workspace` all passed (271 tests), and GitHub CI was green. Every item listed below is in the code, with no TODOs left.
-- **At the top of the stack** (#45, `dadf4c0`), the same checks pass: 300 tests. #43's branch alone has 287.
+- **At the top of the stack** (#47, `6439eb7`), the same checks pass: 306 tests.
 - **Docs** that had fallen behind the code were fixed in #38: the roadmap's status, item 9 (the Panel is arrangeable too), item 11 (the core didn't expose listener reports yet), and `intercom-tokens.md` (history is persisted).
 
 ## What's built
@@ -118,6 +115,13 @@ The v0.5.5 items, plus requests that came up along the way:
   - The mcast server's uptime stays panel-wide.
   - Tested by unit and API tests, and in a browser with real plays.
 
+### In #47: webhook delivery log (a follow-up)
+
+- **What's kept:** each hook's last 50 deliveries (`LOG_PER_HOOK`): its number, event, what it was about, when, the result (status and error), attempts and time taken.
+- **Where:** `GET /webhooks/{id}/deliveries` (admin), and a *Log* button on each hook in Settings → Other systems.
+- **The file:** `webhook-log.jsonl` beside `webhooks.json`, owner-only, so the log outlives a restart. It's cut back past 5000 lines, and a deleted hook's lines go with it. No bodies, so no secrets.
+- **Tests:** a unit test (the 50 cap, the file's permissions, reading it back, cutting it back, forgetting a hook) and an API test (a run and a test delivery logged with what they were about, the log after a restart, and gone with the hook). Checked in a browser with a working receiver and a dead one (failed, 2 attempts, 3000 ms).
+
 ### In #44: backup and restore (roadmap item 13)
 
 - **What a backup holds:** the owner chose `intercom.json` alone, or a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history.
@@ -147,16 +151,14 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **The owner reviews and merges** #38, #43, #44, #45 and #46, in that order.
-2. **Try the hardware:**
+1. **Try the hardware:**
    - A button on a Pi (#45).
    - Delivery confirmation and offline alerts with real speakers on the network (#43). They were tested with receivers on one machine, over loopback.
-3. **Release.**
-4. **Text pages in playlists:**
+2. **Release:** bump the version (0.5.4 → 0.6.0, or 0.5.5 then 0.6.0) and run the release workflow from the Actions tab.
+3. **Text pages in playlists:**
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
-5. **Smaller follow-ups:**
-   - A webhook delivery log (the last N deliveries per hook).
+4. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner

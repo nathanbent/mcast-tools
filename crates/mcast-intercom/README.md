@@ -152,8 +152,9 @@ starts, ends or fails, when a schedule is missed, and when the mcast server
 goes away or comes back. Add them in Settings → Other systems, choose the
 events each one gets, and use *Test* to check one. Each delivery is signed
 (`X-Mcast-Signature`, an HMAC-SHA256 with the hook's secret, shown once)
-unless you turn that off. Hooks are kept in `webhooks.json` beside
-`intercom.json`, readable by its owner only.
+unless you turn that off. *Log* lists a hook's last 50 deliveries, with each
+one's result. Hooks are kept in `webhooks.json` beside `intercom.json`,
+readable by its owner only, and their deliveries in `webhook-log.jsonl`.
 
 The payloads, signature check, and Home Assistant and Node-RED examples are
 in [docs/intercom-triggers.md](../../docs/intercom-triggers.md).
@@ -587,6 +588,7 @@ only their runs.
 | `GET`, `POST /trigger/{id or name}/stop` | Stop it wherever it's playing; the runs stopped |
 | `GET`, `POST /stop-all` | Stop everything the token may stop; the runs stopped |
 | `GET`, `POST /webhooks` | Outbound webhooks (admin): list them (`[{"id", "name", "url", "events", "enabled", "sites", "signed", "created_ms", "last_delivery"}]`), or add one (`{"name", "url", "events", "enabled", "sites", "sign"}`; `sites` limits it to plays and speakers at those sites; returns `{"webhook", "secret"}`, the only time the secret is shown) |
+| `GET /webhooks/{id}/deliveries` | Its last 50 deliveries (admin), newest first: `[{"delivery", "event", "about", "at_ms", "ok", "status", "error", "attempts", "took_ms"}]` |
 | `PUT`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/test` | Change one (`{"name", "url", "events", "enabled", "sites"}`; `"sites": []` is every site again), delete it, or send it a `test` event and get how it went: `{"event", "at_ms", "ok", "status", "error", "attempts", "took_ms"}` |
 | `GET /tokens` | Access tokens (admin): `[{"id", "name", "role", "announcements", "created_ms", "expires", "expires_ms", "expired", "last_used_ms", "uses"}]`, never their secrets |
 | `POST /tokens` | `{"name", "role", "announcements", "categories", "expires"}` (`announcements`, ids or names, for trigger tokens only; `categories`, ids or names, for operator tokens only; `expires` a date like `2027-06-30`): make one. Returns `{"token", "secret"}` (`201`), the only time the secret is shown |
