@@ -29,6 +29,9 @@ pub struct Speaker {
     pub name: String,
     /// The zones that expect it (their names).
     pub zones: Vec<String>,
+    /// Their sites (ids), each once; empty when they have none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
     /// Reporting (true), offline (false), or not known yet (`null`: just
     /// added, or the monitor can't be asked).
     pub online: Option<bool>,
@@ -156,13 +159,20 @@ impl Inner {
         let Ok(cfg) = store::load(&self.config) else {
             return;
         };
-        let mut wanted: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+        // Name → (as written, zone names, site ids).
+        type Wanted = BTreeMap<String, (String, Vec<String>, Vec<String>)>;
+        let mut wanted: Wanted = BTreeMap::new();
         for z in &cfg.zones {
             for l in &z.listeners {
                 let e = wanted
                     .entry(l.to_lowercase())
-                    .or_insert_with(|| (l.clone(), Vec::new()));
+                    .or_insert_with(|| (l.clone(), Vec::new(), Vec::new()));
                 e.1.push(z.name.clone());
+                if let Some(site) = &z.site {
+                    if !e.2.contains(site) {
+                        e.2.push(site.clone());
+                    }
+                }
             }
         }
         // Nothing to watch: don't ask.
@@ -192,11 +202,12 @@ impl Inner {
                 Err(_) => Vec::new(),
             };
             let mut changes = Vec::new();
-            for (key, (name, zones)) in &wanted {
+            for (key, (name, zones, sites)) in &wanted {
                 let s = st.seen.entry(key.clone()).or_insert_with(|| Seen {
                     speaker: Speaker {
                         name: name.clone(),
                         zones: Vec::new(),
+                        sites: Vec::new(),
                         online: None,
                         since_ms: None,
                         last_seen_ms: None,
@@ -205,6 +216,7 @@ impl Inner {
                 });
                 s.speaker.name = name.clone();
                 s.speaker.zones = zones.clone();
+                s.speaker.sites = sites.clone();
                 if !known {
                     // Not known: nobody is called offline, nor watched missing.
                     s.watched_ms = now;

@@ -18,6 +18,7 @@ only its own feature.
 | nathanbent/mcast-tools#43 | `claude/vibrant-knuth-34bpdf` | Delivery confirmation: which speakers heard each play, and which are offline between plays (item 11) | #38 |
 | nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
 | nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
+| (this one) | `claude/intercom-site-webhooks` | Webhooks limited to sites (a follow-up) | #45 |
 
 - **State:** all four are open, with no merge conflicts and no review comments, waiting on the owner.
   - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
@@ -102,6 +103,15 @@ The v0.5.5 items, plus requests that came up along the way:
   - An end-to-end test (`tests/server.rs`) with a real `mcast serve` and a real named receiver.
   - Checked in a browser with the real binaries: the alerts with real receivers (one never running, one stopped and restarted) and a local webhook receiver.
 
+### Webhooks limited to sites (a follow-up, the PR after #45)
+
+- **The setting:** a webhook's `sites` (Settings → Other systems, ticked per site) limits it to plays that reached a zone at one of those sites, and to speakers expected by such zones.
+- **No sites set:** the hook gets everything, as before. Plays to zones at no site go only to such hooks.
+- **Always sent:** `backend_down` and `backend_up`, which are about the panel itself.
+- **What runs and speakers record:** each run has `sites` (its zones' sites, or the schedule's site), and each speaker has `sites`.
+- **Validation:** unknown sites are refused when a hook is saved. A filter on a site deleted later is kept, and shows as "(deleted)".
+- **Tests:** a unit test of the filter, and an API test with three receivers (North, South, all) and plays to one site and to both. The form was checked in a browser.
+
 ### In #44: backup and restore (roadmap item 13)
 
 - **What a backup holds:** the owner chose `intercom.json` alone, or a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history.
@@ -140,7 +150,6 @@ The v0.5.5 items, plus requests that came up along the way:
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
 5. **Smaller follow-ups:**
-   - Per-site webhook filters.
    - A webhook delivery log (the last N deliveries per hook).
    - Monitor charts per site.
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.

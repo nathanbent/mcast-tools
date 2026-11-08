@@ -1096,6 +1096,19 @@ impl Config {
             .collect()
     }
 
+    /// The sites an announcement plays at (just `site`, when given): those
+    /// of its zones, by id, each once.
+    pub fn sites_at(&self, a: &Announcement, site: Option<&str>) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .zones_at(a, site)
+            .into_iter()
+            .filter_map(|z| z.site.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// These zones (ids), or (with a site) those of them at that site.
     pub fn zones_in<'a>(&'a self, zones: &[String], site: Option<&str>) -> Vec<&'a Zone> {
         zones

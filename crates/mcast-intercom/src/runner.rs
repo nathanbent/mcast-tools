@@ -148,6 +148,10 @@ pub struct Run {
     /// Why it failed.
     pub error: Option<String>,
     pub targets: Vec<TargetRun>,
+    /// The sites it played at (its zones' sites, by id); empty when they
+    /// have none. Webhooks can be limited to sites.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
     /// Who heard it, when its zones list the listeners they expect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listeners: Option<Box<Listeners>>,
@@ -222,6 +226,7 @@ impl Run {
             ended_ms: None,
             error: None,
             targets: Vec::new(),
+            sites: Vec::new(),
             listeners: None,
             gap: Duration::ZERO,
         }
@@ -370,6 +375,7 @@ impl Runner {
             .ok_or_else(|| PlayError::NoAnnouncement(which.to_string()))?
             .with_defaults(&cfg.defaults);
         let targets = self.0.targets(cfg, a, site)?;
+        let sites = cfg.sites_at(a, site);
         let id = {
             let mut st = self.0.lock();
             st.next_id += 1;
@@ -395,6 +401,7 @@ impl Runner {
                         })
                     }),
                     targets,
+                    sites,
                     gap: Duration::from_secs_f64(a.repeat_gap_s.max(0.0)),
                 },
             );
@@ -408,13 +415,15 @@ impl Runner {
     }
 
     /// Remember a play that never started: one that was missed, or that
-    /// failed before reaching any group (the server was away).
+    /// failed before reaching any group (the server was away). `sites`: where
+    /// it would have played.
     pub fn record(
         &self,
         a: &Announcement,
         trigger: Trigger,
         state: RunState,
         error: String,
+        sites: Vec<String>,
     ) -> Run {
         let id = {
             let mut st = self.0.lock();
@@ -436,6 +445,7 @@ impl Runner {
                     ended_ms: Some(now),
                     error: Some(error),
                     targets: Vec::new(),
+                    sites,
                     listeners: None,
                     gap: Duration::ZERO,
                 },
