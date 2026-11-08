@@ -159,47 +159,40 @@ function form(z, save, cancel) {
 // For the list: who is reporting to the mcast server's monitor now, and when
 // each speaker last heard a page (from the history, over HEARD_DAYS days).
 const HEARD_DAYS = 30;
-const heard = { live: null, liveError: null, lastPage: null };
+const heard = { lastPage: null };
 
 async function refreshHeard() {
-  const [live, monitor] = await Promise.allSettled([
-    api("GET", "/listeners"),
-    api("GET", `/monitor?days=${HEARD_DAYS}`),
-  ]);
-  if (live.status === "fulfilled") {
-    heard.live = new Set(live.value.filter((l) => !l.left).map((l) => (l.name || l.cname || "").toLowerCase()));
-    heard.liveError = null;
-  } else {
-    heard.live = null;
-    heard.liveError = live.reason.status === 404
-      ? "the mcast server's monitor is off (--no-monitor)"
-      : `can't ask the mcast server: ${live.reason.message}`;
-  }
-  if (monitor.status === "fulfilled") {
-    heard.lastPage = new Map((monitor.value.listeners?.list ?? [])
+  try {
+    const m = await api("GET", `/monitor?days=${HEARD_DAYS}`);
+    heard.lastPage = new Map((m.listeners?.list ?? [])
       .filter((e) => e.last_heard_ms).map((e) => [e.name.toLowerCase(), e.last_heard_ms]));
-  }
+  } catch {}
 }
 
-// A zone's listeners, each with whether it's reporting now and when it last
-// heard a page.
+// A zone's listeners, each with whether it's reporting now (the panel's
+// watch on speakers, GET /speakers) and when it last heard a page.
 function listenersCell(z) {
   if (!z.listeners?.length) return "—";
+  const sp = state.speakers;
   return h("ul", { class: "ears" }, z.listeners.map((name) => {
     const key = name.toLowerCase();
-    const now = heard.live ? heard.live.has(key) : null;
+    const s = sp.speakers.find((x) => x.name.toLowerCase() === key);
+    const now = sp.known ? s?.online ?? null : null;
     const last = heard.lastPage?.get(key);
     const page = heard.lastPage
       ? last ? `heard a page ${ago(last)}` : `no page heard in ${HEARD_DAYS} days`
       : null;
-    const live = now == null
-      ? heard.liveError ?? "checking…"
-      : now ? "reporting now" : "not reporting (off, or not running mcast receive)";
-    return h("li", { title: [live, page].filter(Boolean).join("; ") },
+    const state_ = now == null
+      ? (sp.known ? "checking" : "?")
+      : now ? "reporting" : `offline${s.since_ms ? ` since ${ago(s.since_ms)}` : ""}`;
+    const why = now == null
+      ? sp.error ?? "not seen yet: it's offline if it doesn't report within a minute"
+      : now ? "reporting to the mcast server now"
+        : "hasn't reported for a minute: off, unplugged, or not running mcast receive";
+    return h("li", { title: [why, page].filter(Boolean).join("; ") },
       h("span", { class: `dot ${now == null ? "" : now ? "on" : "off"}`, "aria-hidden": "true" }),
       name,
-      h("span", { class: "muted small" },
-        ` · ${now == null ? "?" : now ? "reporting" : "not reporting"}${page ? ` · ${page}` : ""}`));
+      h("span", { class: "muted small" }, ` · ${state_}${page ? ` · ${page}` : ""}`));
   }));
 }
 
@@ -216,11 +209,13 @@ export function mount(el) {
     ],
     form,
   });
-  // Only worth asking while some zone lists listeners and the tab shows.
+  // Last pages come from the history: worth asking while some zone lists
+  // listeners and the tab shows. Who's reporting comes with the events.
   const wanted = () => state.config.zones.some((z) => z.listeners?.length) && !el.closest("[hidden]");
   const update = () => { if (wanted()) refreshHeard().then(editor.render); };
   update();
-  setInterval(update, 15000);
+  setInterval(update, 60000);
+  subscribe(["speakers"], editor.render);
   window.addEventListener("hashchange", () => { if (location.hash === "#zones") update(); });
   onRunSettled(update);
   subscribe(["config"], update);
