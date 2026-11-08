@@ -240,6 +240,97 @@ impl History {
     }
 }
 
+/// What the Panel's stats strip shows, counted from the log: see
+/// [`History::stats`].
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct Counts {
+    /// Runs that ended.
+    pub plays: u64,
+    /// Played to every group they reached (`done`).
+    pub played: u64,
+    pub stopped: u64,
+    pub failed: u64,
+    pub missed: u64,
+}
+
+impl Counts {
+    fn add(&mut self, r: &Value) {
+        self.plays += 1;
+        match r["state"].as_str() {
+            Some("done") => self.played += 1,
+            Some("stopped") => self.stopped += 1,
+            Some("failed") => self.failed += 1,
+            Some("missed") => self.missed += 1,
+            _ => {}
+        }
+    }
+}
+
+impl History {
+    /// Every logged run that started at or after `from_ms`, oldest day
+    /// first (in no particular order within a day).
+    pub fn scan(&self, from_ms: u64, mut f: impl FnMut(&Value)) {
+        let first = day_of(from_ms);
+        let mut files = self.files();
+        files.reverse();
+        for path in files {
+            if file_day(&path).map_or(true, |d| d < first) {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if v["run"]["started_ms"].as_u64().unwrap_or(0) >= from_ms {
+                    f(&v["run"]);
+                }
+            }
+        }
+    }
+
+    /// Plays since `today_ms` and since `week_ms`, and groups busy or failed
+    /// since `day_ago_ms`; only runs `keep` lets through.
+    pub fn stats(
+        &self,
+        today_ms: u64,
+        week_ms: u64,
+        day_ago_ms: u64,
+        keep: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let (mut today, mut week) = (Counts::default(), Counts::default());
+        let (mut busy, mut failed) = (0u64, 0u64);
+        self.scan(week_ms.min(day_ago_ms), |r| {
+            if !keep(r) {
+                return;
+            }
+            let started = r["started_ms"].as_u64().unwrap_or(0);
+            if started >= week_ms {
+                week.add(r);
+            }
+            if started >= today_ms {
+                today.add(r);
+            }
+            if started >= day_ago_ms {
+                for t in r["targets"].as_array().into_iter().flatten() {
+                    match t["state"].as_str() {
+                        Some("busy") => busy += 1,
+                        Some("failed") => failed += 1,
+                        _ => {}
+                    }
+                }
+            }
+        });
+        json!({
+            "today": today,
+            "week": week,
+            "last_24h": { "busy_groups": busy, "failed_groups": failed },
+        })
+    }
+}
+
 /// A run as a CSV row, times in `tz`: see [`CSV_HEADER`].
 pub fn csv_row(r: &Value, tz: &jiff::tz::TimeZone) -> String {
     let time = |k: &str| {
@@ -414,6 +505,42 @@ mod tests {
             }
         }
         assert_eq!(seen, [3, 2, 1]);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn counts_today_the_week_and_problems() {
+        let d = dir();
+        let h = History::new(d.clone(), 0);
+        let day = 86_400_000;
+        let now = 1_800_000_000_000;
+        // A failed run with a busy group and a failed one, written as logged.
+        let mut failed = serde_json::to_value(run(2, now - 1000, RunState::Failed)).unwrap();
+        failed["targets"] =
+            json!([{"group": "a", "state": "busy"}, {"group": "b", "state": "failed"}]);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join(format!("{}.jsonl", day_of(now - 1000))),
+            format!("{}\n", json!({"run": failed, "logged_ms": now})),
+        )
+        .unwrap();
+        for r in [
+            run(1, now - 2000, RunState::Done),
+            run(3, now - 2 * day, RunState::Missed),
+            run(4, now - 10 * day, RunState::Done),
+        ] {
+            h.observe(&Change::Run(&r));
+        }
+        let s = h.stats(now - 3_600_000, now - 6 * day, now - day, |_| true);
+        assert_eq!(
+            s["today"],
+            json!({"plays": 2, "played": 1, "stopped": 0, "failed": 1, "missed": 0})
+        );
+        assert_eq!(s["week"]["plays"], 3);
+        assert_eq!(s["week"]["missed"], 1);
+        assert_eq!(s["last_24h"], json!({"busy_groups": 1, "failed_groups": 1}));
+        let none = h.stats(now - 3_600_000, now - 6 * day, now - day, |_| false);
+        assert_eq!(none["week"]["plays"], 0);
         let _ = std::fs::remove_dir_all(d);
     }
 

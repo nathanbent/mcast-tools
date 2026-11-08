@@ -156,6 +156,13 @@ The plan:
 
 ### 7. Panel stats strip
 
+**Built.**
+- **`GET /stats`** counts from the history log: plays today and over the last 7 days (in the panel's time zone), with played, stopped, failed and missed counted separately, plus groups busy or failed in the last 24 hours. A category-limited token counts only its own.
+- **The strip** sits at the top of the Panel. It shows those numbers (problems in red), the next scheduled play, the mcast server when it's unreachable, and a link to History. It refreshes when a play ends and every minute.
+- **Settings → Panel → Stats** turns it off.
+
+The plan:
+
 - Plays today and this week, the next scheduled play, busy or failed
   targets in the last 24 h, and whether the mcast server is reachable.
 - Computed from the history log; kept small so the buttons stay the focus.

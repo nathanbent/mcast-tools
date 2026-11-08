@@ -142,3 +142,38 @@ pub(super) async fn csv(
     )
         .into_response())
 }
+
+/// The Panel's stats strip: plays today and over the last 7 days (in the
+/// panel's time zone), and groups busy or failed in the last 24 hours:
+/// `{"today": COUNTS, "week": COUNTS, "last_24h": {"busy_groups",
+/// "failed_groups"}}`, counts being `{"plays", "played", "stopped",
+/// "failed", "missed"}`. A token limited to categories counts only theirs.
+pub(super) async fn stats(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+) -> ApiResult<Json<Value>> {
+    let cfg = s.load().await?;
+    let tz = cfg.tz().unwrap_or_else(|_| jiff::tz::TimeZone::system());
+    let now = jiff::Timestamp::now();
+    let today = now.to_zoned(tz.clone()).date();
+    let start = |d: jiff::civil::Date| {
+        d.to_zoned(tz.clone())
+            .map(|z| z.timestamp().as_millisecond().max(0) as u64)
+            .map_err(|e| ApiError::internal(e.to_string()))
+    };
+    let today_ms = start(today)?;
+    let week_ms = start(
+        today
+            .checked_sub(jiff::Span::new().days(6))
+            .map_err(|e| ApiError::internal(e.to_string()))?,
+    )?;
+    let day_ago_ms = (now.as_millisecond() as u64).saturating_sub(86_400_000);
+    let history = s.0.history.clone();
+    let v = tokio::task::spawn_blocking(move || {
+        history.stats(today_ms, week_ms, day_ago_ms, |r| {
+            caller.may_play(&cfg, r["announcement"].as_str().unwrap_or(""))
+        })
+    })
+    .await?;
+    Ok(Json(v))
+}

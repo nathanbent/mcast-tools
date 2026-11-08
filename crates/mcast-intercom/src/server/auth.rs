@@ -294,6 +294,7 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/phonebook"
         | "/history"
         | "/history.csv"
+        | "/stats"
         | "/chimes/{name}/preview"
             if get =>
         {

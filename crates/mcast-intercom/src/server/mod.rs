@@ -350,6 +350,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/history", get(history::list))
         .route("/history.csv", get(history::csv))
+        .route("/stats", get(history::stats))
         .route("/upcoming", get(upcoming))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/runs", get(list_runs).delete(stop_all))

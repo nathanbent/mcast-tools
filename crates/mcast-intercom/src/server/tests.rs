@@ -874,6 +874,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/layout/{tab}"),
     ("GET", "/history"),
     ("GET", "/history.csv"),
+    ("GET", "/stats"),
     ("GET", "/upcoming"),
     ("GET", "/settings"),
     ("PUT", "/settings"),
@@ -2104,7 +2105,7 @@ async fn the_panel_look_colors_icons_and_confirming() {
     assert_eq!(
         v["panel"],
         json!({"size": "medium", "mode": "tiles", "show_details": true, "show_next": true,
-               "show_playing": true, "confirm_emergency": false})
+               "show_playing": true, "show_stats": true, "confirm_emergency": false})
     );
     let look =
         json!({"size": "large", "mode": "list", "show_next": false, "confirm_emergency": true});
@@ -2397,6 +2398,18 @@ async fn history_is_kept_on_disk_and_filtered() {
         .await;
     let (s, _) = p.call_with(Method::GET, "/history", None, Some(&bot)).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // The stats strip counts from the same log.
+    let (s, st) = p.call_with(Method::GET, "/stats", None, admin).await;
+    assert_eq!(s, StatusCode::OK, "{st}");
+    assert_eq!(st["today"]["plays"], 3, "{st}");
+    assert_eq!(st["week"]["failed"], 2);
+    assert_eq!(
+        st["last_24h"]["busy_groups"], 3,
+        "Bell's two, and Yard for Gate"
+    );
+    let (_, st) = p.call_with(Method::GET, "/stats", None, Some(&desk)).await;
+    assert_eq!(st["today"]["plays"], 1, "only its category");
 
     // How long it's kept.
     let (_, v) = p.call_with(Method::GET, "/settings", None, admin).await;

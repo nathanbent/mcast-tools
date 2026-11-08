@@ -537,3 +537,13 @@ body.kiosk main { max-width: none; }
 .kiosk-link code { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 .history-filters { align-items: flex-end; margin-bottom: 12px; }
 #history h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 12px 0 8px; }
+
+/* The Panel's stats strip */
+.stats-strip { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px 24px; padding: 10px 14px; margin-bottom: 14px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.stats-strip .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stats-strip .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.stats-strip .value { font-size: 14px; }
+.stats-strip .bad { color: var(--bad); font-weight: 600; }
+.stats-strip .ok { color: var(--ok); }
+.stats-strip .stat-more { margin-left: auto; align-self: center; font-size: 13px; }

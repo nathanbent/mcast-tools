@@ -8,7 +8,7 @@ import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
 
 // How the Panel looks (Settings → Panel), with the defaults filled in.
-export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, confirm_emergency: false };
+export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, show_stats: true, confirm_emergency: false };
 // The URL can set this screen's size and layout.
 const look = () => {
   const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
@@ -149,6 +149,39 @@ function tagBar(anns) {
 
 let renderPanel = () => {};
 
+// The stats strip (GET /stats), refreshed as plays end and every minute.
+let stats = null;
+async function loadStats() {
+  try {
+    stats = await api("GET", "/stats");
+  } catch {
+    stats = null;
+  }
+  renderPanel();
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+function statsStrip(next) {
+  const b = state.backend;
+  const item = (label, ...value) => h("div", { class: "stat" }, h("span", { class: "label" }, label), h("span", { class: "value" }, ...value));
+  const bad = (text) => h("span", { class: "bad" }, text);
+  const problems = (c) => [c.failed > 0 && bad(` · ${c.failed} failed`), c.missed > 0 && bad(` · ${c.missed} missed`)];
+  const t = stats?.today, w = stats?.week, d = stats?.last_24h;
+  return h("div", { class: "stats-strip" },
+    b && !b.connected && item("mcast server", bad("unreachable")),
+    look().show_next && next && item("Next", h("strong", {}, next.name), next.site && ` at ${siteName(next.site)}`,
+      ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
+    t && item("Today", plural(t.plays, "play"), problems(t)),
+    w && item("Last 7 days", plural(w.plays, "play"), problems(w)),
+    d && item("Last 24 h", d.busy_groups + d.failed_groups === 0
+      ? h("span", { class: "ok" }, "no busy or failed groups")
+      : [d.busy_groups > 0 && bad(`${plural(d.busy_groups, "group")} busy`),
+        d.busy_groups > 0 && d.failed_groups > 0 && ", ",
+        d.failed_groups > 0 && bad(`${plural(d.failed_groups, "group")} failed`)]),
+    !state.view.kiosk && h("a", { class: "link stat-more", href: "#history" }, "History →"));
+}
+
 export function mount(el) {
   const render = () => {
     if (state.configError) {
@@ -161,7 +194,8 @@ export function mount(el) {
     const active = [...state.runs.values()].filter((r) => !isOver(r)).sort((a, b) => b.id - a.id);
     const next = state.upcoming.fires[0];
     replace(el,
-      look().show_next && next && h("p", { class: "next" },
+      look().show_stats && statsStrip(next),
+      !look().show_stats && look().show_next && next && h("p", { class: "next" },
         h("span", { class: "muted" }, "Next: "), h("strong", {}, next.name),
         next.site && ` at ${siteName(next.site)}`,
         ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
@@ -188,6 +222,16 @@ export function mount(el) {
     if (focused) el.querySelector(`[data-talk="${CSS.escape(focused)}"]`)?.focus();
   };
   renderPanel = render;
+  if (look().show_stats) loadStats();
+  setInterval(() => { if (look().show_stats) loadStats(); }, 60000);
+  // A play that ends changes the numbers.
+  let over = new Set([...state.runs.values()].filter(isOver).map((r) => r.id));
+  subscribe(["runs"], () => {
+    const now = new Set([...state.runs.values()].filter(isOver).map((r) => r.id));
+    if ([...now].some((id) => !over.has(id)) && look().show_stats) loadStats();
+    over = now;
+  });
+  subscribe(["server"], render);
   // A tag that's gone shows everything.
   if (filter && !state.view.tag && !state.config.announcements.some((a) => (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase()))) filter = "";
   subscribe(["config", "runs", "upcoming"], render);
