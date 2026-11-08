@@ -190,6 +190,110 @@ impl Resampler {
     }
 }
 
+/// Kernel half-width (input frames) for [`VariableResampler`].
+const VARIABLE_HALF: usize = 16;
+/// Kernel phases tabulated per input frame for [`VariableResampler`];
+/// positions in between are linearly interpolated.
+const VARIABLE_PHASES: usize = 256;
+
+/// Resampler whose ratio can change continuously, for small corrections
+/// such as matching a sender's clock (a few hundred ppm). Its kernel cuts
+/// off at the Nyquist frequency, so at a ratio of exactly 1 it passes the
+/// input through unchanged (it needs 16 frames of look-ahead before it
+/// can emit a frame, but output stays aligned with input); it is not meant for
+/// large rate changes, which need the cutoff lowered ([`Converter`] does that).
+pub struct VariableResampler {
+    channels: usize,
+    /// `VARIABLE_PHASES + 1` rows of `2 * VARIABLE_HALF` taps.
+    table: Vec<f32>,
+    weights: Vec<f32>,
+    buf: Vec<f32>,
+    /// Next output position in input frames from the start of `buf`.
+    t: f64,
+    /// Input frames per output frame (1 / ratio).
+    step: f64,
+}
+
+impl VariableResampler {
+    pub fn new(channels: usize) -> Self {
+        let taps = 2 * VARIABLE_HALF;
+        let mut table = vec![0.0; (VARIABLE_PHASES + 1) * taps];
+        for (p, row) in table.chunks_exact_mut(taps).enumerate() {
+            let frac = p as f64 / VARIABLE_PHASES as f64;
+            for (i, w) in row.iter_mut().enumerate() {
+                let x = frac + (VARIABLE_HALF - 1) as f64 - i as f64;
+                *w = kernel(VARIABLE_HALF, 0.5, x) as f32;
+            }
+        }
+        Self {
+            channels: channels.max(1),
+            table,
+            weights: vec![0.0; taps],
+            buf: vec![0.0; VARIABLE_HALF * channels.max(1)],
+            t: VARIABLE_HALF as f64,
+            step: 1.0,
+        }
+    }
+
+    /// Output frames per input frame, e.g. 1.0002 to stretch by 200 ppm.
+    pub fn set_ratio(&mut self, ratio: f64) {
+        self.step = 1.0 / ratio;
+    }
+
+    pub fn ratio(&self) -> f64 {
+        1.0 / self.step
+    }
+
+    /// Forget buffered input (e.g. the stream restarted).
+    pub fn reset(&mut self) {
+        self.buf.clear();
+        self.buf.resize(VARIABLE_HALF * self.channels, 0.0);
+        self.t = VARIABLE_HALF as f64;
+    }
+
+    /// Resample interleaved `input`, appending to `out`.
+    pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        self.buf.extend_from_slice(input);
+        let ch = self.channels;
+        let taps = 2 * VARIABLE_HALF;
+        let frames = self.buf.len() / ch;
+        while (self.t as usize) + VARIABLE_HALF < frames {
+            let base = self.t as usize;
+            let pos = (self.t - base as f64) * VARIABLE_PHASES as f64;
+            let p = (pos as usize).min(VARIABLE_PHASES - 1);
+            let a = (pos - p as f64) as f32;
+            let (r0, r1) = (
+                &self.table[p * taps..(p + 1) * taps],
+                &self.table[(p + 1) * taps..(p + 2) * taps],
+            );
+            for ((w, &x0), &x1) in self.weights.iter_mut().zip(r0).zip(r1) {
+                *w = x0 + a * (x1 - x0);
+            }
+            let first = base + 1 - VARIABLE_HALF;
+            let window = &self.buf[first * ch..(first + taps) * ch];
+            if ch == 1 {
+                out.push(dot(window, &self.weights));
+            } else {
+                for c in 0..ch {
+                    let acc = window[c..]
+                        .iter()
+                        .step_by(ch)
+                        .zip(&self.weights)
+                        .map(|(x, w)| x * w)
+                        .sum();
+                    out.push(acc);
+                }
+            }
+            self.t += self.step;
+        }
+        let keep_from = (self.t as usize + 1)
+            .saturating_sub(VARIABLE_HALF)
+            .min(frames);
+        self.buf.drain(..keep_from * ch);
+        self.t -= keep_from as f64;
+    }
+}
+
 /// Blackman-windowed sinc, `half` input frames wide on each side, scaled for
 /// `cutoff` (cycles per input sample), evaluated `x` input frames from its centre.
 fn kernel(half: usize, cutoff: f64, x: f64) -> f64 {
@@ -302,6 +406,80 @@ mod tests {
             out.as_chunks::<2>().0.iter().map(|f| (f[0], f[1])).unzip();
         assert!(rms(&l[2_400..21_600]) > 0.3);
         assert!(r.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn variable_resampler_is_transparent_at_unity() {
+        let input = sine(48_000, 1_000.0, 0.1);
+        let mut r = VariableResampler::new(1);
+        let mut out = Vec::new();
+        r.process(&input, &mut out);
+        assert_eq!(out.len(), input.len() - VARIABLE_HALF);
+        for (o, i) in out.iter().zip(&input) {
+            assert!((o - i).abs() < 1e-6, "{o} vs {i}");
+        }
+    }
+
+    #[test]
+    fn variable_resampler_tracks_ratio_and_keeps_quality() {
+        // Typical drift corrections: 1000 ppm either way.
+        for ratio in [1.001, 0.999] {
+            for freq in [100.0, 1_000.0, 15_000.0] {
+                let input = sine(48_000, freq, 2.0);
+                let mut r = VariableResampler::new(1);
+                r.set_ratio(ratio);
+                let mut out = Vec::new();
+                for chunk in input.chunks(480) {
+                    r.process(chunk, &mut out);
+                }
+                let expected = input.len() as f64 * ratio;
+                assert!(
+                    (out.len() as f64 - expected).abs() < 20.0,
+                    "{} vs {expected}",
+                    out.len()
+                );
+                let mid = &out[9_600..86_400];
+                let level = rms(mid) / (0.5 / 2f64.sqrt());
+                assert!(
+                    (level - 1.0).abs() < 0.005,
+                    "{ratio} {freq} Hz: gain {level}"
+                );
+                // Pitch scales by 1/ratio (more samples for the same cycles).
+                let crossings = mid.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+                let got = crossings as f64 * 48_000.0 / mid.len() as f64;
+                assert!(
+                    (got - freq / ratio).abs() < freq * 0.002 + 2.0,
+                    "{freq} Hz -> {got}"
+                );
+                // Distortion: compare against an ideal sine at the new pitch.
+                let w = 2.0 * PI * freq / ratio / 48_000.0;
+                // Least-squares fit of a*sin + b*cos (2x2 normal equations).
+                let (mut ss, mut cc, mut sc, mut xs, mut xc) = (0.0, 0.0, 0.0, 0.0, 0.0);
+                for (i, &x) in mid.iter().enumerate() {
+                    let (si, co) = (w * i as f64).sin_cos();
+                    ss += si * si;
+                    cc += co * co;
+                    sc += si * co;
+                    xs += x as f64 * si;
+                    xc += x as f64 * co;
+                }
+                let det = ss * cc - sc * sc;
+                let a = (xs * cc - xc * sc) / det;
+                let b = (xc * ss - xs * sc) / det;
+                let n = mid.len() as f64;
+                let resid: f64 = mid
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &x)| {
+                        let fit = a * (w * i as f64).sin() + b * (w * i as f64).cos();
+                        (x as f64 - fit).powi(2)
+                    })
+                    .sum::<f64>()
+                    / n;
+                let snr = 10.0 * ((a * a + b * b) / 2.0 / resid).log10();
+                assert!(snr > 80.0, "{ratio} {freq} Hz: SNR {snr:.1} dB");
+            }
+        }
     }
 
     #[test]

@@ -518,6 +518,31 @@ form's Group field picks a name; API requests accept a name for `group` too.
   `ffplay -protocol_whitelist file,udp,rtp stream.sdp` or VLC.
 - ffmpeg can play our streams straight from SAP: `ffplay sap://239.255.255.255`.
 
+### Playback on real networks
+
+The receiver copes with what multicast networks actually do:
+
+- **Out-of-order packets** are put back in sequence before decoding. A
+  missing packet is waited for up to half the playout latency (`--latency`,
+  40 ms by default, so 20 ms) before it counts as lost and is concealed.
+  Stateful codecs (G.722, Opus) are always decoded in order.
+- **Clock drift:** the sender's clock and your sound card's never run at
+  quite the same rate. The receiver measures the difference and resamples by
+  up to ±1000 ppm (inaudible) to keep the buffer at its target, so
+  long-running streams don't glitch every few minutes. It locks on within two
+  or three minutes of a new sender. (Recording to WAV keeps the sender's
+  timing, so it isn't resampled.)
+
+The stats line shows both:
+
+```
+packets 2600 lost 0 (concealed 0) reordered 12 late 0 invalid 0 | buffer 39.0ms underruns 0 overflows 0 drift +23ppm
+```
+
+`reordered` arrived out of order but in time to play; `late` arrived too
+late (raise `--latency` if this climbs); `drift` is how fast the sender's
+clock runs relative to the sound card.
+
 ### RTCP: heartbeat and sync
 
 Senders and receivers also talk RTCP (RFC 3550) on the RTP port + 1
@@ -854,7 +879,7 @@ file's format and the panel's API. On a Raspberry Pi, `ENABLE_INTERCOM=yes` in
 | Crate | Purpose |
 |---|---|
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP (packets and sender/receiver sessions), SAP announce/directory, SDP parse/write |
-| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resampler, packetizer, jitter buffer, sender & receiver, device I/O (cpal) |
+| `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resamplers, packetizer, reorder and jitter buffers, drift control, sender & receiver, device I/O (cpal) |
 | `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, SDP |
 | `crates/mcast-file` | Files over multicast: RaptorQ encoding, packet format, receiver/assembler, terminal picture preview |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
@@ -872,8 +897,8 @@ subcommand in the CLI.
 
 ## Roadmap ideas
 
-- Audio: PTP-aligned timestamps (AES67), resampling on playback, playing
-  in step across receivers (using the RTCP clock mapping)
+- Audio: PTP-aligned timestamps (AES67), playing in step across receivers
+  (using the RTCP clock mapping)
 - Other: ping/latency, relay/bridge between interfaces
 
 ## License

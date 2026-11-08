@@ -10,7 +10,7 @@
 //! clock faster than ours) the reader drops the oldest audio back to `target`.
 
 use rtrb::{Consumer, Producer, RingBuffer};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// State shared by the two halves.
@@ -23,6 +23,8 @@ struct Shared {
     /// Samples written before the last [`JitterWriter::reset`]; the reader
     /// discards everything up to here.
     discard_until: AtomicU64,
+    /// The reader is playing (not waiting to fill up to the target).
+    playing: AtomicBool,
 }
 
 /// Network-side half: pushes decoded, interleaved samples.
@@ -83,6 +85,8 @@ pub struct JitterStats {
     pub overflows: u64,
     pub dropped: u64,
     pub buffered_frames: usize,
+    /// Playing rather than filling up after a start, reset or underrun.
+    pub playing: bool,
 }
 
 impl JitterWriter {
@@ -114,6 +118,7 @@ impl JitterWriter {
             overflows: self.shared.overflows.load(Ordering::Relaxed),
             dropped: self.shared.dropped.load(Ordering::Relaxed),
             buffered_frames: (self.capacity - self.producer.slots()) / self.channels,
+            playing: self.shared.playing.load(Ordering::Relaxed),
         }
     }
 }
@@ -121,6 +126,13 @@ impl JitterWriter {
 impl JitterReader {
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    fn set_playing(&mut self, playing: bool) {
+        if self.playing != playing {
+            self.playing = playing;
+            self.shared.playing.store(playing, Ordering::Relaxed);
+        }
     }
 
     fn skip(&mut self, samples: usize) {
@@ -137,7 +149,7 @@ impl JitterReader {
         if discard > self.read {
             let n = ((discard - self.read) as usize).min(self.consumer.slots());
             self.skip(n);
-            self.playing = false;
+            self.set_playing(false);
         }
 
         let available = self.consumer.slots();
@@ -151,13 +163,13 @@ impl JitterReader {
                 out.fill(0.0);
                 return;
             }
-            self.playing = true;
+            self.set_playing(true);
         }
         let (filled, rest) = self.consumer.pop_partial_slice(out);
         self.read += filled.len() as u64;
         if !rest.is_empty() {
             rest.fill(0.0);
-            self.playing = false;
+            self.set_playing(false);
             self.shared.underruns.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -175,8 +187,10 @@ mod tests {
         r.pull(&mut out);
         assert_eq!(out, [0.0, 0.0]); // still buffering
         w.push(&[4.0]);
+        assert!(!w.stats().playing);
         r.pull(&mut out);
         assert_eq!(out, [1.0, 2.0]);
+        assert!(w.stats().playing);
     }
 
     #[test]
