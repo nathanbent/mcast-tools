@@ -19,6 +19,7 @@ one before so its diff shows only its own feature.
 | nathanbent/mcast-tools#44 | `claude/intercom-backup-restore` | Backup and restore, with the sounds (item 13) | #43 |
 | nathanbent/mcast-tools#45 | `claude/intercom-gpio` | Buttons and door contacts on GPIO pins (item 12) | #44 |
 | nathanbent/mcast-tools#46 | `claude/intercom-site-webhooks` | Per site: webhooks limited to sites, and the Monitor tab for one site (follow-ups) | #45 |
+| (this one) | `claude/intercom-webhook-log` | A delivery log for each webhook (a follow-up) | #46 |
 
 - **State:** all are open, with no merge conflicts and no review comments, waiting on the owner.
   - CI is green on the latest commits of #38 (`3f6402b`), #43 (`723c611`) and #44 (`6a6ee6e`).
@@ -118,6 +119,13 @@ The v0.5.5 items, plus requests that came up along the way:
   - The mcast server's uptime stays panel-wide.
   - Tested by unit and API tests, and in a browser with real plays.
 
+### Webhook delivery log (a follow-up, the PR after #46)
+
+- **What's kept:** each hook's last 50 deliveries (`LOG_PER_HOOK`): its number, event, what it was about, when, the result (status and error), attempts and time taken.
+- **Where:** `GET /webhooks/{id}/deliveries` (admin), and a *Log* button on each hook in Settings → Other systems.
+- **The file:** `webhook-log.jsonl` beside `webhooks.json`, owner-only, so the log outlives a restart. It's cut back past 5000 lines, and a deleted hook's lines go with it. No bodies, so no secrets.
+- **Tests:** a unit test (the 50 cap, the file's permissions, reading it back, cutting it back, forgetting a hook) and an API test (a run and a test delivery logged with what they were about, the log after a restart, and gone with the hook). Checked in a browser with a working receiver and a dead one (failed, 2 attempts, 3000 ms).
+
 ### In #44: backup and restore (roadmap item 13)
 
 - **What a backup holds:** the owner chose `intercom.json` alone, or a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history.
@@ -156,7 +164,6 @@ The v0.5.5 items, plus requests that came up along the way:
    - `PlaylistItem` (`model.rs`) has one variant, `Sound`, and is ready for another.
    - Blocked on the owner: displays through `mcast text`, read aloud (TTS, listed as out of scope), or both.
 5. **Smaller follow-ups:**
-   - A webhook delivery log (the last N deliveries per hook).
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
 
 ## Questions still open for the owner

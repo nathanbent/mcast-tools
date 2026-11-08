@@ -141,11 +141,34 @@ pub(super) async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
     let hooks = s.0.webhooks.clone();
-    let w = tokio::task::spawn_blocking(move || hooks.modify(|f| f.remove(&id)))
-        .await?
-        .map_err(bad)?;
+    let w = tokio::task::spawn_blocking(move || {
+        let w = hooks.modify(|f| f.remove(&id))?;
+        hooks.forget(&w.id);
+        Ok::<_, anyhow::Error>(w)
+    })
+    .await?
+    .map_err(bad)?;
     let _ = s.0.events.send(Event::ConfigChanged);
     Ok(Json(view(&w, None)))
+}
+
+/// A hook's recent deliveries, newest first: `[{"delivery", "event",
+/// "about", "at_ms", "ok", "status", "error", "attempts", "took_ms"}]`.
+pub(super) async fn deliveries(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<Delivery>>> {
+    let hooks = s.0.webhooks.clone();
+    tokio::task::spawn_blocking(move || {
+        if !hooks.list().iter().any(|(w, _)| w.id == id) {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("no webhook \"{id}\""),
+            ));
+        }
+        Ok(Json(hooks.deliveries(&id)))
+    })
+    .await?
 }
 
 /// Send a `test` event now and say how it went.

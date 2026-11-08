@@ -367,6 +367,7 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         // Any method: the handlers take GET and POST, and refuse the rest.
         "/trigger/{which}" | "/trigger/{which}/stop" | "/stop-all" => Play,
         "/webhooks" | "/webhooks/{id}" | "/webhooks/{id}/test" => Admin,
+        "/webhooks/{id}/deliveries" if get => Admin,
         _ => return None,
     })
 }

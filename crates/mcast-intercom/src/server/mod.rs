@@ -479,6 +479,7 @@ pub fn router(state: AppState) -> Router {
             axum::routing::put(hooks::put).delete(hooks::delete),
         )
         .route("/webhooks/{id}/test", post(hooks::test))
+        .route("/webhooks/{id}/deliveries", get(hooks::deliveries))
         // Once the route is known: may this caller use it?
         .route_layer(middleware::from_fn(auth::authorize))
         .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "no such route") })
