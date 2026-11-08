@@ -265,7 +265,7 @@ pub fn run(
         None => None,
     };
 
-    while !stop.load(Ordering::Relaxed) && cfg.duration.map_or(true, |d| start.elapsed() < d) {
+    while !stop.load(Ordering::Relaxed) && cfg.duration.is_none_or(|d| start.elapsed() < d) {
         if last_stats.elapsed() >= cfg.stats_interval {
             last_stats = Instant::now();
             refresh(&mut stats, lost_before, current.as_ref(), output.as_ref());

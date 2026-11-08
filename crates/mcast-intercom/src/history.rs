@@ -265,21 +265,21 @@ impl History {
                 .filter(|r| {
                     let started = r["started_ms"].as_u64().unwrap_or(0);
                     let s = |k: &str| r[k].as_str().unwrap_or("").to_string();
-                    q.from_ms.map_or(true, |f| started >= f)
-                        && q.to_ms.map_or(true, |t| started < t)
-                        && q.before.map_or(true, |b| key(r) < b)
+                    q.from_ms.is_none_or(|f| started >= f)
+                        && q.to_ms.is_none_or(|t| started < t)
+                        && q.before.is_none_or(|b| key(r) < b)
                         && q.announcement
                             .as_ref()
-                            .map_or(true, |a| s("announcement") == *a)
-                        && q.state.as_ref().map_or(true, |st| s("state") == *st)
-                        && by.as_ref().map_or(true, |b| {
+                            .is_none_or(|a| s("announcement") == *a)
+                        && q.state.as_ref().is_none_or(|st| s("state") == *st)
+                        && by.as_ref().is_none_or(|b| {
                             r["trigger"]["by"]
                                 .as_str()
                                 .is_some_and(|x| x.to_lowercase().contains(b))
                         })
                         && text
                             .as_ref()
-                            .map_or(true, |t| s("name").to_lowercase().contains(t))
+                            .is_none_or(|t| s("name").to_lowercase().contains(t))
                         && keep(r)
                 })
                 .collect();
@@ -329,7 +329,7 @@ impl History {
         let mut files = self.files();
         files.reverse();
         for path in files {
-            if file_day(&path).map_or(true, |d| d < first) {
+            if file_day(&path).is_none_or(|d| d < first) {
                 continue;
             }
             let Ok(file) = std::fs::File::open(&path) else {

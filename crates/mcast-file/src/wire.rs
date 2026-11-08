@@ -123,7 +123,7 @@ pub fn validate(oti: &ObjectTransmissionInformation, max_size: u64) -> Result<()
         && z > 0
         && n > 0
         && al > 0
-        && t % al == 0
+        && t.is_multiple_of(al)
         && n <= t / al
         && len.div_ceil(t).div_ceil(z) <= MAX_BLOCK_SYMBOLS
         && len.div_ceil(t) >= z;

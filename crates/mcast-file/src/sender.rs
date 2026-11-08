@@ -247,7 +247,7 @@ impl FileSender {
         let mut after = |s: &mut Self, sent: &mut u64, pkt: &EncodingPacket| -> Result<bool> {
             s.send(|b| wire::write_data(b, object, &oti, pkt))?;
             *sent += 1;
-            if *sent % META_EVERY == 0 {
+            if (*sent).is_multiple_of(META_EVERY) {
                 s.send_meta(object, &oti, &meta)?;
                 progress(Progress {
                     sent: *sent,
@@ -273,7 +273,7 @@ impl FileSender {
         // Then fresh repair packets, as many as asked (or until stopped).
         let mut next_repair = vec![0u32; blocks.len()];
         const BATCH: u32 = 32;
-        while !stop.load(Ordering::Relaxed) && total.map_or(true, |t| sent < t) {
+        while !stop.load(Ordering::Relaxed) && total.is_none_or(|t| sent < t) {
             let batches: Vec<Vec<EncodingPacket>> = blocks
                 .iter()
                 .zip(&mut next_repair)

@@ -661,9 +661,10 @@ impl RecvRequest {
     /// Whether an announced stream is one this request would play.
     pub fn matches(&self, info: &StreamInfo) -> bool {
         info.spec().is_some()
-            && self.stream.as_ref().map_or(true, |w| {
-                info.name.to_lowercase().contains(&w.to_lowercase())
-            })
+            && self
+                .stream
+                .as_ref()
+                .is_none_or(|w| info.name.to_lowercase().contains(&w.to_lowercase()))
     }
 
     /// Find the stream: the explicit group, else wait up to `wait_s` for a

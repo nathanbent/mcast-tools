@@ -172,7 +172,7 @@ pub async fn serve(
     extra: Router,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    if !cfg.listen.ip().is_loopback() && cfg.token.as_deref().map_or(true, str::is_empty) {
+    if !cfg.listen.ip().is_loopback() && cfg.token.as_deref().is_none_or(str::is_empty) {
         bail!(
             "refusing to listen on {} without a token: anyone who can reach it could page; \
              set --token / MCAST_TOKEN, or listen on 127.0.0.1",

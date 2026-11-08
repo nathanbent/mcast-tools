@@ -304,7 +304,7 @@ pub fn run(
     let mut events = Vec::new();
     let mut buf = vec![0u8; 65_536];
 
-    while !stop.load(Ordering::Relaxed) && cfg.duration.map_or(true, |d| start.elapsed() < d) {
+    while !stop.load(Ordering::Relaxed) && cfg.duration.is_none_or(|d| start.elapsed() < d) {
         if let Some(r) = &mut rtcp {
             for m in r.listener.drain() {
                 for p in &m.packets {
@@ -333,7 +333,7 @@ pub fn run(
                 if !looks_like_rtcp(data) {
                     if let Ok(pkt) = rtp::parse(data) {
                         let h = pkt.header;
-                        if cfg.payload_type.map_or(true, |pt| pt == h.payload_type) {
+                        if cfg.payload_type.is_none_or(|pt| pt == h.payload_type) {
                             if reception.len() < 64 || reception.contains_key(&h.ssrc) {
                                 let arrival = start.elapsed().as_secs_f64() * CLOCK_RATE as f64;
                                 reception.entry(h.ssrc).or_default().0.packet(

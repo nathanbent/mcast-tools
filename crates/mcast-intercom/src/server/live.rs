@@ -173,7 +173,7 @@ async fn talk(
                 let now = runner.get(run.id);
                 let over = now
                     .as_ref()
-                    .map_or(true, |r| r.state.is_over() || r.state == RunState::Stopping);
+                    .is_none_or(|r| r.state.is_over() || r.state == RunState::Stopping);
                 if over {
                     break Some(why_over(now.as_ref(), heard).unwrap_or_else(|| "stopped".into()));
                 }

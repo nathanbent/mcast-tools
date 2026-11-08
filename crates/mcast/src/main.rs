@@ -1116,7 +1116,7 @@ fn audio_discover(a: DiscoverArgs, stop: &AtomicBool) -> Result<()> {
     eprintln!("listening for SAP announcements. Ctrl-C to stop.");
     let start = Instant::now();
     let limit = a.duration.map(Duration::from_secs_f64);
-    while !stop.load(Ordering::Relaxed) && limit.map_or(true, |l| start.elapsed() < l) {
+    while !stop.load(Ordering::Relaxed) && limit.is_none_or(|l| start.elapsed() < l) {
         for event in dir.poll(Duration::from_millis(500))? {
             let (mark, s, why) = match &event {
                 DirectoryEvent::Added(s) => ("+", s, ""),
@@ -1216,7 +1216,7 @@ fn monitor(a: MonitorArgs, stop: &AtomicBool) -> Result<()> {
         );
     }
     let mut next = Instant::now() + interval;
-    while !stop.load(Ordering::Relaxed) && limit.map_or(true, |l| start.elapsed() < l) {
+    while !stop.load(Ordering::Relaxed) && limit.is_none_or(|l| start.elapsed() < l) {
         m.poll(next);
         next += interval;
         let rows = m.report();

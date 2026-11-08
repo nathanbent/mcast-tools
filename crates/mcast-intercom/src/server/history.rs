@@ -237,7 +237,7 @@ pub(super) async fn monitor(
             if caller.may_play(&cfg, r["announcement"].as_str().unwrap_or(""))
                 && site
                     .as_deref()
-                    .map_or(true, |id| crate::history::at_site(r, id, &cfg))
+                    .is_none_or(|id| crate::history::at_site(r, id, &cfg))
             {
                 runs.push(r.clone());
             }
