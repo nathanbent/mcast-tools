@@ -12,6 +12,12 @@ export const MODES = [["voice", "Voice"], ["music", "Music"], ["none", "None"]];
 
 export const modeLabel = (m) => (m ? MODES.find(([v]) => v === m)?.[1] ?? m : "Server default");
 
+// Normalize as a select: "" (inherit), "on", "off".
+export const normalizeValue = (n) => (n == null ? "" : n ? "on" : "off");
+export const normalizeOf = (v) => (v === "" ? null : v === "on");
+const INPUT_GAIN_HINT = "Boosts the audio before processing (not the chimes): raise it for a quiet microphone";
+const NORMALIZE_HINT = "Levels out quiet and loud audio. Voice and Music processing always do";
+
 function audioLabel(a) {
   if (a.audio === "live") return "Live (push to talk)";
   return a.audio === "chime_only" ? "Chime only" : a.audio.media;
@@ -43,6 +49,9 @@ function form(a, save, cancel) {
   const endChime = chimeField("After", a?.end_chime, "end_chime", { inherit: true });
   const mode = select([["", `Default (${modeLabel(d.mode)})`], ...MODES], a?.mode ?? "");
   const volume = numberInput(a?.volume_db, { placeholder: `Default: ${d.volume_db ?? 0}` });
+  const inputGain = numberInput(a?.input_gain_db, { min: -40, max: 40, placeholder: `Default: ${d.input_gain_db ?? 0}` });
+  const normalize = select([["", `Default (${d.normalize ? "on" : "off"})`], ["on", "On"], ["off", "Off"]],
+    normalizeValue(a?.normalize));
   const leadIn = numberInput(a?.lead_in_ms, { min: 0, placeholder: `Default: ${d.lead_in_ms ?? 0}` });
   const repeat = numberInput(a?.repeat ?? 1, { min: 1, max: 20, step: 1, required: true });
   const gap = numberInput(a?.repeat_gap_s ?? 2, { min: 0, max: 3600, required: true });
@@ -75,6 +84,8 @@ function form(a, save, cancel) {
       end_chime: endChime.value(),
       mode: mode.value || null,
       volume_db: num(volume),
+      input_gain_db: num(inputGain),
+      normalize: normalizeOf(normalize.value),
       lead_in_ms: num(leadIn),
       repeat: num(repeat) ?? 1,
       repeat_gap_s: num(gap) ?? 0,
@@ -105,6 +116,9 @@ function form(a, save, cancel) {
       h("div", { class: "row" },
         field("Processing", mode), field("Volume (dB)", volume),
         field("Lead-in (ms)", leadIn, "Silence first, to wake amplifiers")),
+      h("div", { class: "row" },
+        field("Input gain (dB)", inputGain, INPUT_GAIN_HINT),
+        field("Normalize loudness", normalize, NORMALIZE_HINT)),
       h("p", { class: "small muted" }, "Leave a setting empty to use the default from Settings.")),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),

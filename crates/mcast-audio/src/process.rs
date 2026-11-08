@@ -6,14 +6,17 @@
 //! | music | high-pass, compressor 2:1, (narrowband) mid EQ, loudness -18 LUFS       |
 //! | none  | nothing                                                                 |
 //!
-//! Unless the mode is none, a low-pass at the codec's band edge (3.4 kHz for
-//! G.711, 7 kHz for G.722 / wideband Opus) runs just before loudness
-//! normalisation. A volume change and limiter come last so normalisation
-//! can't undo them.
+//! An input gain, if any, comes first, so the chain sees a usable level from
+//! a quiet microphone. `normalize` adds loudness normalisation (to the voice
+//! target) when the mode is none; voice and music always normalise.
+//!
+//! When normalising, a low-pass at the codec's band edge (3.4 kHz for
+//! G.711, 7 kHz for G.722 / wideband Opus) runs just before it. A volume
+//! change and limiter come last so normalisation can't undo them.
 //!
 //! Loudness is normalised to an integrated target with a -2 dBTP true-peak
-//! ceiling. Files are measured first (two passes, exact); live input uses a
-//! slow automatic gain control.
+//! ceiling. Files are measured first (two passes, exact); live input uses an
+//! automatic gain control that settles quickly, then follows slowly.
 
 use crate::codec::{Codec, OpusBandwidth, OpusOptions, StreamSpec};
 use crate::dsp::biquad::{Biquad, Coeffs, BUTTERWORTH_Q};
@@ -77,6 +80,21 @@ pub struct ProcessOptions {
     pub mode: Mode,
     /// Volume change in dB, applied after processing, with a limiter.
     pub volume_db: Option<f64>,
+    /// Gain in dB applied to the source before any processing (not to
+    /// chimes), e.g. to lift a quiet microphone.
+    pub input_gain_db: Option<f64>,
+    /// Normalise loudness even when the mode is none (to the voice target).
+    pub normalize: bool,
+}
+
+impl ProcessOptions {
+    /// Integrated loudness target, if the audio is normalised.
+    pub fn loudness_target(&self) -> Option<f64> {
+        self.mode.loudness_target().or_else(|| {
+            self.normalize
+                .then(|| Mode::Voice.loudness_target().unwrap())
+        })
+    }
 }
 
 /// What the codec can carry, which shapes the EQ and final low-pass.
@@ -184,6 +202,11 @@ impl Processor {
     ) -> Self {
         let filter = |c: Coeffs| Stage::Filter(Biquad::new(c, channels));
         let mut stages = Vec::new();
+        // Whether something after the input gain keeps peaks in range.
+        let mut limited = false;
+        if let Some(db) = opts.input_gain_db.filter(|db| *db != 0.0) {
+            stages.push(Stage::Gain(db_to_lin(db) as f32));
+        }
         match opts.mode {
             Mode::None => {}
             Mode::Voice => {
@@ -233,7 +256,7 @@ impl Processor {
                 }
             }
         }
-        if let Some(target) = opts.mode.loudness_target() {
+        if let Some(target) = opts.loudness_target() {
             // The script low-passes after loudnorm; doing it before keeps the
             // true-peak ceiling intact (filtering after a limiter can overshoot).
             if let Some(lp) = band.lowpass_hz {
@@ -255,9 +278,20 @@ impl Processor {
                 channels,
                 true,
             )));
+            limited = true;
         }
         if let Some(db) = opts.volume_db {
+            limited = true;
             stages.push(Stage::Gain(db_to_lin(db) as f32));
+            stages.push(Stage::Limit(Limiter::new(
+                VOLUME_LIMIT,
+                rate,
+                channels,
+                false,
+            )));
+        }
+        if !limited && opts.input_gain_db.is_some_and(|db| db > 0.0) {
+            // A boost with nothing after it to catch the peaks.
             stages.push(Stage::Limit(Limiter::new(
                 VOLUME_LIMIT,
                 rate,
@@ -342,7 +376,7 @@ mod tests {
         for mode in [Mode::Voice, Mode::Music] {
             let opts = ProcessOptions {
                 mode,
-                volume_db: None,
+                ..ProcessOptions::default()
             };
             let mut measure = Processor::new(opts, band, Loudness::Measure, rate, 1);
             run(&mut measure, &input);
@@ -389,8 +423,8 @@ mod tests {
         );
         assert!(p.is_passthrough());
         let opts = ProcessOptions {
-            mode: Mode::None,
             volume_db: Some(-6.0),
+            ..ProcessOptions::default()
         };
         let mut p = Processor::new(
             opts,
@@ -405,8 +439,8 @@ mod tests {
         let out = run(&mut p, &[0.5; 8000]);
         assert!((out[4000] - 0.5 * db_to_lin(-6.0) as f32).abs() < 1e-4);
         let opts = ProcessOptions {
-            mode: Mode::None,
             volume_db: Some(12.0),
+            ..ProcessOptions::default()
         };
         let mut p = Processor::new(
             opts,
@@ -420,5 +454,57 @@ mod tests {
         );
         let out = run(&mut p, &[0.5; 8000]);
         assert!(out.iter().all(|s| s.abs() <= VOLUME_LIMIT as f32 + 1e-6));
+    }
+
+    const NARROW: Band = Band {
+        narrow: true,
+        lowpass_hz: None,
+    };
+
+    #[test]
+    fn input_gain_lifts_the_source_and_a_boost_is_limited() {
+        let opts = ProcessOptions {
+            input_gain_db: Some(6.0),
+            ..ProcessOptions::default()
+        };
+        let mut p = Processor::new(opts, NARROW, Loudness::Dynamic, 8_000, 1);
+        let out = run(&mut p, &[0.1; 8000]);
+        assert!((out[4000] - 0.1 * db_to_lin(6.0) as f32).abs() < 1e-4);
+        let mut p = Processor::new(opts, NARROW, Loudness::Dynamic, 8_000, 1);
+        let out = run(&mut p, &[0.9; 8000]);
+        assert!(out.iter().all(|s| s.abs() <= VOLUME_LIMIT as f32 + 1e-6));
+        // A cut needs no limiter.
+        let opts = ProcessOptions {
+            input_gain_db: Some(-6.0),
+            ..ProcessOptions::default()
+        };
+        let mut p = Processor::new(opts, NARROW, Loudness::Dynamic, 8_000, 1);
+        let out = run(&mut p, &[0.5; 8000]);
+        assert!((out[4000] - 0.5 * db_to_lin(-6.0) as f32).abs() < 1e-4);
+    }
+
+    #[test]
+    fn normalize_without_a_mode_brings_quiet_live_input_to_the_voice_target() {
+        let rate = 48_000;
+        let quiet: Vec<f32> = speechy(rate, 6.0).iter().map(|s| s * 0.5).collect();
+        let opts = ProcessOptions {
+            normalize: true,
+            ..ProcessOptions::default()
+        };
+        assert_eq!(opts.loudness_target(), Mode::Voice.loudness_target());
+        let mut p = Processor::new(opts, NARROW, Loudness::Dynamic, rate, 1);
+        let out = run(&mut p, &quiet);
+        let mut before = LoudnessMeter::new(rate, 1);
+        before.push(&quiet[rate as usize * 2..]);
+        let mut after = LoudnessMeter::new(rate, 1);
+        after.push(&out[rate as usize * 2..]);
+        let (before, after) = (before.integrated().unwrap(), after.integrated().unwrap());
+        assert!(before < -26.0, "{before}");
+        assert!((after + 16.0).abs() < 2.0, "{before} -> {after}");
+        let peak = out.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(
+            peak as f64 <= db_to_lin(TRUE_PEAK_DBTP) + 1e-6,
+            "peak {peak}"
+        );
     }
 }

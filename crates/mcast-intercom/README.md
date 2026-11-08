@@ -77,6 +77,13 @@ rest plays out, then the end chime.
 A page only starts once the microphone is giving audio: if it gives none
 within 3 seconds, nothing is paged and the panel says so (its console has
 the details). During a page, the panel warns when the audio stops coming.
+If the page comes out quiet, raise the announcement's **Input gain** (Sound,
+in its editor), turn on **Normalize loudness**, or choose **Voice**
+processing, which normalises too and also cleans up speech. Normalising
+levels the page out within about a second of talking. A very quiet
+microphone may need some input gain as well, since normalising boosts by
+at most 24 dB.
+
 If no audio comes from the browser for 20 seconds, the page ends by itself
 (so a page left talking doesn't hold its zones for ever), and the panel
 says why. Locking a phone's screen, or leaving the panel in a background
@@ -166,6 +173,8 @@ out to use the server's default. `site`: the site it's at, if any.
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
 | `mode` | the defaults' | `voice`, `music` or `none` |
 | `volume_db`, `lead_in_ms` | the defaults' | |
+| `input_gain_db` | the defaults' | Gain on the audio before processing (not the chimes), -40 to 40 dB: for a live announcement, the microphone's input gain |
+| `normalize` | the defaults' | `true` levels out quiet and loud audio (to -16 LUFS) even without processing; `voice` and `music` always do |
 | `repeat` | `1` | Times to play it (up to 20); each repeat has its chimes |
 | `repeat_gap_s` | `2` | Seconds between repeats |
 | `priority` | `normal` | What happens to a group something else is already sending to (below) |
@@ -199,7 +208,7 @@ switched on and off together: "Normal bells", "Exam week".
 ```
 
 **`defaults`**: what announcements use for `chime`, `end_chime`, `mode`,
-`volume_db` and `lead_in_ms` when they leave them out, so one chime can be
+`volume_db`, `input_gain_db`, `normalize` and `lead_in_ms` when they leave them out, so one chime can be
 set for every announcement and changed in one place. An announcement's own
 value always wins. Without `defaults`, a field left out means none, as
 before. `encoding` is the codec for zone groups that don't name one
