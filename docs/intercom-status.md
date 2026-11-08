@@ -96,7 +96,7 @@ On `claude/vibrant-knuth-34bpdf`, on top of #38. "Probes" means speakers running
   - Runner, history, webhook and summary unit tests, plus an API test, against the fake.
   - An end-to-end test in `tests/server.rs`: a real `mcast serve` with its monitor on and a real named receiver.
   - Checked by hand in a browser with the real binaries: the zone form, the toast, History and Monitor, in light and dark, at desktop and phone widths.
-- **Not done (small):** showing each expected listener's last-heard time in the Zones list.
+- **The Zones list** shows each expected listener's state: reporting now or not (from `GET /listeners`), and when it last heard a page (from the history, over 30 days).
 
 ### 2. Backup and restore, roadmap item 13
 
