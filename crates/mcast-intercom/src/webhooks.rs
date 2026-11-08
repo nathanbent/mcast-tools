@@ -566,7 +566,7 @@ impl Webhooks {
             match c {
                 Change::Run(run) => (run_events(&mut st, run), Some(&run.sites)),
                 Change::Backend(status) => (backend_events(&mut st, status), None),
-                Change::Media => (Vec::new(), None),
+                Change::Media | Change::Shown(_) => (Vec::new(), None),
             }
         };
         for (event, data) in events {

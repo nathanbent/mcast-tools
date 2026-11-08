@@ -11,6 +11,7 @@
 pub mod backend;
 pub mod backup;
 pub mod cli;
+pub mod displays;
 pub mod history;
 pub mod inputs;
 pub mod model;

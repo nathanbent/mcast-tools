@@ -464,6 +464,7 @@ mod tests {
             }],
             site: None,
             listeners: Vec::new(),
+            displays: Vec::new(),
         });
         let a: Announcement = serde_json::from_value(json!({
             "id": "lunch", "name": "Lunch", "audio": {"media": "bells/lunch.wav"},
@@ -603,6 +604,7 @@ mod tests {
             }],
             site: None,
             listeners: Vec::new(),
+            displays: Vec::new(),
         });
         then.announcements.clear();
         then.time_zone = None;

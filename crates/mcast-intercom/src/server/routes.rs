@@ -566,6 +566,47 @@ pub(super) async fn speakers(State(s): State<AppState>) -> Json<crate::presence:
     Json(s.0.presence.status())
 }
 
+#[derive(serde::Deserialize)]
+pub(super) struct DisplayQuery {
+    /// Zone ids, comma-separated: only pages shown in them.
+    #[serde(default)]
+    zones: Option<String>,
+}
+
+/// The text pages up on displays now, newest first: `{"pages": [...]}`.
+pub(super) async fn display(
+    State(s): State<AppState>,
+    axum::Extension(caller): axum::Extension<Caller>,
+    axum::extract::Query(q): axum::extract::Query<DisplayQuery>,
+) -> ApiResult<Json<Value>> {
+    let zones: Option<Vec<String>> = q.zones.map(|z| {
+        z.split(',')
+            .map(str::trim)
+            .filter(|z| !z.is_empty())
+            .map(String::from)
+            .collect()
+    });
+    let mut pages = s.0.displays.pages(zones.as_deref());
+    if caller.is_limited() {
+        let cfg = s.load().await?;
+        pages.retain(|p| caller.may_play(&cfg, &p.announcement));
+    }
+    Ok(Json(json!({ "pages": pages })))
+}
+
+/// The mcast server's text to speech: `{"engine", "voices", "default_voice"}`
+/// (`engine` null when it has none, or is too old to say).
+pub(super) async fn voices(State(s): State<AppState>) -> ApiResult<Json<Value>> {
+    let b = s.0.backend.clone();
+    match tokio::task::spawn_blocking(move || b.voices()).await? {
+        Ok(v) => Ok(Json(v)),
+        Err(e) if e.status == 404 => Ok(Json(
+            json!({ "engine": null, "voices": [], "default_voice": null }),
+        )),
+        Err(e) => Err(bad_gateway(e)),
+    }
+}
+
 /// Errors from the mcast server: its own status for "no such chime" and
 /// "bad request", else 502.
 pub(super) fn passed_on(e: crate::BackendError) -> ApiError {

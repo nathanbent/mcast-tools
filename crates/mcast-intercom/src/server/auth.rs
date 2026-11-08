@@ -308,6 +308,8 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         | "/phonebook"
         | "/listeners"
         | "/speakers"
+        | "/display"
+        | "/voices"
         | "/history"
         | "/history.csv"
         | "/stats"

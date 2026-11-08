@@ -315,13 +315,92 @@ fn is_zero(n: &u32) -> bool {
 pub enum PlaylistItem {
     /// `{"type": "sound", "media": "bells/lunch.wav"}`.
     Sound { media: String },
+    /// `{"type": "text", "text": "The library closes in ten minutes"}`: a
+    /// text page, spoken by the mcast server's text to speech (`speak`)
+    /// and shown on the displays of the zones it plays to (`show`), as the
+    /// playlist reaches it.
+    Text {
+        text: String,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        speak: bool,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        show: bool,
+        /// The voice to speak it in; unset is the server's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<String>,
+    },
 }
+
+/// Longest text page, in characters (as the mcast server speaks).
+pub const MAX_TEXT: usize = 2000;
 
 impl PlaylistItem {
     pub fn media(&self) -> Option<&str> {
         match self {
             PlaylistItem::Sound { media } => Some(media),
+            PlaylistItem::Text { .. } => None,
         }
+    }
+
+    /// Whether it's heard: a sound, or text that's spoken.
+    pub fn audible(&self) -> bool {
+        match self {
+            PlaylistItem::Sound { .. } => true,
+            PlaylistItem::Text { speak, .. } => *speak,
+        }
+    }
+
+    /// Its item in a `files` source: a media name, or text to say.
+    fn source_item(&self) -> Option<Value> {
+        match self {
+            PlaylistItem::Sound { media } => Some(media.as_str().into()),
+            PlaylistItem::Text {
+                text,
+                speak: true,
+                voice,
+                ..
+            } => {
+                let mut v = json!({ "say": text.trim() });
+                if let Some(voice) = voice {
+                    v["voice"] = voice.as_str().into();
+                }
+                Some(v)
+            }
+            PlaylistItem::Text { .. } => None,
+        }
+    }
+}
+
+impl Playlist {
+    /// What to show as each item that's heard starts (by its index among
+    /// those heard): the text pages up to it, from the last item heard. A
+    /// text page that's only shown appears with the next item heard, or
+    /// with the last if none follows.
+    pub fn texts_by_item(&self) -> Vec<Vec<String>> {
+        let mut out: Vec<Vec<String>> = Vec::new();
+        let mut waiting: Vec<String> = Vec::new();
+        for item in &self.items {
+            if let PlaylistItem::Text {
+                text, show: true, ..
+            } = item
+            {
+                waiting.push(text.trim().to_string());
+            }
+            if item.audible() {
+                out.push(std::mem::take(&mut waiting));
+            }
+        }
+        if let Some(last) = out.last_mut() {
+            last.extend(waiting);
+        }
+        out
+    }
+
+    /// Whether anything in it is shown on displays.
+    pub fn shows_text(&self) -> bool {
+        self.items
+            .iter()
+            .any(|i| matches!(i, PlaylistItem::Text { show: true, .. }))
     }
 }
 
@@ -657,10 +736,16 @@ pub struct Zone {
     /// the panel says which of them heard it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listeners: Vec<String>,
+    /// Text displays: groups (phonebook names or addresses) that get the
+    /// text pages of what plays here, as real-time text (`mcast text recv`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub displays: Vec<String>,
 }
 
 /// Most expected listeners a zone can have.
 pub const MAX_LISTENERS: usize = 100;
+/// Most text displays a zone can have.
+pub const MAX_DISPLAYS: usize = 20;
 
 /// One multicast group, with the send options its speakers need.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -856,8 +941,13 @@ impl Announcement {
                 Audio::Live => json!({ "type": "live", "rate": LIVE_RATE, "channels": 1 }),
                 Audio::Playlist(id) => {
                     let p = cfg.playlist(id);
-                    let paths: Vec<&str> = p
-                        .map(|p| p.items.iter().filter_map(PlaylistItem::media).collect())
+                    let paths: Vec<Value> = p
+                        .map(|p| {
+                            p.items
+                                .iter()
+                                .filter_map(PlaylistItem::source_item)
+                                .collect()
+                        })
                         .unwrap_or_default();
                     json!({ "type": "files", "paths": paths, "gap_ms": p.map_or(0, |p| p.gap_ms) })
                 }
@@ -979,9 +1069,10 @@ impl Config {
         }
         for p in &mut self.playlists {
             for item in &mut p.items {
-                let PlaylistItem::Sound { media } = item;
-                if let Some(new) = moved(media) {
-                    *media = new;
+                if let PlaylistItem::Sound { media } = item {
+                    if let Some(new) = moved(media) {
+                        *media = new;
+                    }
                 }
             }
         }
@@ -1162,6 +1253,18 @@ impl Config {
                     bail!("zone \"{}\" lists the listener \"{l}\" twice", z.id);
                 }
             }
+            if z.displays.len() > MAX_DISPLAYS {
+                bail!("zone \"{}\" has more than {MAX_DISPLAYS} displays", z.id);
+            }
+            let mut shown_on = HashSet::new();
+            for d in &z.displays {
+                if d.trim().is_empty() || d.trim() != d {
+                    bail!("zone \"{}\": display \"{d}\" isn't a group", z.id);
+                }
+                if !shown_on.insert(d.to_lowercase()) {
+                    bail!("zone \"{}\" lists the display \"{d}\" twice", z.id);
+                }
+            }
             for t in &z.targets {
                 if t.group.trim().is_empty() {
                     bail!("zone \"{}\" has a target with no group", z.id);
@@ -1219,8 +1322,8 @@ impl Config {
                     }
                     Audio::Playlist(id) => match self.playlist(id) {
                         None => bail!("{what}: no playlist \"{id}\""),
-                        Some(p) if p.items.is_empty() => {
-                            bail!("{what}: playlist \"{}\" has nothing in it", p.name)
+                        Some(p) if !p.items.iter().any(PlaylistItem::audible) => {
+                            bail!("{what}: playlist \"{}\" has nothing to play", p.name)
                         }
                         _ => {}
                     },
@@ -1324,9 +1427,40 @@ impl Config {
             if p.gap_ms > MAX_PLAYLIST_GAP_MS {
                 bail!("{what}: gap_ms must be 0 to {MAX_PLAYLIST_GAP_MS}");
             }
-            for m in p.items.iter().filter_map(PlaylistItem::media) {
-                if !valid_media_name(m) {
-                    bail!("{what}: \"{m}\" isn't a media file name");
+            for (n, item) in p.items.iter().enumerate() {
+                match item {
+                    PlaylistItem::Sound { media } if !valid_media_name(media) => {
+                        bail!("{what}: \"{media}\" isn't a media file name");
+                    }
+                    PlaylistItem::Text {
+                        text,
+                        speak,
+                        show,
+                        voice,
+                    } => {
+                        let what = format!("{what}, item {}", n + 1);
+                        if text.trim().is_empty() {
+                            bail!("{what}: the text is empty");
+                        }
+                        if text.chars().count() > MAX_TEXT {
+                            bail!("{what}: text is at most {MAX_TEXT} characters");
+                        }
+                        if !speak && !show {
+                            bail!("{what}: text must be spoken, shown or both");
+                        }
+                        if let Some(v) = voice {
+                            if v.is_empty()
+                                || v.len() > 100
+                                || v.starts_with('.')
+                                || !v
+                                    .chars()
+                                    .all(|c| c.is_ascii_alphanumeric() || "-_.+".contains(c))
+                            {
+                                bail!("{what}: \"{v}\" isn't a voice name");
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

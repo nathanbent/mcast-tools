@@ -36,3 +36,4 @@ tokio-tungstenite = "0.29"
 mcast-core.workspace = true
 mcast-server.workspace = true
 mcast-control.workspace = true
+mcast-audio.workspace = true

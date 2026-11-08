@@ -101,6 +101,11 @@ pub enum Feed {
     Connected,
     Disconnected(String),
     JobEnded(Job),
+    /// A sender with a `files` source started playing item `item`.
+    JobItem {
+        job: u64,
+        item: usize,
+    },
     /// Media files or folders changed on the server.
     MediaChanged,
 }
@@ -160,6 +165,13 @@ pub trait Backend: Send + Sync + 'static {
     fn chime_preview(&self, name: &str) -> BackendResult<Vec<u8>>;
     /// Start a sender from a send request (the API's JSON).
     fn start_sender(&self, request: &Value) -> BackendResult<Job>;
+    /// The server's text to speech: `{"engine", "voices", "default_voice"}`
+    /// (404 from servers before it had any).
+    fn voices(&self) -> BackendResult<Value>;
+    /// Join a text channel from a text request (the API's JSON).
+    fn start_text(&self, request: &Value) -> BackendResult<Job>;
+    /// Send a line on a text channel.
+    fn send_text(&self, job: u64, text: &str) -> BackendResult<()>;
     /// Stop a job; returns once it has wound down (or the server gave up waiting).
     fn stop_job(&self, id: u64) -> BackendResult<()>;
     fn job(&self, id: u64) -> BackendResult<Job>;
@@ -410,6 +422,23 @@ impl Backend for HttpBackend {
             .into_json()?)
     }
 
+    fn voices(&self) -> BackendResult<Value> {
+        self.get("/voices")
+    }
+
+    fn start_text(&self, request: &Value) -> BackendResult<Job> {
+        Ok(self
+            .request(&self.agent, "POST", "/texts")
+            .send_json(request)?
+            .into_json()?)
+    }
+
+    fn send_text(&self, job: u64, text: &str) -> BackendResult<()> {
+        self.request(&self.agent, "POST", &format!("/jobs/{job}/text"))
+            .send_json(serde_json::json!({ "text": text }))?;
+        Ok(())
+    }
+
     fn stop_job(&self, id: u64) -> BackendResult<()> {
         self.request(&self.agent, "DELETE", &format!("/jobs/{id}"))
             .call()?;
@@ -509,6 +538,11 @@ fn feed_of(data: &str) -> Option<Feed> {
         "job_ended" => serde_json::from_value(v["job"].clone())
             .ok()
             .map(Feed::JobEnded),
+        // Senders playing a list say which item is playing.
+        "job_started" | "job_updated" => Some(Feed::JobItem {
+            job: v["job"]["id"].as_u64()?,
+            item: v["job"]["stats"]["item"].as_u64()? as usize,
+        }),
         "media_changed" => Some(Feed::MediaChanged),
         // Events were dropped: treat it like a reconnect.
         "lagged" => Some(Feed::Connected),
@@ -539,13 +573,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_job_ended_events() {
+    fn reads_job_ended_and_item_events() {
         let mut p = SseParser::default();
         let lines = [
             ":keep-alive",
             "",
             "event: job_updated",
             r#"data: {"type":"job_updated","job":{"id":1,"state":"running"}}"#,
+            "",
+            r#"data: {"type":"job_updated","job":{"id":2,"state":"running","stats":{"packets":3,"item":1}}}"#,
             "",
             "event: job_ended",
             r#"data: {"type":"job_ended","job":{"id":1,"state":"failed","error":"boom","stats":null}}"#,
@@ -558,8 +594,12 @@ mod tests {
             .filter_map(|l| p.feed(l))
             .filter_map(|d| feed_of(&d))
             .collect();
-        assert_eq!(got.len(), 2, "{got:?}");
-        match &got[0] {
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(
+            matches!(got[0], Feed::JobItem { job: 2, item: 1 }),
+            "{got:?}"
+        );
+        match &got[1] {
             Feed::JobEnded(j) => {
                 assert_eq!(j.id, 1);
                 assert!(j.is_over());
@@ -567,6 +607,6 @@ mod tests {
             }
             f => panic!("{f:?}"),
         }
-        assert!(matches!(got[1], Feed::Connected));
+        assert!(matches!(got[2], Feed::Connected));
     }
 }

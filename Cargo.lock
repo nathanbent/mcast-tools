@@ -1433,6 +1433,7 @@ dependencies = [
  "gpiocdev",
  "hound",
  "jiff",
+ "mcast-audio",
  "mcast-control",
  "mcast-core",
  "mcast-server",

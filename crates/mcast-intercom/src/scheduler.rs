@@ -424,6 +424,7 @@ mod tests {
         Config {
             zones: vec![Zone {
                 listeners: Vec::new(),
+                displays: Vec::new(),
                 id: "z".into(),
                 name: "Z".into(),
                 targets: vec![Target {
@@ -586,6 +587,7 @@ mod tests {
         cfg.zones[0].site = Some("ldn".into());
         cfg.zones.push(Zone {
             listeners: Vec::new(),
+            displays: Vec::new(),
             id: "ny".into(),
             name: "NY".into(),
             targets: vec![Target {
@@ -760,6 +762,7 @@ mod tests {
             a.zones = vec![z.clone()];
             cfg.zones.push(Zone {
                 listeners: Vec::new(),
+                displays: Vec::new(),
                 site: None,
                 id: z.clone(),
                 name: z,

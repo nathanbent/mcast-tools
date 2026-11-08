@@ -29,6 +29,10 @@ pub(crate) struct FakeState {
     pub(crate) live_bytes: HashMap<u64, usize>,
     /// What the monitor hears; `None` is a server without one (404).
     pub(crate) listeners: Option<Vec<Listener>>,
+    /// Text channels' groups, by job.
+    text_jobs: HashMap<u64, String>,
+    /// Lines sent on text channels: (group, text).
+    pub(crate) texts: Vec<(String, String)>,
 }
 
 impl FakeState {
@@ -123,6 +127,16 @@ impl Fake {
 
     pub(crate) fn requests(&self) -> Vec<Value> {
         self.st.lock().unwrap().requests.clone()
+    }
+
+    /// Say that sender `id` started playing item `item` of its list.
+    pub(crate) fn play_item(&self, id: u64, item: usize) {
+        self.emit(Feed::JobItem { job: id, item });
+    }
+
+    /// Lines sent on text channels so far: (group, text).
+    pub(crate) fn texts(&self) -> Vec<(String, String)> {
+        self.st.lock().unwrap().texts.clone()
     }
 }
 
@@ -340,6 +354,46 @@ impl Backend for Fake {
             self.end(job.id, "finished");
         }
         Ok(job)
+    }
+
+    fn voices(&self) -> BackendResult<Value> {
+        self.reachable()?;
+        Ok(
+            serde_json::json!({"engine": "espeak-ng", "voices": ["en-gb", "en-us"], "default_voice": null}),
+        )
+    }
+
+    fn start_text(&self, request: &Value) -> BackendResult<Job> {
+        let group = request["group"].as_str().unwrap().to_string();
+        if let Some(other) = self.running_on(&group) {
+            return Err(BackendError {
+                status: 409,
+                message: format!("{group} is already being sent to by job {other}"),
+                job: Some(other),
+            });
+        }
+        let mut st = self.st.lock().unwrap();
+        st.next += 1;
+        let job = Job {
+            id: st.next,
+            state: "running".into(),
+            group: Some(group.clone()),
+            error: None,
+            ssrc: None,
+        };
+        st.jobs.insert(job.id, (group.clone(), job.clone()));
+        st.text_jobs.insert(job.id, group);
+        Ok(job)
+    }
+
+    fn send_text(&self, job: u64, text: &str) -> BackendResult<()> {
+        let mut st = self.st.lock().unwrap();
+        let live = st.jobs.get(&job).is_some_and(|(_, j)| !j.is_over());
+        let Some(group) = st.text_jobs.get(&job).cloned().filter(|_| live) else {
+            return Err(err(409, format!("job {job} isn't an open text channel")));
+        };
+        st.texts.push((group, text.to_string()));
+        Ok(())
     }
 
     fn stop_job(&self, id: u64) -> BackendResult<()> {

@@ -11,6 +11,7 @@ use tower::ServiceExt;
 
 struct Panel {
     app: Router,
+    state: AppState,
     fake: Arc<Fake>,
     path: PathBuf,
     _closing: watch::Sender<bool>,
@@ -34,7 +35,8 @@ fn panel(token: Option<&str>) -> Panel {
     let (tx, rx) = watch::channel(false);
     let state = AppState::new(fake.clone(), path.clone(), token.map(Into::into), rx);
     Panel {
-        app: router(state),
+        app: router(state.clone()),
+        state,
         fake,
         path,
         _closing: tx,
@@ -905,6 +907,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/input-status"),
     ("POST", "/restore"),
     ("GET", "/speakers"),
+    ("GET", "/display"),
+    ("GET", "/voices"),
     ("GET", "/chimes"),
     ("PUT", "/chimes"),
     ("GET", "/chimes/{name}/preview"),
@@ -2009,6 +2013,213 @@ async fn playlists_and_parts_play_together_in_one_run() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
+    let p = panel(None);
+    p.fake.upload_media("chime.wav", b"RIFF").unwrap();
+    for (name, group, displays) in [
+        ("Hall", "zone-1", json!(["239.1.9.1:5004"])),
+        ("Gym", "239.1.1.2:5000", json!([])),
+    ] {
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/zones",
+                Some(json!({"name": name, "targets": [{"group": group}], "displays": displays})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let (_, v) = p.call(Method::GET, "/voices", None).await;
+    assert_eq!(v["voices"], json!(["en-gb", "en-us"]), "{v}");
+
+    // A sound, a page only shown, a page spoken and shown, one only spoken.
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/playlists",
+            Some(json!({"name": "Closing", "items": [
+                {"type": "sound", "media": "chime.wav"},
+                {"type": "text", "text": "Welcome", "speak": false},
+                {"type": "text", "text": "The library closes in ten minutes", "voice": "en-gb"},
+                {"type": "text", "text": "Thank you", "show": false},
+            ]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert!(
+        v["items"][2].get("speak").is_none(),
+        "defaults aren't written: {v}"
+    );
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/announcements",
+            Some(
+                json!({"name": "Closing", "audio": {"playlist": "closing"}, "zones": ["hall"],
+                "parts": [{"zones": ["gym"], "audio": {"playlist": "closing"}}]}),
+            ),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, run) = p
+        .call(Method::POST, "/announcements/closing/play", None)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    // The mcast server speaks what's spoken; what's only shown isn't sent.
+    assert_eq!(
+        p.fake.requests()[0]["source"],
+        json!({"type": "files", "gap_ms": 0, "paths": [
+            "chime.wav",
+            {"say": "The library closes in ten minutes", "voice": "en-gb"},
+            {"say": "Thank you"},
+        ]})
+    );
+    let id = run["id"].as_u64().unwrap();
+    let hall_job = run["targets"][0]["job"].as_u64().unwrap();
+    let gym_job = run["targets"][1]["job"].as_u64().unwrap();
+    let (_, v) = p.call(Method::GET, "/display", None).await;
+    assert_eq!(v["pages"], json!([]));
+
+    // The sound: nothing to show yet. The spoken page: both pages go up.
+    p.fake.play_item(hall_job, 0);
+    p.fake.play_item(hall_job, 1);
+    let (_, v) = p
+        .call(Method::GET, "/display?zones=hall,nowhere", None)
+        .await;
+    assert_eq!(
+        v["pages"][0]["text"],
+        json!(["Welcome", "The library closes in ten minutes"]),
+        "{v}"
+    );
+    assert_eq!(v["pages"][0]["name"], "Closing");
+    assert!(v["pages"][0]["until_ms"].is_null());
+    let (_, v) = p.call(Method::GET, "/display?zones=gym", None).await;
+    assert_eq!(
+        v["pages"],
+        json!([]),
+        "the gym's part hasn't got there: {v}"
+    );
+    let texts = wait_for(|| {
+        let t = p.fake.texts();
+        (!t.is_empty()).then_some(t)
+    })
+    .await;
+    assert_eq!(
+        texts,
+        [(
+            "239.1.9.1:5004".to_string(),
+            "Welcome\nThe library closes in ten minutes".to_string()
+        )]
+    );
+    // Said again (as a job's stats are): shown once.
+    p.fake.play_item(hall_job, 1);
+    p.fake.play_item(gym_job, 1);
+    p.fake.play_item(hall_job, 2);
+    let (_, run) = p.call(Method::GET, &format!("/runs/{id}"), None).await;
+    let shown: Vec<(Value, Value)> = run["shown"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| (s["part"].clone(), s["item"].clone()))
+        .collect();
+    assert_eq!(
+        shown,
+        [(Value::Null, json!(1)), (json!(1), json!(1))],
+        "{run}"
+    );
+    let (_, v) = p.call(Method::GET, "/display?zones=gym", None).await;
+    assert_eq!(v["pages"].as_array().unwrap().len(), 1, "{v}");
+
+    // Ended: up for a while yet. Stopped: down at once.
+    p.fake.finish_all();
+    let v = wait_for(|| {
+        let pages = p.state.0.displays.pages(None);
+        pages
+            .iter()
+            .all(|pg| pg.until_ms.is_some())
+            .then_some(pages)
+    })
+    .await;
+    assert_eq!(v.len(), 2);
+    let (_, run) = p
+        .call(Method::POST, "/announcements/closing/play", None)
+        .await;
+    p.fake
+        .play_item(run["targets"][0]["job"].as_u64().unwrap(), 1);
+    assert_eq!(
+        p.state.0.displays.pages(Some(&["hall".to_string()])).len(),
+        2
+    );
+    p.call(Method::DELETE, "/runs", None).await;
+    wait_for(|| {
+        (p.state
+            .0
+            .displays
+            .pages(None)
+            .iter()
+            .filter(|pg| pg.run != id)
+            .count()
+            == 0)
+            .then_some(())
+    })
+    .await;
+
+    // Mistakes.
+    for (what, items) in [
+        ("empty text", json!([{"type": "text", "text": "  "}])),
+        (
+            "neither",
+            json!([{"type": "text", "text": "Hi", "speak": false, "show": false}]),
+        ),
+        (
+            "a bad voice",
+            json!([{"type": "text", "text": "Hi", "voice": "../x"}]),
+        ),
+        (
+            "too long",
+            json!([{"type": "text", "text": "x".repeat(2001)}]),
+        ),
+    ] {
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/playlists",
+                Some(json!({"name": what, "items": items})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{what}: {v}");
+    }
+    let (s, _) = p
+        .call(
+            Method::POST,
+            "/playlists",
+            Some(json!({"name": "Silent", "items": [{"type": "text", "text": "Hi", "speak": false}]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/announcements",
+            Some(json!({"name": "Quiet", "audio": {"playlist": "silent"}, "zones": ["hall"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("nothing to play"),
+        "{v}"
+    );
+    let (s, v) = p
+        .call(
+            Method::PUT,
+            "/zones/hall",
+            Some(json!({"name": "Hall", "targets": [{"group": "zone-1"}], "displays": ["a", "A"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
 #[tokio::test]
 async fn admins_arrange_a_tab_for_everyone() {
     let p = panel(Some("s3cret"));
@@ -2800,7 +3011,8 @@ async fn gpio_inputs_play_announcements() {
     let (tx, rx) = watch::channel(false);
     let state = AppState::with_pins(fake.clone(), path.clone(), Arc::new(pins.clone()), rx);
     let p = Panel {
-        app: router(state),
+        app: router(state.clone()),
+        state,
         fake,
         path,
         _closing: tx,
