@@ -122,10 +122,12 @@ impl AudioFormat {
         match self.encoding {
             Encoding::L16 => out.extend(
                 bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| i16::from_be_bytes([b[0], b[1]]) as f32 / i16::MAX as f32),
             ),
-            Encoding::L24 => out.extend(bytes.chunks_exact(3).map(|b| {
+            Encoding::L24 => out.extend(bytes.as_chunks::<3>().0.iter().map(|b| {
                 // Place in the top 24 bits, then arithmetic-shift to sign-extend.
                 let v = i32::from_be_bytes([b[0], b[1], b[2], 0]) >> 8;
                 v as f32 / 8_388_607.0

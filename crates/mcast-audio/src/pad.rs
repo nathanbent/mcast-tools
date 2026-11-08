@@ -231,8 +231,10 @@ mod tests {
         // 8 kHz neighbouring samples can't differ by more than 2π·f/rate of
         // the peak; a click or a hard chord change would.
         let max_step = s
-            .chunks_exact(2)
-            .zip(s.chunks_exact(2).skip(1))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(s.as_chunks::<2>().0.iter().skip(1))
             .map(|(a, b)| (a[0] - b[0]).abs().max((a[1] - b[1]).abs()))
             .fold(0f32, f32::max);
         assert!(
@@ -264,7 +266,7 @@ mod tests {
         let mut mono = vec![0.0; 1000];
         a.fill(&mut st, 2);
         b.fill(&mut mono, 1);
-        for (m, f) in mono.iter().zip(st.chunks_exact(2)) {
+        for (m, f) in mono.iter().zip(st.as_chunks::<2>().0) {
             assert!((m - 0.5 * (f[0] + f[1])).abs() < 1e-6);
         }
     }
