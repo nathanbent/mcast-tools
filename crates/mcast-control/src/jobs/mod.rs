@@ -95,10 +95,15 @@ pub struct RecvStats {
     pub lost: u64,
     pub concealed: u64,
     pub late: u64,
+    /// Out of order, but put back in order in time to play.
+    pub reordered: u64,
     pub invalid: u64,
     pub underruns: u64,
     pub overflows: u64,
     pub buffered_ms: f64,
+    /// The sender's clock against the sound card's, in ppm (positive: the
+    /// sender is fast), as measured and corrected for. `None` unless playing.
+    pub drift_ppm: Option<f64>,
     /// From the sender's RTCP reports: how long packets take from the
     /// sender's clock to here (meaningful when the clocks are synced).
     pub transit_ms: Option<f64>,
@@ -111,10 +116,12 @@ impl From<&receiver::ReceiverStats> for RecvStats {
             lost: s.lost,
             concealed: s.concealed,
             late: s.late,
+            reordered: s.reordered,
             invalid: s.invalid,
             underruns: s.underruns,
             overflows: s.overflows,
             buffered_ms: s.buffered.as_secs_f64() * 1000.0,
+            drift_ppm: s.drift_ppm,
             transit_ms: s.transit_secs.map(|t| t * 1000.0),
         }
     }

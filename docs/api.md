@@ -303,10 +303,14 @@ reports in the monitor name as `about`. It's `null` on other jobs. A
 sender with a `files` source has `item` in its `stats` while it plays: the
 index of the item playing, from when the first one starts (after the
 chime), with a `job_updated` event as each starts. Receive jobs' `stats` are
-`packets`, `lost`, `concealed`, `late`, `invalid`, `underruns`, `overflows`,
-`buffered_ms`, and `transit_ms` (from the sender's RTCP: time from the
-sender's clock to arrival, `null` until a report arrives; only a true delay
-when both clocks are synced). The sender's RTCP name and BYE appear in
+`packets`, `lost`, `concealed`, `late` (arrived too late to play),
+`reordered` (arrived out of order but in time: put back in order and
+played), `invalid`, `underruns`, `overflows`, `buffered_ms`, `drift_ppm`
+(the sender's clock against the sound card's, positive when the sender is
+fast, as measured and corrected for; `null` unless playing), and
+`transit_ms` (from the sender's RTCP: time from the sender's clock to
+arrival, `null` until a report arrives; only a true delay when both clocks
+are synced). The sender's RTCP name and BYE appear in
 `notes`.
 
 Text jobs' `stats`: `lines_sent`, `lines_received`, `chars_sent`,
