@@ -793,8 +793,8 @@ Listening on anything but loopback (`--listen` or `MCAST_LISTEN`) requires a tok
 A list of files to play can include text to speak (`{"say": "The library
 closes in ten minutes"}`). `mcast serve` speaks it with Piper when it's
 installed with a voice (`--tts-voices DIR`), else eSpeak NG, or any command
-you give it (`--tts-command`), and keeps what it spoke so the same words are
-synthesized once. It says at start which one it found.
+you give it (`--tts-command`, with `--tts-voice-list` naming its voices), and
+keeps what it spoke so the same words are synthesized once. It says at start which one it found.
 
 The GUI pages from uploaded files, live input, a test tone or the chord pad;
 chats on real-time text channels; sends files and pictures and receives them

@@ -366,6 +366,16 @@ enum Tone {
     Pad,
 }
 
+/// A voice in --tts-voice-list (blank ones are skipped).
+fn parse_voice_name(s: &str) -> Result<String, String> {
+    let v = s.trim();
+    if v.is_empty() || mcast_audio::tts::is_voice_name(v) {
+        Ok(v.to_string())
+    } else {
+        Err("a voice is letters, digits and -_.+ (up to 100)".into())
+    }
+}
+
 fn parse_tone(s: &str) -> Result<Tone, String> {
     if s.eq_ignore_ascii_case("pad") {
         return Ok(Tone::Pad);
@@ -517,6 +527,16 @@ struct ServeArgs {
     /// stdin, a WAV on stdout, the voice asked for in $MCAST_TTS_VOICE
     #[arg(long, value_name = "COMMAND", env = "MCAST_TTS_COMMAND")]
     tts_command: Option<String>,
+    /// Text to speech: the voices --tts-command offers, comma-separated, so
+    /// clients can list them (GET /voices)
+    #[arg(
+        long,
+        value_name = "NAMES",
+        env = "MCAST_TTS_VOICE_LIST",
+        value_delimiter = ',',
+        value_parser = parse_voice_name
+    )]
+    tts_voice_list: Vec<String>,
     /// Where spoken text is kept, so it's synthesized once [default: under the temporary directory]
     #[arg(long, value_name = "DIR", env = "MCAST_TTS_CACHE")]
     tts_cache: Option<PathBuf>,
@@ -1286,6 +1306,7 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
             command: a.tts_command,
             voices: a.tts_voices,
             voice: a.tts_voice,
+            command_voices: a.tts_voice_list,
             cache: a.tts_cache,
         },
     };

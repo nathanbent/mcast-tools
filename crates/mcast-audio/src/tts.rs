@@ -52,9 +52,22 @@ pub struct TtsConfig {
     pub voices: Option<PathBuf>,
     /// The voice used when none is asked for.
     pub voice: Option<String>,
+    /// The voices a command offers, for [`Tts::describe`] (a command can't
+    /// be asked for them). Ignored by Piper and eSpeak NG.
+    pub command_voices: Vec<String>,
     /// Where spoken text is kept; unset is a directory under the system's
     /// temporary directory.
     pub cache: Option<PathBuf>,
+}
+
+/// Whether `v` can be a voice: up to 100 letters, digits and `-_.+`, not
+/// starting with `.`.
+pub fn is_voice_name(v: &str) -> bool {
+    !v.is_empty()
+        && v.len() <= 100
+        && !v.starts_with('.')
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.+".contains(c))
 }
 
 /// Where Piper voices are looked for by default.
@@ -65,6 +78,7 @@ pub const DEFAULT_VOICES: &str = "/usr/local/share/mcast/voices";
 pub struct Tts {
     engine: Engine,
     default_voice: Option<String>,
+    command_voices: Vec<String>,
     cache: PathBuf,
 }
 
@@ -73,7 +87,7 @@ pub struct Tts {
 pub struct TtsInfo {
     pub engine: &'static str,
     /// Voices that can be asked for: Piper's installed voices, eSpeak NG's
-    /// languages, nothing for a command.
+    /// languages, or those a command was configured with.
     pub voices: Vec<String>,
     pub default_voice: Option<String>,
 }
@@ -108,9 +122,16 @@ impl Tts {
             .cache
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join(format!("mcast-tts-{}", user_tag())));
+        let mut command_voices: Vec<String> = Vec::new();
+        for v in cfg.command_voices.iter().map(|v| v.trim()) {
+            if is_voice_name(v) && !command_voices.iter().any(|c| c.eq_ignore_ascii_case(v)) {
+                command_voices.push(v.to_string());
+            }
+        }
         Self {
             engine,
             default_voice: cfg.voice.clone().filter(|v| !v.trim().is_empty()),
+            command_voices,
             cache,
         }
     }
@@ -124,7 +145,7 @@ impl Tts {
         let voices = match &self.engine {
             Engine::Piper { voices, .. } => piper_voices(voices),
             Engine::Espeak { program } => espeak_voices(program),
-            Engine::Command(_) => Vec::new(),
+            Engine::Command(_) => self.command_voices.clone(),
         };
         let default_voice = self.default_voice.clone().or_else(|| match &self.engine {
             Engine::Piper { .. } => voices.first().cloned(),
@@ -153,12 +174,7 @@ impl Tts {
             .map(str::to_string)
             .or_else(|| self.default_voice.clone());
         if let Some(v) = &voice {
-            if v.len() > 100
-                || v.starts_with('.')
-                || !v
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "-_.+".contains(c))
-            {
+            if !is_voice_name(v) {
                 bail!("\"{v}\" isn't a voice name");
             }
         }
@@ -508,6 +524,38 @@ mod tests {
         assert!(junk.speak("hi", None).is_err());
         // Nothing half-written is left behind.
         assert_eq!(std::fs::read_dir(dir.join("cache3")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_offers_the_voices_its_given() {
+        let dir = temp_dir("cmd-voices");
+        let cmd = |voices: &[&str], voice: Option<&str>| {
+            Tts::detect(&TtsConfig {
+                command: Some("true".into()),
+                voice: voice.map(str::to_string),
+                command_voices: voices.iter().map(|v| v.to_string()).collect(),
+                cache: Some(dir.join("cache")),
+                ..Default::default()
+            })
+            .unwrap()
+            .describe()
+        };
+        assert_eq!(
+            cmd(&[], None),
+            TtsInfo {
+                engine: "command",
+                voices: vec![],
+                default_voice: None
+            }
+        );
+        // In the order given, without blanks, repeats or bad names; the
+        // default is only what's configured (the command has its own).
+        let info = cmd(&["af_heart", " bm_george ", "", "AF_HEART", "../x"], None);
+        assert_eq!(info.voices, ["af_heart", "bm_george"]);
+        assert_eq!(info.default_voice, None);
+        let info = cmd(&["af_heart", "bm_george"], Some("bm_george"));
+        assert_eq!(info.default_voice.as_deref(), Some("bm_george"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
