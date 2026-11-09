@@ -1,11 +1,15 @@
 # Intercom: where things stand (handoff)
 
-Last updated 2026-11-08, at the end of a third session. The second session
+Last updated 2026-11-09. Written at the end of a third session, and updated
+since for the work merged after it (#57, #58) and the receiver PR still open
+(#59). The second session
 checked the first one's work, built everything left on the roadmap plus
 follow-ups, merged it all into `main`, and bumped the version to 0.5.5
 (#48). The third built **text pages in playlists** (#49, below), merged it,
 and released **v0.5.5**; then **v0.5.6**, with the webhook log in send order
-(#53) and the Panel's Customize mode from another session (#54). Read this first,
+(#53) and the Panel's Customize mode from another session (#54). After the
+release, #57 and #58 hardened the core, and #59 (open) brings out-of-order
+packets and clock drift to the receiver. Read this first,
 then `intercom-roadmap.md` (the plan and what each item became) and
 `intercom-plan.md` (how the panel is built).
 
@@ -22,7 +26,15 @@ then `intercom-roadmap.md` (the plan and what each item became) and
 - **v0.5.5 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.5, tag `v0.5.5` on `7f3c8c7` (the merge of #49), with binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) and Windows. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. Pis upgrade with `sudo mcast update`.
 - **v0.5.6 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.6, tag `v0.5.6` on `1f29642` (the merge of the bump, nathanbent/mcast-tools#55), with the same platforms. It adds #53 and #54, and #50 fixed a flaky test.
 - **Both were released before the hardware checks** below (What's next, 1). Their results decide whether a 0.5.7 is needed.
-- **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
+- **On `main` since v0.5.6, not yet released** (they go in 0.5.7):
+  - **The real MSRV, 1.89** (nathanbent/mcast-tools#57): declared in `Cargo.toml`, checked by CI's `msrv` job, with clippy fixes to match and rustup notes in the README. It also fixed ShellCheck SC2015 in `mcast-play.sh` and lints that script in CI.
+  - **MIT license, a clean stop on SIGTERM, and `MCAST_LISTEN`** (nathanbent/mcast-tools#58): `LICENSE` and `license = "MIT"` in every crate and release archive; `systemctl stop` or `docker stop` now stops every command the way Ctrl-C does (before, a `--wav` recording was left without a valid header); `mcast serve` reads its listen address from `MCAST_LISTEN`, with `--listen` taking precedence.
+- **One PR is open: nathanbent/mcast-tools#59,** the receiver half of #14 redone on `main`:
+  - A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one. `main` drops any packet that arrives after a later one.
+  - A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm.
+  - New stats: `reordered` and `drift_ppm`.
+  - CI is green and it merges cleanly, with no review comments. **It waits on a test on a real Pi with a speaker** (What's next, 1): the drift correction has only run in simulation.
+- New work branches from `main`; the next release needs a version bump first.
 
 The work came as six stacked PRs, merged in order with merge commits:
 
@@ -229,6 +241,7 @@ The v0.5.5 items, plus requests that came up along the way:
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
    - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
+   - **The receiver PR, #59, on a Pi with a speaker** (build its branch, `claude/intelligent-ramanujan-9guf2i`): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs. Merge #59 if it holds.
 2. **Fix anything the hardware turns up,** then bump to 0.5.7 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.7`).
 3. **Smaller follow-ups:**
    - "Arrange this page" on more tabs (Schedules), if the owner wants it.
