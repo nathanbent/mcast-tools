@@ -1,8 +1,18 @@
-// The theme switch in the header: System → Light → Dark, kept in this
-// browser (js/theme.js applies it before the page draws).
+// The display menu in the header: theme, accent color, density and text
+// size, kept in this browser (js/theme.js applies them before the page
+// draws, and holds the choices).
 
-const KEY = "mcast.theme";
-const NAMES = { system: "System theme", light: "Light theme", dark: "Dark theme" };
+const display = window.mcastDisplay;
+
+// [setting, its heading, [value, label]...], in the menu's order.
+const GROUPS = [
+  ["theme", "Theme", [["system", "System"], ["light", "Light"], ["dark", "Dark"]]],
+  ["accent", "Accent color", [["blue", "Blue"], ["teal", "Teal"], ["green", "Green"],
+    ["purple", "Purple"], ["orange", "Orange"], ["pink", "Pink"]]],
+  ["density", "Density", [["comfortable", "Comfortable"], ["compact", "Compact"]]],
+  ["text", "Text size", [["small", "Small"], ["medium", "Medium"], ["large", "Large"]]],
+];
+
 // Small icons, drawn with the text color.
 const ICONS = {
   system: [["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
@@ -31,31 +41,70 @@ function icon(kind) {
   return svg;
 }
 
-export function currentTheme() {
-  try { return localStorage.getItem(KEY) || "system"; } catch { return "system"; }
+function el(tag, props = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else e.setAttribute(k, v);
+  }
+  e.append(...children);
+  return e;
 }
 
-export function setTheme(t) {
-  try { t === "system" ? localStorage.removeItem(KEY) : localStorage.setItem(KEY, t); } catch {}
-  const root = document.documentElement;
-  if (t === "system") delete root.dataset.theme;
-  else root.dataset.theme = t;
-  const meta = document.querySelector('meta[name="color-scheme"]');
-  if (meta) meta.content = t === "system" ? "light dark" : t;
-}
-
-// Make `button` show the theme and cycle through them.
+// Make `button` show the theme and open the display menu.
 export function themeButton(button) {
+  const menu = el("div", { class: "display-menu", role: "dialog", "aria-label": "Display options", hidden: "" });
+  const choices = [];
+  for (const [key, title, values] of GROUPS) {
+    const id = `display-${key}`;
+    const row = el("div", { class: `choices ${key}`, role: "group", "aria-labelledby": id });
+    for (const [value, label] of values) {
+      const b = el("button", { type: "button", "data-value": value });
+      if (key === "accent") {
+        // A swatch of the color, named for screen readers and on hover.
+        b.dataset.accent = value;
+        b.title = label;
+        b.setAttribute("aria-label", label);
+      } else {
+        b.textContent = label;
+      }
+      b.onclick = () => { display.set(key, value); show(); };
+      choices.push([key, b]);
+      row.append(b);
+    }
+    menu.append(el("div", { class: "display-group" }, el("span", { id, class: "display-label" }, title), row));
+  }
+
   const show = () => {
-    const t = currentTheme();
-    const next = { system: "light", light: "dark", dark: "system" }[t];
-    button.replaceChildren(icon(t));
-    button.title = `${NAMES[t]} (click for ${NAMES[next].toLowerCase()})`;
-    button.setAttribute("aria-label", button.title);
+    for (const [key, b] of choices) b.setAttribute("aria-pressed", String(display.get(key) === b.dataset.value));
+    button.replaceChildren(icon(display.get("theme")));
   };
-  button.onclick = () => {
-    setTheme({ system: "light", light: "dark", dark: "system" }[currentTheme()]);
+  const close = () => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  };
+  const open = () => {
     show();
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    // Fixed under the button, kept on the screen.
+    const r = button.getBoundingClientRect();
+    menu.style.top = `${r.bottom + 6}px`;
+    menu.style.left = `${Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.querySelector('[aria-pressed="true"]')?.focus();
   };
+
+  button.title = "Display options";
+  button.setAttribute("aria-label", "Display options");
+  button.setAttribute("aria-haspopup", "dialog");
+  button.setAttribute("aria-expanded", "false");
+  button.onclick = (e) => { e.stopPropagation(); menu.hidden ? open() : close(); };
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) close(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !menu.hidden) { close(); button.focus(); }
+  });
+  window.addEventListener("resize", close);
+  document.body.append(menu);
   show();
 }

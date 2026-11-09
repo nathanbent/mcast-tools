@@ -49,8 +49,9 @@ A page with a tab for each part:
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), **buttons and contacts** (GPIO inputs), **backup and restore**, and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
 
 The setup tabs (Playlists, Sounds, Zones, Settings) are under **More** in
-the header. The header's theme button picks the theme: the system's, light or dark,
-remembered in that browser (`mcast serve`'s own page has the same switch).
+the header. The header's display button picks the theme (the system's, light
+or dark), an accent color, the density (comfortable or compact) and the text
+size, remembered in that browser (`mcast serve`'s own page has the same menu).
 
 Sound files and phonebook names come from the mcast server, so its own web
 page and TUI see the same files and folders.
@@ -76,7 +77,10 @@ Open the panel with `?kiosk=1` on a wall tablet: only the Panel shows (no
 tabs), with a full-screen button, and the screen is kept awake. The URL can
 also narrow and size what that screen shows: `categories=bells,other`
 (`other` for announcements in none), `tag=Building A`, `size=large`,
-`mode=list`. Settings → Panel builds the link. Narrowing by URL is only a
+`mode=list`; and set how it looks, whatever that browser chose: `theme=dark`
+(or `light`), `text=large` (or `small`), `accent=teal` (`blue`, `teal`,
+`green`, `purple`, `orange`, `pink`), `density=compact`. Settings → Panel
+builds the link. Narrowing by URL is only a
 view: to make sure a screen can only play some announcements, sign it in with
 an operator token limited to those categories.
 
