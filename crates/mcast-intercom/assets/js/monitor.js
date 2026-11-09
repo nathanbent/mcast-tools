@@ -146,7 +146,7 @@ function render() {
         c.uptime == null ? "not seen yet" : c.outages.length ? plural(c.outages.length, "outage") : "no outages",
         c.uptime != null && c.uptime < 0.99 ? "bad" : ""),
       ears.checked > 0 && tile("Heard by every speaker", pct(ears.checked - ears.with_silent, ears.checked),
-        ears.with_silent ? `${ears.with_silent} of ${ears.checked} checked plays missed someone` : `all ${ears.checked} checked plays`,
+        ears.with_silent ? `${ears.with_silent} of ${ears.checked} checked plays missed someone, or lost too much` : `all ${ears.checked} checked plays`,
         ears.with_silent ? "warn" : "")),
     h("section", { class: "panel-group" },
       h("div", { class: "chart-head" }, h("h3", { class: "group-head" }, "Plays a day"), legend(),

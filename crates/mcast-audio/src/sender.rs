@@ -44,9 +44,10 @@ pub enum Source {
     /// the stream's rate and channels.
     File { path: PathBuf, looped: bool },
     /// Audio files one after another, as one stream, with `gap` of silence
-    /// between them. They're read at the first file's rate and channels;
-    /// later files that differ are converted to it.
-    Files { paths: Vec<PathBuf>, gap: Duration },
+    /// between them, and stretches of silence among them (see [`ListItem`]).
+    /// They're read at the first file's rate and channels; later files that
+    /// differ are converted to it.
+    Files { items: Vec<ListItem>, gap: Duration },
     /// Live capture from an input device (default device if `None`).
     Capture { device: Option<String> },
     /// No audio: just the chimes (and lead-in and tail).
@@ -55,6 +56,23 @@ pub enum Source {
     /// it ends, with the end chime, when the feed is closed.
     Live { feed: LiveFeed },
 }
+
+/// One item of [`Source::Files`]: an audio file, or silence for a while
+/// (a pause, which is reported as an item of its own as it starts).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ListItem {
+    File(PathBuf),
+    Silence(Duration),
+}
+
+impl From<PathBuf> for ListItem {
+    fn from(p: PathBuf) -> Self {
+        ListItem::File(p)
+    }
+}
+
+/// The rate and channels of a list with no files, only silence.
+const SILENT_LIST_FORMAT: (u32, u16) = (48_000, 1);
 
 #[derive(Debug, Clone)]
 pub struct SenderConfig {
@@ -190,10 +208,13 @@ enum Input {
 
 /// Files one after another at one rate and channel count (see [`Source::Files`]).
 struct FileList {
-    paths: Vec<PathBuf>,
-    /// The file being read (index into `paths`).
+    items: Vec<ListItem>,
+    /// The item being read (index into `items`).
     at: usize,
-    file: AudioFile,
+    /// The file being read; `None` during silence.
+    file: Option<AudioFile>,
+    /// Frames of the current item's silence still to come.
+    silence_left: u64,
     /// For a file at another rate or channel count than the first.
     convert: Option<Converter>,
     rate: u32,
@@ -214,21 +235,28 @@ struct FileList {
 }
 
 impl FileList {
-    fn open(paths: &[PathBuf], gap: Duration) -> Result<Self> {
-        let first = paths.first().context("no files to play")?;
-        let file = AudioFile::open(first)?;
-        let (rate, channels) = (file.sample_rate(), file.channels() as usize);
-        // Open each now, so a bad one fails the request rather than the stream.
-        for p in &paths[1..] {
-            AudioFile::open(p)?;
+    fn open(items: &[ListItem], gap: Duration) -> Result<Self> {
+        if items.is_empty() {
+            bail!("no files to play");
         }
-        Ok(Self {
-            paths: paths.to_vec(),
+        // Open each file now, so a bad one fails the request rather than
+        // the stream. The first sets the format.
+        let mut format = None;
+        for item in items {
+            if let ListItem::File(p) = item {
+                let f = AudioFile::open(p)?;
+                format.get_or_insert((f.sample_rate(), f.channels()));
+            }
+        }
+        let (rate, channels) = format.unwrap_or(SILENT_LIST_FORMAT);
+        let mut list = Self {
+            items: items.to_vec(),
             at: 0,
-            file,
+            file: None,
+            silence_left: 0,
             convert: None,
             rate,
-            channels,
+            channels: channels as usize,
             pending: Vec::new(),
             pending_pos: 0,
             gap_left: 0,
@@ -237,27 +265,45 @@ impl FileList {
             done: false,
             unreported: true,
             progress: None,
-        })
+        };
+        list.start_item()?;
+        Ok(list)
+    }
+
+    /// Set up reading `items[at]`.
+    fn start_item(&mut self) -> Result<()> {
+        match &self.items[self.at] {
+            ListItem::File(p) => {
+                let file = AudioFile::open(p)?;
+                let (r, c) = (file.sample_rate(), file.channels());
+                self.convert = ((r, c as usize) != (self.rate, self.channels))
+                    .then(|| Converter::new(r, c, self.rate, self.channels as u16));
+                self.file = Some(file);
+            }
+            ListItem::Silence(d) => {
+                self.file = None;
+                self.convert = None;
+                self.silence_left = (d.as_secs_f64() * self.rate as f64).round() as u64;
+            }
+        }
+        Ok(())
     }
 
     fn format(&self) -> (u32, u16) {
         (self.rate, self.channels as u16)
     }
 
-    /// Move to the next file; false after the last.
+    /// Move to the next item; false after the last.
     fn next_file(&mut self) -> Result<bool> {
         if let Some(c) = &mut self.convert {
             c.flush(&mut self.pending);
         }
-        if self.at + 1 >= self.paths.len() {
+        if self.at + 1 >= self.items.len() {
             self.done = true;
             return Ok(false);
         }
         self.at += 1;
-        self.file = AudioFile::open(&self.paths[self.at])?;
-        let (r, c) = (self.file.sample_rate(), self.file.channels());
-        self.convert = ((r, c as usize) != (self.rate, self.channels))
-            .then(|| Converter::new(r, c, self.rate, self.channels as u16));
+        self.start_item()?;
         self.gap_left = self.gap;
         self.unreported = true;
         Ok(true)
@@ -297,13 +343,25 @@ impl FileList {
                     p.set_item(self.at);
                 }
             }
+            let Some(file) = &mut self.file else {
+                // Silence, then the next item.
+                let frames =
+                    ((out.len() - written) / self.channels).min(self.silence_left as usize);
+                out[written..written + frames * self.channels].fill(0.0);
+                written += frames * self.channels;
+                self.silence_left -= frames as u64;
+                if self.silence_left == 0 {
+                    self.next_file()?;
+                }
+                continue;
+            };
             let got = match &mut self.convert {
-                None => self.file.read(&mut out[written..])?,
+                None => file.read(&mut out[written..])?,
                 Some(c) => {
-                    let ch = self.file.channels() as usize;
+                    let ch = file.channels() as usize;
                     let want = ((out.len() - written) / self.channels).max(256) * ch;
                     self.scratch.resize(want, 0.0);
-                    let n = self.file.read(&mut self.scratch)?;
+                    let n = file.read(&mut self.scratch)?;
                     c.process(&self.scratch[..n], &mut self.pending);
                     if n > 0 {
                         continue;
@@ -368,7 +426,7 @@ impl Reader {
                     looped: *looped,
                 }
             }
-            Source::Files { paths, gap } => Input::Files(Box::new(FileList::open(paths, *gap)?)),
+            Source::Files { items, gap } => Input::Files(Box::new(FileList::open(items, *gap)?)),
             Source::Live { feed } => Input::Live(LiveReader::new(feed.clone())),
             Source::Capture { .. } => unreachable!("capture isn't read through Reader"),
         };
@@ -505,8 +563,8 @@ impl Sender {
                 }
                 (file_rate, file_channels)
             }
-            Source::Files { paths, gap } => {
-                let format = FileList::open(paths, *gap)?.format();
+            Source::Files { items, gap } => {
+                let format = FileList::open(items, *gap)?.format();
                 if cfg.match_file_format && spec.codec.pcm_encoding().is_some() {
                     spec = StreamSpec::new(spec.codec, format.0, format.1);
                 }
@@ -1121,7 +1179,7 @@ mod tests {
         // Another rate and channel count: converted to 8 kHz mono.
         write_wav(&b, 16_000, 2, 0.25, -0.5);
         let source = Source::Files {
-            paths: vec![a.clone(), b.clone(), a.clone()],
+            items: vec![a.clone().into(), b.clone().into(), a.clone().into()],
             gap: Duration::from_millis(100),
         };
         let mut r = Reader::open(&source, 8000, 1, None, None).unwrap();
@@ -1170,10 +1228,84 @@ mod tests {
 
         // A missing file fails at the start, not partway.
         let bad = Source::Files {
-            paths: vec![a.clone(), dir.join("nope.wav")],
+            items: vec![a.clone().into(), dir.join("nope.wav").into()],
             gap: Duration::ZERO,
         };
         assert!(Reader::open(&bad, 8000, 1, None, None).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Reads `source` to the end, noting where each item was reported.
+    fn read_items(source: &Source, rate: u32) -> (Vec<f32>, Vec<(usize, usize)>) {
+        let mut r = Reader::open(source, rate, 1, None, None).unwrap();
+        let progress = Arc::new(Progress::default());
+        if let Input::Files(list) = &mut r.input {
+            list.progress = Some(progress.clone());
+        }
+        let (mut all, mut reported) = (Vec::new(), Vec::<(usize, usize)>::new());
+        let mut buf = vec![0.0f32; 100];
+        loop {
+            let n = r.fill(&mut buf).unwrap();
+            if let Some(i) = progress.item() {
+                if reported.last().map(|r| r.0) != Some(i) {
+                    reported.push((i, all.len()));
+                }
+            }
+            all.extend_from_slice(&buf[..n]);
+            if n < buf.len() {
+                return (all, reported);
+            }
+        }
+    }
+
+    #[test]
+    fn pauses_in_a_list_are_silent_items_of_their_own() {
+        let dir = std::env::temp_dir().join(format!("mcast-silence-test-{}", random_u32()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.wav");
+        write_wav(&a, 8000, 1, 0.5, 0.25);
+        // A pause first, the file, a pause after it, the file again.
+        let source = Source::Files {
+            items: vec![
+                ListItem::Silence(Duration::from_millis(300)),
+                a.clone().into(),
+                ListItem::Silence(Duration::from_millis(200)),
+                a.clone().into(),
+            ],
+            gap: Duration::ZERO,
+        };
+        // The file sets the format, though a pause comes first.
+        let Input::Files(list) = Reader::open(&source, 8000, 1, None, None).unwrap().input else {
+            panic!("not a list");
+        };
+        assert_eq!(list.format(), (8000, 1));
+        let (all, reported) = read_items(&source, 8000);
+        // Each item is told within the 100-sample chunk it starts in.
+        let starts = [0, 2400, 6400, 8000];
+        assert_eq!(reported.len(), 4, "{reported:?}");
+        for ((i, at), want) in reported.iter().zip(starts) {
+            assert!(
+                *at <= want && want < at + 100,
+                "item {i} at {at}, not {want}"
+            );
+        }
+        assert_eq!(all.len(), 12_000);
+        assert!(all[..2400].iter().all(|s| *s == 0.0), "the first pause");
+        assert!((all[4000] - 0.25).abs() < 0.02);
+        assert!(
+            all[6400..8000].iter().all(|s| *s == 0.0),
+            "the second pause"
+        );
+        assert!((all[10_000] - 0.25).abs() < 0.02);
+
+        // Only pauses: a stream of silence, at a default format.
+        let quiet = Source::Files {
+            items: vec![ListItem::Silence(Duration::from_millis(100))],
+            gap: Duration::ZERO,
+        };
+        let (all, reported) = read_items(&quiet, 48_000);
+        assert_eq!(all.len(), 4800);
+        assert_eq!(reported, [(0, 0)]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

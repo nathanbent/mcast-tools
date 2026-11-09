@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a text page stays up after its run ends.
-pub const HOLD: Duration = Duration::from_secs(30);
+pub const HOLD: Duration = Duration::from_secs(10);
 /// How long an unused text channel stays open (it holds its group).
 const IDLE: Duration = Duration::from_secs(300);
 /// Pages kept on the board.

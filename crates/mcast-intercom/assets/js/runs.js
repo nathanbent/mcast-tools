@@ -45,10 +45,15 @@ function heardLine(l) {
       expected ? `Listening for speakers… heard by ${heardExpected} of ${expected}` : "Listening for speakers…");
   }
   if (!expected) return others.length ? h("div", { class: "muted small heard" }, `Heard by ${names(others.map((x) => x.name))}`) : null;
+  const poor = (l.poor ?? []).map((n) => {
+    const p = l.heard.find((x) => x.name.toLowerCase() === n.toLowerCase())?.loss_percent;
+    return p == null ? n : `${n} (${p.toFixed(0)}% lost)`;
+  });
   return h("div", { class: "small heard" },
-    h("span", { class: l.silent.length ? "warn" : "ok", title: names(l.heard.map((x) => x.name)) },
+    h("span", { class: l.silent.length || poor.length ? "warn" : "ok", title: names(l.heard.map((x) => x.name)) },
       `Heard by ${heardExpected} of ${expected}`),
     l.silent.length > 0 && h("span", { class: "bad" }, ` · silent: ${names(l.silent)}`),
+    poor.length > 0 && h("span", { class: "bad" }, ` · heard badly: ${names(poor)}`),
     others.length > 0 && h("span", { class: "muted" }, ` · also ${names(others.map((x) => x.name))}`),
     worst >= 1 && h("span", { class: "muted" }, ` · up to ${worst.toFixed(1)}% loss`));
 }

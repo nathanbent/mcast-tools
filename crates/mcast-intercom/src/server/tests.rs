@@ -2042,7 +2042,7 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
             "/playlists",
             Some(json!({"name": "Closing", "items": [
                 {"type": "sound", "media": "chime.wav"},
-                {"type": "text", "text": "Welcome", "speak": false},
+                {"type": "text", "text": "Welcome", "speak": false, "seconds": 3},
                 {"type": "text", "text": "The library closes in ten minutes", "voice": "en-gb"},
                 {"type": "text", "text": "Thank you", "show": false},
             ]})),
@@ -2068,11 +2068,13 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
         .call(Method::POST, "/announcements/closing/play", None)
         .await;
     assert_eq!(s, StatusCode::CREATED, "{run}");
-    // The mcast server speaks what's spoken; what's only shown isn't sent.
+    // The mcast server speaks what's spoken; what's only shown is a pause
+    // of its own, for as long as it's up.
     assert_eq!(
         p.fake.requests()[0]["source"],
         json!({"type": "files", "gap_ms": 0, "paths": [
             "chime.wav",
+            {"silence_ms": 3000},
             {"say": "The library closes in ten minutes", "voice": "en-gb"},
             {"say": "Thank you"},
         ]})
@@ -2083,17 +2085,16 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
     let (_, v) = p.call(Method::GET, "/display", None).await;
     assert_eq!(v["pages"], json!([]));
 
-    // The sound: nothing to show yet. The spoken page: both pages go up.
+    // The sound: nothing to show yet. The page only shown: up during its
+    // pause, on its own.
     p.fake.play_item(hall_job, 0);
+    let (_, v) = p.call(Method::GET, "/display?zones=hall", None).await;
+    assert_eq!(v["pages"], json!([]), "{v}");
     p.fake.play_item(hall_job, 1);
     let (_, v) = p
         .call(Method::GET, "/display?zones=hall,nowhere", None)
         .await;
-    assert_eq!(
-        v["pages"][0]["text"],
-        json!(["Welcome", "The library closes in ten minutes"]),
-        "{v}"
-    );
+    assert_eq!(v["pages"][0]["text"], json!(["Welcome"]), "{v}");
     assert_eq!(v["pages"][0]["name"], "Closing");
     assert!(v["pages"][0]["until_ms"].is_null());
     let (_, v) = p.call(Method::GET, "/display?zones=gym", None).await;
@@ -2109,10 +2110,7 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
     .await;
     assert_eq!(
         texts,
-        [(
-            "239.1.9.1:5004".to_string(),
-            "Welcome\nThe library closes in ten minutes".to_string()
-        )]
+        [("239.1.9.1:5004".to_string(), "Welcome".to_string())]
     );
     // Said again (as a job's stats are): shown once.
     p.fake.play_item(hall_job, 1);
@@ -2127,8 +2125,19 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
         .collect();
     assert_eq!(
         shown,
-        [(Value::Null, json!(1)), (json!(1), json!(1))],
+        [
+            (Value::Null, json!(1)),
+            (json!(1), json!(1)),
+            (Value::Null, json!(2))
+        ],
         "{run}"
+    );
+    // The spoken page replaces it.
+    let (_, v) = p.call(Method::GET, "/display?zones=hall", None).await;
+    assert_eq!(
+        v["pages"][0]["text"],
+        json!(["The library closes in ten minutes"]),
+        "{v}"
     );
     let (_, v) = p.call(Method::GET, "/display?zones=gym", None).await;
     assert_eq!(v["pages"].as_array().unwrap().len(), 1, "{v}");
@@ -2143,7 +2152,7 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
             .then_some(pages)
     })
     .await;
-    assert_eq!(v.len(), 2);
+    assert_eq!(v.len(), 3, "the hall's two pages and the gym's one");
     let (_, run) = p
         .call(Method::POST, "/announcements/closing/play", None)
         .await;
@@ -2151,7 +2160,7 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
         .play_item(run["targets"][0]["job"].as_u64().unwrap(), 1);
     assert_eq!(
         p.state.0.displays.pages(Some(&["hall".to_string()])).len(),
-        2
+        3
     );
     p.call(Method::DELETE, "/runs", None).await;
     wait_for(|| {
@@ -2181,6 +2190,18 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
         (
             "too long",
             json!([{"type": "text", "text": "x".repeat(2001)}]),
+        ),
+        (
+            "seconds on a spoken page",
+            json!([{"type": "text", "text": "Hi", "seconds": 5}]),
+        ),
+        (
+            "no seconds",
+            json!([{"type": "text", "text": "Hi", "speak": false, "seconds": 0}]),
+        ),
+        (
+            "too many seconds",
+            json!([{"type": "text", "text": "Hi", "speak": false, "seconds": 61}]),
         ),
     ] {
         let (s, v) = p
@@ -3012,6 +3033,40 @@ async fn says_which_listeners_heard_a_play() {
     assert_eq!(m["listeners"]["with_silent"], 1);
     assert_eq!(m["listeners"]["list"][0]["name"], "Office");
     assert_eq!(m["listeners"]["list"][0]["missed"], 1);
+
+    // Both heard the next, but Lobby lost more than 5% of it: heard badly.
+    // Office's 4% is fine.
+    let (_, run) = p.call(Method::POST, "/announcements/bell/play", None).await;
+    let id = run["id"].as_u64().unwrap();
+    let ssrc = 0x5000_0000 + run["targets"][0]["job"].as_u64().unwrap() as u32;
+    let lossy = |name: &str, loss: f64| Listener {
+        loss_percent: Some(loss),
+        ..heard(name, Some(ssrc))
+    };
+    p.fake.st.lock().unwrap().listeners = Some(vec![lossy("Lobby", 12.0), lossy("Office", 4.0)]);
+    p.fake.finish_all();
+    let until = Instant::now() + Duration::from_secs(20);
+    let run = loop {
+        let (_, r) = p.call(Method::GET, &format!("/runs/{id}"), None).await;
+        if r["listeners"]["checking"] == false {
+            break r;
+        }
+        assert!(Instant::now() < until, "still checking: {r}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!(run["listeners"]["silent"], json!([]), "{run}");
+    assert_eq!(run["listeners"]["poor"], json!(["Lobby"]), "{run}");
+    // The monitor counts it with the plays that missed someone.
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let (_, m) = p.call(Method::GET, "/monitor?days=7", None).await;
+        if m["listeners"]["checked"] == 2 {
+            assert_eq!(m["listeners"]["with_silent"], 2, "{m}");
+            break;
+        }
+        assert!(Instant::now() < until, "not counted: {m}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 impl Panel {

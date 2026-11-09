@@ -212,6 +212,10 @@ impl Run {
     }
 }
 
+/// Worst loss, in percent, a speaker can report and still count as having
+/// heard a play well. Past this, speech breaks up even with concealment.
+pub const MAX_LOSS_PERCENT: f64 = 5.0;
+
 /// Who heard a run: reports from receivers (`mcast receive --name`) on its
 /// groups, heard through the mcast server's monitor.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -225,6 +229,9 @@ pub struct Listeners {
     /// Expected but not heard, once the check is over (empty if it
     /// couldn't check: see `error`).
     pub silent: Vec<String>,
+    /// Expected, and heard, but badly: losing more than
+    /// [`MAX_LOSS_PERCENT`] of it, once the check is over.
+    pub poor: Vec<String>,
     /// Why it couldn't be checked, e.g. the server's monitor is off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -1076,6 +1083,17 @@ impl Inner {
                         .expected
                         .iter()
                         .filter(|e| !l.has_heard(e))
+                        .cloned()
+                        .collect();
+                    l.poor = l
+                        .expected
+                        .iter()
+                        .filter(|e| {
+                            l.heard.iter().any(|h| {
+                                h.name.eq_ignore_ascii_case(e)
+                                    && h.loss_percent.is_some_and(|p| p > MAX_LOSS_PERCENT)
+                            })
+                        })
                         .cloned()
                         .collect();
                 }

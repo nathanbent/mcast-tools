@@ -76,7 +76,8 @@ pub enum SourceRequest {
     },
     /// Audio files one after another, as one stream (a playlist), with
     /// `gap_ms` of silence between them. Items can also be text to speak
-    /// (`{"say": "..."}`), which a server turns into files before starting.
+    /// (`{"say": "..."}`), which a server turns into files before starting,
+    /// and pauses (`{"silence_ms": 5000}`).
     Files {
         paths: Vec<FileItem>,
         #[serde(default)]
@@ -104,8 +105,12 @@ pub enum SourceRequest {
 /// Most files a `files` source plays.
 pub const MAX_FILES: usize = 100;
 
-/// One item of a `files` source: a file (`"bells/lunch.wav"`), or text to
-/// speak (`{"say": "The library closes in ten minutes", "voice": "en-gb"}`).
+/// Longest pause in a `files` source, in milliseconds.
+pub const MAX_SILENCE_MS: u32 = 60_000;
+
+/// One item of a `files` source: a file (`"bells/lunch.wav"`), text to
+/// speak (`{"say": "The library closes in ten minutes", "voice": "en-gb"}`),
+/// or a pause (`{"silence_ms": 5000}`), reported as an item as it starts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FileItem {
@@ -114,6 +119,9 @@ pub enum FileItem {
         say: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         voice: Option<String>,
+    },
+    Silence {
+        silence_ms: u32,
     },
 }
 
@@ -393,17 +401,23 @@ impl SendRequest {
                 if *gap_ms > 60_000 {
                     bail!("gap_ms is at most 60000");
                 }
-                let paths = paths
+                let items = paths
                     .iter()
                     .map(|p| match p {
-                        FileItem::Path(p) => Ok(p.clone()),
+                        FileItem::Path(p) => Ok(sender::ListItem::File(p.clone())),
                         FileItem::Say { .. } => Err(anyhow::anyhow!(
                             "text to speak must be spoken before sending"
+                        )),
+                        FileItem::Silence { silence_ms } if *silence_ms > MAX_SILENCE_MS => {
+                            Err(anyhow::anyhow!("silence_ms is at most {MAX_SILENCE_MS}"))
+                        }
+                        FileItem::Silence { silence_ms } => Ok(sender::ListItem::Silence(
+                            Duration::from_millis(*silence_ms as u64),
                         )),
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 sender::Source::Files {
-                    paths,
+                    items,
                     gap: Duration::from_millis(*gap_ms as u64),
                 }
             }
@@ -803,6 +817,35 @@ mod tests {
             matches!(cfg.source, sender::Source::Pad { amplitude } if (amplitude - 0.251).abs() < 0.001)
         );
         assert!(r.endless());
+    }
+
+    #[test]
+    fn files_take_pauses() {
+        let r: SendRequest = serde_json::from_str(
+            r#"{"source": {"type": "files", "paths": ["a.wav", {"silence_ms": 5000}, "b.wav"]}}"#,
+        )
+        .unwrap();
+        // It reads back as it was written.
+        let back: SendRequest = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+        assert_eq!(back.source, r.source);
+        let cfg = r.to_config(Interface::Any).unwrap();
+        let sender::Source::Files { items, .. } = cfg.source else {
+            panic!("not a files source");
+        };
+        assert_eq!(
+            items,
+            [
+                sender::ListItem::File("a.wav".into()),
+                sender::ListItem::Silence(Duration::from_secs(5)),
+                sender::ListItem::File("b.wav".into()),
+            ]
+        );
+        let long: SendRequest = serde_json::from_str(
+            r#"{"source": {"type": "files", "paths": [{"silence_ms": 60001}]}}"#,
+        )
+        .unwrap();
+        let e = long.to_config(Interface::Any).unwrap_err();
+        assert!(e.to_string().contains("silence_ms is at most 60000"), "{e}");
     }
 
     #[test]
