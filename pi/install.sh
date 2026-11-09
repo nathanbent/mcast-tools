@@ -305,7 +305,9 @@ use_kokoro() {
         new="# Read by mcast.service. Written by install.sh (TEXT_TO_SPEECH=kokoro).
 MCAST_TTS_COMMAND=/usr/local/bin/mcast-kokoro
 MCAST_TTS_VOICE=$2
-MCAST_TTS_VOICE_LIST=$3"
+MCAST_TTS_VOICE_LIST=$3
+# Kokoro is slow on a Pi: allow a long page 3 minutes rather than 1.
+MCAST_TTS_TIMEOUT=180"
     fi
     if [ -z "$new" ]; then
         [ -f "$env" ] || return 0

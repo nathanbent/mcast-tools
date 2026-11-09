@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 /// Longest text spoken at once, in characters.
 pub const MAX_TEXT: usize = 2000;
 /// How long synthesis may take.
-const TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an engine may take to speak one item, unless configured.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Files kept in the cache; the oldest go first past this.
 const CACHE_FILES: usize = 500;
 
@@ -55,6 +56,9 @@ pub struct TtsConfig {
     /// The voices a command offers, for [`Tts::describe`] (a command can't
     /// be asked for them). Ignored by Piper and eSpeak NG.
     pub command_voices: Vec<String>,
+    /// How long the engine may take to speak one item; unset is
+    /// [`DEFAULT_TIMEOUT`].
+    pub timeout: Option<Duration>,
     /// Where spoken text is kept; unset is a directory under the system's
     /// temporary directory.
     pub cache: Option<PathBuf>,
@@ -79,6 +83,7 @@ pub struct Tts {
     engine: Engine,
     default_voice: Option<String>,
     command_voices: Vec<String>,
+    timeout: Duration,
     cache: PathBuf,
 }
 
@@ -132,6 +137,10 @@ impl Tts {
             engine,
             default_voice: cfg.voice.clone().filter(|v| !v.trim().is_empty()),
             command_voices,
+            timeout: cfg
+                .timeout
+                .filter(|t| !t.is_zero())
+                .unwrap_or(DEFAULT_TIMEOUT),
             cache,
         }
     }
@@ -282,7 +291,7 @@ impl Tts {
             }
             s
         });
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = Instant::now() + self.timeout;
         let status = loop {
             if let Some(s) = child.try_wait()? {
                 break s;
@@ -290,7 +299,10 @@ impl Tts {
             if Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                bail!("{name} took more than {}s to speak", TIMEOUT.as_secs());
+                bail!(
+                    "{name} took more than {}s to speak (--tts-timeout)",
+                    self.timeout.as_secs()
+                );
             }
             std::thread::sleep(Duration::from_millis(20));
         };
@@ -524,6 +536,25 @@ mod tests {
         assert!(junk.speak("hi", None).is_err());
         // Nothing half-written is left behind.
         assert_eq!(std::fs::read_dir(dir.join("cache3")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gives_up_on_a_slow_engine() {
+        let dir = temp_dir("slow");
+        let tts = Tts::detect(&TtsConfig {
+            command: Some("cat >/dev/null; sleep 30".into()),
+            timeout: Some(Duration::from_secs(1)),
+            cache: Some(dir.join("cache")),
+            ..Default::default()
+        })
+        .unwrap();
+        let start = Instant::now();
+        let e = tts.speak("hello", None).unwrap_err().to_string();
+        assert!(start.elapsed() < Duration::from_secs(10), "{e}");
+        assert!(e.contains("more than 1s"), "{e}");
+        // Nothing half-written is left behind.
+        assert_eq!(std::fs::read_dir(dir.join("cache")).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

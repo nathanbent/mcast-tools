@@ -647,3 +647,21 @@ fn says_which_receivers_heard_a_page() {
     assert_eq!(l.silent, ["Hall"]);
     jobs.stop(lobby.id, Duration::from_secs(5));
 }
+
+#[test]
+#[ignore = "takes 35 s: speech slower than the intercom's usual 30 s wait"]
+fn waits_for_slow_speech_when_starting_a_page() {
+    // The server's engine takes 35 s; it allows 60 s by default.
+    let srv = server_with(None, Some("cat >/dev/null; sleep 35; cat speech.wav"));
+    tone(&srv.dir.join("speech.wav"), 22_050);
+    let backend = HttpBackend::new(&srv.url, Some("secret".into()));
+    let start = Instant::now();
+    let job = backend
+        .start_sender(&json!({
+            "group": "239.255.77.93:5004", "sap": false, "encoding": "g711u", "tail_ms": 0,
+            "source": {"type": "files", "paths": [{"say": "Bingo in five minutes"}]}
+        }))
+        .expect("the page starts once it's spoken");
+    assert!(start.elapsed() >= Duration::from_secs(35));
+    assert!(job.id > 0, "{job:?}");
+}

@@ -155,6 +155,12 @@ the engine can't speak. `GET /voices` says which engine there is and its
 voices: `{"engine": "piper"|"espeak-ng"|"command"|null, "voices": [...],
 "default_voice"}`.
 
+Each item must be spoken within `--tts-timeout` seconds (`MCAST_TTS_TIMEOUT`,
+60 by default, up to 3600), whatever the engine; a slower one fails the
+request. `POST /senders` answers only once every item is spoken, so a client
+should wait at least that long per text item (the intercom panel waits up to
+30 minutes).
+
 A live page: start a sender with a `live` source, then stream audio into
 it. Audio that arrives during the opening chime is kept and played after it.
 Gaps are filled with silence; if nothing arrives for 20 s the page ends.

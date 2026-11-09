@@ -142,10 +142,11 @@ with many voices, but bigger and slower (best on a Pi 5):
 - `KOKORO_MODEL`: `full` needs about 500 MB of memory while speaking, `int8`
   about 250 MB and sounds a little rougher. It's `int8` on a Pi with less
   than 3 GB unless set. About 500 MB on disk either way, with the venv.
-- Speaking takes a while on a Pi: a sentence or two is a few seconds, but
-  `mcast serve` gives up on a page after 60 s, so keep spoken pages short.
-  (A 2000-character page took 25 s on a 4-core x86 VM; it hasn't been
-  timed on a Pi yet.)
+- Speaking takes a while on a Pi: a sentence or two is a few seconds, a
+  long page much more (a 2000-character page took 25 s on a 4-core x86 VM;
+  it hasn't been timed on a Pi yet). `tts.env` lets Kokoro take up to 3
+  minutes per text item (`MCAST_TTS_TIMEOUT=180`, against 60 s otherwise),
+  and the panel waits for it. A page is only spoken the first time.
 - `install.sh` speaks once as the `mcast` user to check it works. If it
   doesn't, eSpeak NG speaks instead and the summary says why. Setting
   `TEXT_TO_SPEECH` to anything else later removes `tts.env` and stops using

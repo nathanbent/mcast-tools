@@ -221,6 +221,11 @@ pub struct HttpBackend {
     base: String,
     token: Option<String>,
     agent: ureq::Agent,
+    /// For starting senders: the server speaks a page's text before it
+    /// answers, which can take minutes with a slow engine (its
+    /// --tts-timeout is per item). Giving up early would report a failure
+    /// for a page the server then plays anyway.
+    sender_agent: ureq::Agent,
 }
 
 impl From<ureq::Error> for BackendError {
@@ -266,6 +271,10 @@ impl HttpBackend {
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(5))
                 .timeout_read(Duration::from_secs(30))
+                .build(),
+            sender_agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(5))
+                .timeout_read(Duration::from_secs(30 * 60))
                 .build(),
         }
     }
@@ -417,7 +426,7 @@ impl Backend for HttpBackend {
 
     fn start_sender(&self, request: &Value) -> BackendResult<Job> {
         Ok(self
-            .request(&self.agent, "POST", "/senders")
+            .request(&self.sender_agent, "POST", "/senders")
             .send_json(request)?
             .into_json()?)
     }
