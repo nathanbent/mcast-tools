@@ -537,6 +537,15 @@ struct ServeArgs {
         value_parser = parse_voice_name
     )]
     tts_voice_list: Vec<String>,
+    /// Text to speech: seconds the engine may take to speak each item
+    /// before the page fails [default: 60]
+    #[arg(
+        long,
+        value_name = "SECS",
+        env = "MCAST_TTS_TIMEOUT",
+        value_parser = clap::value_parser!(u64).range(1..=3600)
+    )]
+    tts_timeout: Option<u64>,
     /// Where spoken text is kept, so it's synthesized once [default: under the temporary directory]
     #[arg(long, value_name = "DIR", env = "MCAST_TTS_CACHE")]
     tts_cache: Option<PathBuf>,
@@ -1307,6 +1316,7 @@ fn serve(a: ServeArgs, stop: Arc<AtomicBool>) -> Result<()> {
             voices: a.tts_voices,
             voice: a.tts_voice,
             command_voices: a.tts_voice_list,
+            timeout: a.tts_timeout.map(std::time::Duration::from_secs),
             cache: a.tts_cache,
         },
     };
