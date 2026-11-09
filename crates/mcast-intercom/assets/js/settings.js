@@ -149,6 +149,9 @@ function kioskLink() {
   const tag = select([["", "Any"], ...tags.map((t) => [t, t])], "");
   const size = select([["", "The Panel's"], ...SIZES], "");
   const mode = select([["", "The Panel's"], ["tiles", "Tiles"], ["list", "List"]], "");
+  // How that screen looks (js/theme.js reads these), whatever its browser chose.
+  const theme = select([["", "That browser's"], ["light", "Light"], ["dark", "Dark"]], "");
+  const text = select([["", "That browser's"], ["small", "Small"], ["medium", "Medium"], ["large", "Large"]], "");
   const out = h("code", {});
   const url = () => {
     const q = new URLSearchParams();
@@ -157,6 +160,8 @@ function kioskLink() {
     if (tag.value) q.set("tag", tag.value);
     if (size.value) q.set("size", size.value);
     if (mode.value) q.set("mode", mode.value);
+    if (theme.value) q.set("theme", theme.value);
+    if (text.value) q.set("text", text.value);
     const qs = q.toString().replace(/%2C/g, ",");
     return `${location.origin}${location.pathname}${qs ? `?${qs}` : ""}#panel`;
   };
@@ -170,6 +175,7 @@ function kioskLink() {
       [...cats, { id: "other", name: "Other (none)" }].map((c) => h("label", { class: "check" },
         h("input", { type: "checkbox", onchange: (e) => { if (e.target.checked) chosen.add(c.id); else chosen.delete(c.id); } }), ` ${c.name}`))),
     h("div", { class: "row" }, field("Tag", tag), field("Button size", size), field("Layout", mode)),
+    h("div", { class: "row" }, field("Theme", theme), field("Text size", text)),
     h("div", { class: "kiosk-link" }, out,
       h("button", { type: "button", onclick: async () => {
         try { await navigator.clipboard.writeText(url()); toast("Copied", "ok"); } catch { toast("Select the link and copy it", "info"); }

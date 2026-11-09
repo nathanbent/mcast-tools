@@ -15,7 +15,7 @@ and reload the page to see changes.
 | File | |
 |---|---|
 | `index.html`, `app.css` | Layout and styles (light and dark) |
-| `js/theme.js`, `js/themes.js` | The theme (system, light or dark, per browser): applied before the page draws, and the header's switch |
+| `js/theme.js`, `js/themes.js` | The display options (theme, accent color, density and text size, per browser): applied before the page draws, and the header's menu |
 | `js/main.js` | Start-up: token prompt, initial load, event stream |
 | `js/api.js` | The only module that calls the server |
 | `js/store.js` | Lists from the API, kept current by server-sent events |
@@ -29,6 +29,17 @@ and reload the page to see changes.
 
 Each panel is one module exporting `mount(element)`; add a panel by adding a
 module and a `<section>` in `index.html`.
+
+The header's display button sets the theme (the system's, light or dark),
+an accent color, the density (comfortable or compact) and the text size,
+remembered in that browser. A URL can set them for one screen without
+storing them: `?theme=dark&accent=teal&density=compact&text=large`
+(accents: `blue`, `teal`, `green`, `purple`, `orange`, `pink`; text:
+`small`, `medium`, `large`). In `app.css` they are variables on `:root`:
+colors, `--accent-l`/`--accent-d` (an accent's light and dark shade),
+`--fs` (the text scale every font size is multiplied by) and the spacing
+ones (`--pad`, `--gap`, `--ctl`, `--btn`, `--cell`), so new styles should
+use them rather than fixed values.
 
 Rules worth keeping:
 
