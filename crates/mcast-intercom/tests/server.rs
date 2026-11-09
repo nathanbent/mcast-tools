@@ -188,6 +188,18 @@ fn takes_over_a_busy_group_only_for_emergencies() {
         .unwrap();
     assert_eq!(run.state, RunState::Failed);
     assert_eq!(run.targets[0].state, TargetState::Busy);
+    // Not one of the panel's: said so, with the server's job number.
+    assert_eq!(
+        run.targets[0].error.as_deref(),
+        Some(
+            format!(
+                "Something else the mcast server sends was playing there (its job {})",
+                tone.id
+            )
+            .as_str()
+        ),
+        "{run:#?}"
+    );
     assert!(backend.job(tone.id).unwrap().state == "running");
 
     let run = r

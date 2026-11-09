@@ -54,18 +54,48 @@ function kiosk() {
   void lock;
 }
 
-// The setup tabs, in a "More" menu when there are many tabs.
+// The setup tabs, in a "More" menu when there are many tabs. On a phone,
+// only the everyday tabs stay in the row, so it fits without scrolling.
 const MORE = ["playlists", "sounds", "zones", "settings"];
+const PHONE_TABS = ["panel", "history", "monitor"];
+const narrow = window.matchMedia("(max-width: 760px)");
 
 function moreMenu(buttons) {
-  const inMore = buttons.length > 6 ? buttons.filter((b) => MORE.includes(b.dataset.tab)) : [];
-  if (!inMore.length) return null;
+  const pick = () => {
+    if (narrow.matches && buttons.length > PHONE_TABS.length + 1) {
+      return buttons.filter((b) => !PHONE_TABS.includes(b.dataset.tab));
+    }
+    return buttons.length > 6 ? buttons.filter((b) => MORE.includes(b.dataset.tab)) : [];
+  };
+  if (!pick().length && buttons.length <= PHONE_TABS.length + 1) return null;
+  const nav = document.querySelector("nav.tabs");
   const toggle = h("button", { class: "more-toggle", "aria-haspopup": "menu", "aria-expanded": "false" }, "More ▾");
   const menu = h("div", { class: "more-menu", role: "menu", hidden: true });
-  for (const b of inMore) {
-    b.setAttribute("role", "menuitem");
-    menu.append(b);
-  }
+  const box = h("div", { class: "more" }, toggle, menu);
+  let inMore = [];
+  let current = null;
+  // Put each tab in the row or the menu, in their usual order.
+  const place = () => {
+    inMore = pick();
+    for (const b of buttons) {
+      if (inMore.includes(b)) {
+        b.setAttribute("role", "menuitem");
+        menu.append(b);
+      } else {
+        b.removeAttribute("role");
+        nav.insertBefore(b, box);
+      }
+    }
+    box.hidden = !inMore.length;
+    showing(current);
+  };
+  // Say which of its tabs is showing, if one is.
+  const showing = (name) => {
+    current = name;
+    const b = inMore.find((x) => x.dataset.tab === name);
+    toggle.textContent = b ? `${b.textContent} ▾` : "More ▾";
+    toggle.classList.toggle("current", !!b);
+  };
   const close = () => { menu.hidden = true; toggle.setAttribute("aria-expanded", "false"); };
   const open = () => {
     // Fixed under the button: the tab row may scroll sideways (phones), which would clip it.
@@ -86,16 +116,10 @@ function moreMenu(buttons) {
     else if (e.key === "ArrowDown") { e.preventDefault(); inMore[(i + 1) % inMore.length].focus(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); inMore[(i - 1 + inMore.length) % inMore.length].focus(); }
   });
-  document.querySelector("nav.tabs").append(h("div", { class: "more" }, toggle, menu));
-  return {
-    close,
-    // Say which of its tabs is showing, if one is.
-    showing(name) {
-      const b = inMore.find((x) => x.dataset.tab === name);
-      toggle.textContent = b ? `${b.textContent} ▾` : "More ▾";
-      toggle.classList.toggle("current", !!b);
-    },
-  };
+  nav.append(box);
+  place();
+  narrow.addEventListener("change", () => { close(); place(); });
+  return { close, showing };
 }
 
 function tabs() {
@@ -177,6 +201,8 @@ async function start() {
   if (state.me.name) {
     $("whoami").hidden = false;
     $("whoami").textContent = state.me.role === "admin" ? state.me.name : `${state.me.name} (${state.me.role})`;
+    // Phones hide the name to keep the header to one row; it's on Sign out.
+    $("logout").title = `Signed in as ${$("whoami").textContent}`;
   }
   if (state.me.role === "trigger") {
     setStatus("offline");

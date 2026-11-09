@@ -355,11 +355,43 @@ dl.facts dd { margin: 0; overflow-wrap: anywhere; }
 
 #backend, #status { white-space: nowrap; }
 
-@media (max-width: 760px) {
-  /* Tabs get their own row under the title and the All stop button. */
-  header { flex-wrap: wrap; row-gap: 8px; }
+@media (max-width: 1180px) {
+  /* Too narrow for the tabs beside everything else: they get their own
+     row under the title, the status and All stop. */
+  header { flex-wrap: wrap; row-gap: 6px; }
   nav.tabs { order: 10; width: 100%; flex-wrap: nowrap; overflow-x: auto; }
+}
+
+@media (max-width: 760px) {
+  /* One row for the title, the status lights, All stop, theme and sign
+     out; the tabs under it (the setup tabs go in More, so they fit). The
+     status lights keep their words for screen readers. */
+  header { column-gap: 8px; }
+  #backend, #status { font-size: 0; gap: 0; padding: 6px 2px; }
+  #whoami { display: none; }
   main.single { padding: 12px; }
+}
+
+@media (max-width: 420px) {
+  /* Small phones: tighter, so the header stays two rows. */
+  header { padding: 8px 10px; column-gap: 6px; }
+  header h1 { font-size: 16px; }
+  header > button { padding: 6px 9px; }
+  nav.tabs button { padding: 6px 9px; }
+}
+@media (max-width: 340px) {
+  header { column-gap: 4px; }
+  header h1 { font-size: 15px; }
+  header > button#theme { padding: 6px 7px; }
+}
+
+@media (max-width: 560px) {
+  /* Panel buttons two to a row on a phone, compact, so a screen shows a
+     dozen rather than three. Large buttons and the list stay one wide. */
+  .tiles:not(.size-large):not(.mode-list) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .tiles.size-medium:not(.mode-list) > .tile > button.play { min-height: 84px; padding: 12px; gap: 4px; }
+  .tiles.size-medium:not(.mode-list) .name { font-size: 16px; }
+  .tiles:not(.size-large):not(.mode-list) .meta { font-size: 12px; }
 }
 
 /* Schedules */
