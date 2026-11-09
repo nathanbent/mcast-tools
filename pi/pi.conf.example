@@ -27,12 +27,22 @@ MCAST_EXTRA_ARGS=""
 
 # Text to speech, for text pages in intercom playlists that are spoken:
 # "espeak" (eSpeak NG: small, robotic), "piper" (Piper: natural voices,
-# about 60 MB per voice, fine on a Pi 4 or 5; eSpeak NG is installed too),
-# or "none".
+# about 60 MB per voice, fine on a Pi 4 or 5), "kokoro" (Kokoro: more natural
+# still, 28 English voices to choose from; about 500 MB on disk, best on a
+# Pi 5), or "none". eSpeak NG is installed with Piper and Kokoro too.
 TEXT_TO_SPEECH=espeak
 # The Piper voice to download (https://huggingface.co/rhasspy/piper-voices),
 # e.g. "en_GB-alba-medium" or "de_DE-thorsten-medium".
 PIPER_VOICE="en_US-amy-medium"
+# Kokoro: the voice used when a page names none, e.g. "bf_emma" or
+# "am_michael" (af/am: American female/male, bf/bm: British).
+KOKORO_VOICE="af_heart"
+# The Kokoro voices the panel offers, comma-separated; empty for all the
+# English ones. "mcast-kokoro --voices" lists every voice.
+KOKORO_VOICES=""
+# "full" (about 500 MB of memory while speaking) or "int8" (about 250 MB,
+# a little rougher). Empty picks int8 on a Pi with less than 3 GB.
+KOKORO_MODEL=""
 
 # --- Intercom panel --------------------------------------------------------
 # Run "mcast intercom serve": buttons and schedules for announcements, played

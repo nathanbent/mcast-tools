@@ -1,0 +1,80 @@
+#!/opt/kokoro/venv/bin/python3 -I
+"""mcast-kokoro - text to speech with Kokoro, for "mcast serve --tts-command".
+
+Reads the text on stdin and writes a WAV (24 kHz mono) to stdout, in the voice
+named by $MCAST_TTS_VOICE (af_heart if unset). "mcast-kokoro --voices" lists
+the voices, one per line.
+
+Installed by mcast-tools/pi/install.sh (TEXT_TO_SPEECH=kokoro), with Kokoro in
+/opt/kokoro: a venv with kokoro-onnx, the model as kokoro.onnx and the voices
+as voices.bin.
+"""
+
+import io
+import os
+import sys
+import wave
+
+HOME = os.environ.get("KOKORO_HOME", "/opt/kokoro")
+DEFAULT_VOICE = "af_heart"
+
+# Kokoro's voices start with a letter for their language.
+LANGS = {
+    "a": "en-us",
+    "b": "en-gb",
+    "e": "es",
+    "f": "fr-fr",
+    "h": "hi",
+    "i": "it",
+    "j": "ja",
+    "p": "pt-br",
+    "z": "cmn",
+}
+
+
+def load():
+    from kokoro_onnx import Kokoro
+
+    return Kokoro(os.path.join(HOME, "kokoro.onnx"), os.path.join(HOME, "voices.bin"))
+
+
+def main():
+    # Only the WAV goes to stdout: anything the libraries print goes to stderr,
+    # where mcast serve shows it if speaking fails.
+    out = os.fdopen(os.dup(1), "wb")
+    os.dup2(2, 1)
+
+    kokoro = load()
+    voices = sorted(kokoro.get_voices())
+    if sys.argv[1:] == ["--voices"]:
+        out.write("".join(v + "\n" for v in voices).encode())
+        return 0
+    if sys.argv[1:]:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+
+    voice = os.environ.get("MCAST_TTS_VOICE") or DEFAULT_VOICE
+    if voice not in voices:
+        print(f'there\'s no Kokoro voice "{voice}" (mcast-kokoro --voices lists them)', file=sys.stderr)
+        return 1
+    text = sys.stdin.read().strip()
+    if not text:
+        print("there's no text to speak", file=sys.stderr)
+        return 1
+    samples, rate = kokoro.create(text, voice=voice, speed=1.0, lang=LANGS.get(voice[0], "en-us"))
+
+    import numpy as np
+
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    out.write(buf.getvalue())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12,6 +12,8 @@ Group=mcast
 # Live input and the Listen button need the sound card.
 SupplementaryGroups=audio
 EnvironmentFile=/etc/mcast/mcast.env
+# Text to speech with Kokoro (TEXT_TO_SPEECH=kokoro), if install.sh set it up.
+EnvironmentFile=-/etc/mcast/tts.env
 Environment=HOME=/var/lib/mcast
 ExecStart=/usr/local/bin/mcast serve --listen ${MCAST_LISTEN} --iface ${MCAST_IFACE} --media-dir /var/lib/mcast/media $MCAST_EXTRA_ARGS
 Restart=on-failure
