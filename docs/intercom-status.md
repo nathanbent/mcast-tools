@@ -31,7 +31,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - **"Arrange this page" on the Schedules tab** (nathanbent/mcast-tools#60): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
   - **Receiver: out-of-order packets and clock drift** (nathanbent/mcast-tools#59), the receiver half of #14 redone on `main`. A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one; before, any packet arriving after a later one was dropped. A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm. New stats: `reordered` and `drift_ppm`. Tested over real multicast with reordering: the old receiver lost 64 of about 350 packets, this one none. **The drift correction had only run in simulation** when the PR was opened; it was merged on 2026-11-09, and the Pi test is still listed in What's next, 1.
 - **All three were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.8.
-- **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
+- **On `claude/ecstatic-pasteur-i406yp`, for 0.5.8:** the owner's answers to the open questions (below), built. New work branches from `main`; the next release needs a version bump first.
 - **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's (`claude/intelligent-ramanujan-9guf2i`) and #60's and #62's (`claude/ecstatic-pasteur-i406yp`), which merged after the cleanup and can go too: neither has anything that isn't on `main`.
 
 The work came as six stacked PRs, merged in order with merge commits:
@@ -245,18 +245,31 @@ The v0.5.5 items, plus requests that came up along the way:
    - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
 
-## Questions still open for the owner
+## The owner's answers (2026-11-09)
 
-1. **Delivery confirmation:**
-   - How much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
-2. **Text pages, choices to confirm:**
-   - A page stays on the display page for 30 s after its run ends (`displays::HOLD`).
-   - A page only shown appears with the next item heard, not on its own timer.
-   - The default Piper voice on a Pi is `en_US-lessac-medium`.
-3. **GPIO choices to confirm (#45):**
-   - An input plays at its announcement's priority, with no per-input priority.
-   - Re-pressing while it plays is ignored, not restarted.
-4. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
+The questions left open by the earlier sessions are settled; the changes
+are on `claude/ecstatic-pasteur-i406yp`, for 0.5.8.
+
+1. **Delivery confirmation:** a speaker that loses more than 5% of a play
+   (`runner::MAX_LOSS_PERCENT`) heard it **badly**. It's named in the run's
+   `listeners.poor`, on run cards ("heard badly: Lobby (12% lost)"), in a
+   toast, and gets the `listener_silent` webhook; the Monitor tab counts
+   the play with those that missed someone.
+2. **Text pages:**
+   - A page stays on the displays **10 s** after its run ends (`displays::HOLD`).
+   - A page that's only shown is **a pause of its own**: the playlist
+     holds in silence for its `seconds` (5 by default, 1 to 60; *Show for*
+     in the editor) while it's up, then plays on. The core takes pauses
+     in a `files` source, `{"silence_ms": N}` up to 60000, reported in
+     `stats.item` like any item, so a panel needs an mcast server from
+     0.5.8 for these pages.
+   - The default Piper voice on a Pi is **`en_US-amy-medium`**. Not
+     downloaded here (Hugging Face is blocked from this container); its
+     path follows lessac's, `en/en_US/amy/medium/`.
+3. **GPIO:** as built. An input plays at its announcement's priority, and
+   re-pressing while it plays is ignored.
+4. **Offline timing:** as built. A minute without a report, checked every
+   10 s.
 
 ## How to work on it
 

@@ -25,7 +25,7 @@ MCAST_TOKEN=""
 MCAST_IFACE="any"
 MCAST_EXTRA_ARGS=""
 TEXT_TO_SPEECH=espeak
-PIPER_VOICE="en_US-lessac-medium"
+PIPER_VOICE="en_US-amy-medium"
 ENABLE_INTERCOM=no
 INTERCOM_LISTEN="0.0.0.0:8651"
 INTERCOM_TOKEN=""
@@ -257,7 +257,7 @@ install_tts() {
     printf '#!/bin/sh\nexec /opt/piper/piper "$@"\n' >/usr/local/bin/piper
     chmod 0755 /usr/local/bin/piper
 
-    # en_US-lessac-medium lives at en/en_US/lessac/medium/ on Hugging Face.
+    # en_US-amy-medium lives at en/en_US/amy/medium/ on Hugging Face.
     local v=$PIPER_VOICE lang region name quality
     region=${v%%-*}
     lang=${region%%_*}

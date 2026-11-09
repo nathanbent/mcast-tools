@@ -119,10 +119,15 @@ panic button, a door contact or a bell push plays an announcement.
 Text pages in intercom playlists are spoken by `mcast serve`. `install.sh`
 installs eSpeak NG by default (`TEXT_TO_SPEECH=espeak`: small, robotic).
 `TEXT_TO_SPEECH=piper` adds Piper with one natural voice (`PIPER_VOICE`,
-`en_US-lessac-medium` by default, about 60 MB), fine on a Pi 4 or 5:
+`en_US-amy-medium` by default, about 60 MB), fine on a Pi 4 or 5:
 - Piper goes in `/opt/piper`, its voices in `/usr/local/share/mcast/voices`
   (`NAME.onnx` with `NAME.onnx.json`). Add more there and restart `mcast`;
-  the panel's voice list follows.
+  the panel's voice list follows. With several, `mcast serve` speaks in the
+  first by name unless a page names one.
+- Before 0.5.8 the default was `en_US-lessac-medium`. Re-running
+  `install.sh` on such a Pi downloads `en_US-amy-medium` beside it, and
+  amy, first by name, becomes the voice (unless `pi.conf` sets
+  `PIPER_VOICE`). Delete the lessac files to free their 60 MB.
 - What's spoken is kept in `/var/lib/mcast/tts-cache`, so the same words are
   only synthesized once.
 - `journalctl -u mcast` says at start which engine it found.
