@@ -1,7 +1,7 @@
 # Intercom: where things stand (handoff)
 
 Last updated 2026-11-09. Written at the end of a third session, and updated
-since for the work merged after it (#57 to #68) and the releases of v0.5.7 to v0.5.9. The second session
+since for the work merged after it (#57 to #70) and the releases of v0.5.7 to v0.5.10. The second session
 checked the first one's work, built everything left on the roadmap plus
 follow-ups, merged it all into `main`, and bumped the version to 0.5.5
 (#48). The third built **text pages in playlists** (#49, below), merged it,
@@ -15,7 +15,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
 
 ## Where things stand
 
-- **Everything is on `main` and released, as v0.5.9.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+- **Everything is on `main` and released, as v0.5.10.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
   - last-heard times in the Zones list;
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
@@ -31,11 +31,12 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - **"Arrange this page" on the Schedules tab** (nathanbent/mcast-tools#60): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
   - **Receiver: out-of-order packets and clock drift** (nathanbent/mcast-tools#59), the receiver half of #14 redone on `main`. A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one; before, any packet arriving after a later one was dropped. A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm. New stats: `reordered` and `drift_ppm`. Tested over real multicast with reordering: the old receiver lost 64 of about 350 packets, this one none. **The drift correction had only run in simulation** when the PR was opened; it was merged on 2026-11-09, and the Pi test is still listed in What's next, 1.
 - **v0.5.8 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.8, tag `v0.5.8` on `eaed1ec` (the merge of the bump, nathanbent/mcast-tools#65), with the same platforms. It carries the owner's answers to the open questions (nathanbent/mcast-tools#64, below): pauses for pages only shown, the 5% loss threshold, the 10 s hold and the amy voice. **The panel and `mcast serve` go together:** a 0.5.8 panel can't play a page only shown through an older server.
-- **0.5.9 is bumped** (the Release workflow from `main` with the tag `v0.5.9`). It carries:
+- **v0.5.9 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.9, tag `v0.5.9` on `6dab115` (the merge of the bump, nathanbent/mcast-tools#69), with the same platforms. It carries:
   - **Run cards name their zones, and say what a busy group was playing** (nathanbent/mcast-tools#66).
   - **A phone layout for the panel's header and the Panel** (nathanbent/mcast-tools#68).
   - **`--tts-voice-list` for `mcast serve`** (nathanbent/mcast-tools#67): the voices a `--tts-command` engine offers (such as a Kokoro wrapper), comma-separated or in `MCAST_TTS_VOICE_LIST`, so `GET /voices` and the panel's voice list show them. Before, a command engine listed none.
-- **All were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.10.
+- **0.5.10 is bumped** (the Release workflow from `main` with the tag `v0.5.10`). It carries **Kokoro on a Pi** (nathanbent/mcast-tools#70): `TEXT_TO_SPEECH=kokoro` in `pi.conf` has `install.sh` put kokoro-onnx in a venv in `/opt/kokoro`, install `mcast-kokoro` and point `mcast serve` at it through `/etc/mcast/tts.env` (`--tts-command`, a default voice and the 28 English voices for the panel). It's installer-only: Pis get it by pulling the repo and re-running `install.sh`. **Tested on x86 only:** how long a page takes to speak on a Pi (`mcast serve` gives up after 60 s) and running under `mcast.service`'s hardening are still to check (What's next, 1).
+- **All were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.11.
 - New work branches from `main`; the next release needs a version bump first.
 - **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's (`claude/intelligent-ramanujan-9guf2i`) and #60's and #62's (`claude/ecstatic-pasteur-i406yp`), which merged after the cleanup and can go too: neither has anything that isn't on `main`.
 
@@ -239,13 +240,13 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Try the hardware** with v0.5.9 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
+1. **Try the hardware** with v0.5.10 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
    - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
    - **The receiver's drift correction (#59) on a Pi with a speaker** (most important: it's in every speaker's playback path, and it was merged and released without this test): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs.
-2. **Fix anything the hardware turns up,** then bump to 0.5.10 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.10`). Add to the checks: a page only shown, on a real display, during its pause; and the amy voice downloading on a Pi.
+2. **Fix anything the hardware turns up,** then bump to 0.5.11 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.11`). Add to the checks: a page only shown, on a real display, during its pause; the amy voice downloading on a Pi; and `TEXT_TO_SPEECH=kokoro` on a Pi 4 and a Pi 5: a sentence and a long page, timed, spoken through `mcast.service`.
 3. **Smaller follow-ups:**
    - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
