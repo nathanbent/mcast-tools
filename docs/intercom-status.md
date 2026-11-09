@@ -29,6 +29,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
 - **On `main` since v0.5.6, not yet released** (they go in 0.5.7):
   - **The real MSRV, 1.89** (nathanbent/mcast-tools#57): declared in `Cargo.toml`, checked by CI's `msrv` job, with clippy fixes to match and rustup notes in the README. It also fixed ShellCheck SC2015 in `mcast-play.sh` and lints that script in CI.
   - **MIT license, a clean stop on SIGTERM, and `MCAST_LISTEN`** (nathanbent/mcast-tools#58): `LICENSE` and `license = "MIT"` in every crate and release archive; `systemctl stop` or `docker stop` now stops every command the way Ctrl-C does (before, a `--wav` recording was left without a valid header); `mcast serve` reads its listen address from `MCAST_LISTEN`, with `--listen` taking precedence.
+- **"Arrange this page" on the Schedules tab** (on `claude/ecstatic-pasteur-i406yp`, for a PR): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
 - **One PR is open: nathanbent/mcast-tools#59,** the receiver half of #14 redone on `main`:
   - A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one. `main` drops any packet that arrives after a later one.
   - A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm.
@@ -244,22 +245,21 @@ The v0.5.5 items, plus requests that came up along the way:
    - **The receiver PR, #59, on a Pi with a speaker** (build its branch, `claude/intelligent-ramanujan-9guf2i`): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs. Merge #59 if it holds.
 2. **Fix anything the hardware turns up,** then bump to 0.5.7 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.7`).
 3. **Smaller follow-ups:**
-   - "Arrange this page" on more tabs (Schedules), if the owner wants it.
+   - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
 
 ## Questions still open for the owner
 
 1. **Delivery confirmation:**
    - How much loss still counts as "heard it"? For now any report naming the stream counts, and the worst loss is recorded so a threshold can be added.
-2. **Arrange this page:** roll it out to more tabs?
-3. **Text pages, choices to confirm:**
+2. **Text pages, choices to confirm:**
    - A page stays on the display page for 30 s after its run ends (`displays::HOLD`).
    - A page only shown appears with the next item heard, not on its own timer.
    - The default Piper voice on a Pi is `en_US-lessac-medium`.
-4. **GPIO choices to confirm (#45):**
+3. **GPIO choices to confirm (#45):**
    - An input plays at its announcement's priority, with no per-input priority.
    - Re-pressing while it plays is ignored, not restarted.
-5. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
+4. **Offline timing to confirm (#43):** a minute without a report, checked every 10 s, so an alert comes 60 to 70 s after a speaker's last report. Fine for a speaker that was unplugged; shorter would mean false alarms from a briefly busy network.
 
 ## How to work on it
 

@@ -200,13 +200,13 @@ To design before building:
 
 ### 9. Arrangeable layout (requested)
 
-**Built: the Settings tab and the Panel** (see 9a).
+**Built: the Settings and Schedules tabs, and the Panel** (see 9a).
 - The layout is kept in `intercom.json` (`layout`: tab → section ids).
 - `PUT` and `DELETE /layout/{tab}` set and reset it; admins only.
 - A reusable `arrangeable(tab, sections)` in the page adds *Arrange this page…*: a dialog to drag sections (or use the arrows), with a way back to the usual order.
 - Sections are moved, not rebuilt, so what's typed in them stays.
 - The Panel uses it too, for categories and the buttons in each (`panel`, `panel-buttons`).
-- **Open:** whether to roll it out to other tabs with several sections (Schedules).
+- **Schedules** (later, as the owner asked): its three sections, Schedules, Days off and Schedule groups (`schedules` in the layout). "Coming up" stays with the list, under the site picker that drives both.
 
 The plan:
 
