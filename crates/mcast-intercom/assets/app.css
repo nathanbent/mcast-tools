@@ -605,6 +605,7 @@ ol.playlist-items li.text .handle { cursor: grab; }
 .text-item { display: flex; flex-direction: column; gap: 6px; }
 .text-item textarea { width: 100%; resize: vertical; font: inherit; }
 .text-item .row { flex-wrap: wrap; gap: 12px; align-items: center; }
+.text-item input.secs { width: 4.5em; }
 body.display-mode header h1, body.display-mode #backend { display: none; }
 body.display-mode header { border-bottom: 0; background: transparent; justify-content: flex-end; }
 body.display-mode main { padding: 0; }

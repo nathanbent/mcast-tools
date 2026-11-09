@@ -512,7 +512,8 @@ pub fn summarize(
         // Only checks that finished and could tell.
         if l.is_object() && l["checking"] != true && l["error"].is_null() {
             checked += 1;
-            if l["silent"].as_array().is_some_and(|s| !s.is_empty()) {
+            let some = |k: &str| l[k].as_array().is_some_and(|s| !s.is_empty());
+            if some("silent") || some("poor") {
                 with_silent += 1;
             }
             fn ear<'a>(ears: &'a mut BTreeMap<String, Ear>, name: &str) -> &'a mut Ear {

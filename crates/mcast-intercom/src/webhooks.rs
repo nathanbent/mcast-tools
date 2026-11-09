@@ -770,7 +770,8 @@ fn run_events(st: &mut State, run: &Run) -> Vec<(&'static str, Value)> {
 }
 
 /// Once a run's listener check is over: `listener_silent` if anyone
-/// expected didn't hear it. Its `run.listeners.silent` names them.
+/// expected didn't hear it, or heard it badly. Its `run.listeners.silent`
+/// and `run.listeners.poor` name them.
 fn listener_events(st: &mut State, run: &Run, out: &mut Vec<(&'static str, Value)>) {
     let Some(l) = &run.listeners else {
         return;
@@ -782,7 +783,7 @@ fn listener_events(st: &mut State, run: &Run, out: &mut Vec<(&'static str, Value
     if st.checked.len() > 256 {
         st.checked.pop_front();
     }
-    if !l.silent.is_empty() {
+    if !l.silent.is_empty() || !l.poor.is_empty() {
         out.push(("listener_silent", json!({ "run": run })));
     }
 }
@@ -885,6 +886,14 @@ mod tests {
             names(run_events(&mut st, &both)),
             ["run_ended", "listener_silent"]
         );
+
+        // Heard by all, but badly by one: reported too.
+        let mut poor = with(false, &[]);
+        poor.id = 4;
+        poor.listeners.as_mut().unwrap().poor = vec!["Lobby".into()];
+        let events = run_events(&mut st, &poor);
+        assert_eq!(names(events.clone()), ["run_ended", "listener_silent"]);
+        assert_eq!(events[1].1["run"]["listeners"]["poor"], json!(["Lobby"]));
     }
 
     #[test]

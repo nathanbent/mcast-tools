@@ -507,7 +507,7 @@ fn speaks_and_shows_text_pages_in_step() {
         "playlists": [{"id": "pl", "name": "PL", "gap_ms": 100, "items": [
             {"type": "sound", "media": "bell.wav"},
             {"type": "text", "text": "The library closes in ten minutes"},
-            {"type": "text", "text": "Thank you", "speak": false}]}],
+            {"type": "text", "text": "Thank you", "speak": false, "seconds": 1}]}],
         "announcements": [{"id": "closing", "name": "Closing", "audio": {"playlist": "pl"},
             "zones": ["hall"]}]
     }))
@@ -529,12 +529,24 @@ fn speaks_and_shows_text_pages_in_step() {
         std::fs::read_to_string(srv.dir.join("said")).unwrap(),
         "The library closes in ten minutes\n"
     );
-    // Shown as the spoken page started, with the page after it (the last).
-    assert_eq!(run.shown.len(), 1, "{run:#?}");
-    assert_eq!(run.shown[0].item, 1);
-    assert_eq!(
-        run.shown[0].text,
-        ["The library closes in ten minutes", "Thank you"]
+    // Each shown as its item started: the spoken page, then the page only
+    // shown, during its pause of a second at the end.
+    let shown: Vec<_> = run
+        .shown
+        .iter()
+        .map(|s| (s.item, s.text.clone(), s.at_ms))
+        .collect();
+    assert_eq!(shown.len(), 2, "{run:#?}");
+    assert_eq!(shown[0].0, 1);
+    assert_eq!(shown[0].1, ["The library closes in ten minutes"]);
+    assert_eq!(shown[1].0, 2);
+    assert_eq!(shown[1].1, ["Thank you"]);
+    // The pause holds the stream for its second before the run ends.
+    let ended = run.ended_ms.unwrap();
+    assert!(
+        ended >= shown[1].2 + 900,
+        "ended {ended}, shown {}",
+        shown[1].2
     );
     let page = &displays.pages(None)[0];
     assert!(page.until_ms.is_some(), "{page:?}");

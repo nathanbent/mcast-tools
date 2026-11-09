@@ -224,12 +224,15 @@ async function start() {
       else toast(`Speaker ${c.speaker.name}${where} is offline: it hasn't reported for a minute`, "error");
     }
   });
-  // A speaker expected to hear a play didn't (seen live, not on loading).
+  // A speaker expected to hear a play didn't, or heard it badly (seen
+  // live, not on loading).
   onRunSettled((run, before) => {
+    if (!before) return;
+    const list = (l) => (l.length === 1 ? l[0] : `${l.slice(0, -1).join(", ")} and ${l.at(-1)}`);
     const silent = run.listeners?.silent ?? [];
-    if (!before || !silent.length) return;
-    const who = silent.length === 1 ? silent[0] : `${silent.slice(0, -1).join(", ")} and ${silent.at(-1)}`;
-    toast(`"${run.name}": ${who} didn't hear it`, "error");
+    const poor = run.listeners?.poor ?? [];
+    if (silent.length) toast(`"${run.name}": ${list(silent)} didn't hear it`, "error");
+    if (poor.length) toast(`"${run.name}": ${list(poor)} heard it badly, losing more than 5% of it`, "error");
   });
 
   let first = true;

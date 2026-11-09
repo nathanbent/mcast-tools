@@ -101,20 +101,22 @@ A playlist item can be a text page, spoken, shown, or both (the default):
   (see `docs/api.md`, *Text to speech*); `GET /voices` lists what it has.
   It keeps what it spoke, so a page is only synthesized the first time.
 - **Shown** as the playlist reaches it: when the page is spoken, as its
-  speech starts; a page that's only shown appears with the next item heard
-  (or with the last, at the end). It goes to:
+  speech starts. A page that's only shown is a pause of its own in the
+  playlist: it's up for its *Show for* time (5 s unless set, up to 60),
+  in silence, before the next item plays. It goes to:
   - each zone's **text displays**: groups that get it as real-time text
     (RFC 4103), shown by `mcast text recv -g GROUP` on any screen. The
     panel keeps a text channel open per group (named "Intercom") while it's
     used, and closes it after five idle minutes;
   - the **display page** (above), and the run card.
 
-  A page stays up while the run plays, and for 30 s after it ends; a
+  A page stays up while the run plays, and for 10 s after it ends; a
   stopped run's come down at once.
 - **Parts** show their own playlist's pages, on their own zones' displays.
 
 It needs an mcast server from 0.5.5 on: older ones refuse spoken items,
-and don't say when each item starts.
+and don't say when each item starts. A page that's only shown needs one
+from 0.5.8 on, which takes pauses (`{"silence_ms": ...}`) in a playlist.
 
 ### Access tokens
 
@@ -506,14 +508,18 @@ When a zone lists its `listeners`, every play to it is checked:
 - **Heard:** a receiver whose reports named one of the play's streams. That
   includes receivers no zone lists. The worst loss each reported is kept.
 - **Silent:** expected but not heard.
+- **Heard badly** (`poor`): expected and heard, but losing more than 5% of
+  it, where speech starts to break up even with concealment.
 
 The run's `listeners` holds `{"checking", "expected", "heard": [{"name",
-"loss_percent"}], "silent", "error"}`, and each target its `expected` and
-`heard` names.
+"loss_percent"}], "silent", "poor", "error"}`, and each target its
+`expected` and `heard` names.
 - **Where it shows:** run cards (History, and the Panel while playing) say
-  "Heard by 3 of 4", and name the silent ones.
-- **Toast and webhook:** a silent speaker gets a toast and the
-  `listener_silent` webhook.
+  "Heard by 3 of 4", and name the silent ones and those that heard it badly.
+- **Toast and webhook:** a silent speaker, or one that heard it badly, gets
+  a toast and the `listener_silent` webhook.
+- **The Monitor tab** counts a play that missed someone, or lost too much
+  for someone, in its "Heard by every speaker" tile.
 - **The Monitor tab** has a Speakers table: plays expected, heard and missed,
   and the last one heard.
 - **History:** a checked run is written once the check ends, so it's there

@@ -45,7 +45,7 @@ The panel POSTs JSON to each enabled hook that wants the event:
 | `run_ended` | It finished, or was stopped | `run` |
 | `run_failed` | It couldn't play (all groups busy or failed, or the mcast server unreachable) | `run` |
 | `schedule_missed` | A schedule's time passed while it couldn't play | `run` |
-| `listener_silent` | A speaker its zones expect didn't report hearing it: `run.listeners.silent` names them. Sent once the check ends, up to 12 s after the run | `run` |
+| `listener_silent` | A speaker its zones expect didn't report hearing it (`run.listeners.silent` names them), or heard it badly, losing more than 5% (`run.listeners.poor`). Sent once the check ends, up to 12 s after the run | `run` |
 | `listener_offline` | Between plays, a speaker zones expect hasn't reported for a minute | `speaker`: `{"name", "zones", "online", "since_ms", "last_seen_ms"}` |
 | `listener_online` | It's reporting again | `speaker` |
 | `backend_down` | The mcast server became unreachable (or was at start-up) | `status` |

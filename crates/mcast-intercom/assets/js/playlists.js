@@ -13,14 +13,20 @@ const duration = (media) => state.library.files.find((f) => f.name === media)?.a
 const isText = (i) => i.type === "text";
 const spoken = (i) => isText(i) && i.speak !== false;
 const heard = (i) => !isText(i) || spoken(i);
+// A page only shown is a pause of its own in the stream, for this long.
+const SHOW_SECS = 5;
+const showOnly = (i) => isText(i) && i.speak === false && i.show !== false;
+const showFor = (i) => i.seconds ?? SHOW_SECS;
+// What goes in the stream: sounds, spoken pages and the pauses for pages only shown.
+const inStream = (i) => !isText(i) || spoken(i) || showOnly(i);
 
 // "1:05" for a total ("1:05 + speech" with spoken pages), or "" when a
 // sound's length isn't known.
 export function playlistLength(p) {
   const sounds = p.items.filter((i) => !isText(i));
-  const lengths = sounds.map((i) => duration(i.media));
+  const lengths = [...sounds.map((i) => duration(i.media)), ...p.items.filter(showOnly).map(showFor)];
   if (lengths.some((l) => l == null)) return "";
-  const gaps = Math.max(0, p.items.filter(heard).length - 1);
+  const gaps = Math.max(0, p.items.filter(inStream).length - 1);
   const speech = p.items.some(spoken);
   if (!lengths.length) return speech ? "speech" : "";
   const total = seconds(lengths.reduce((a, b) => a + b, 0) + ((p.gap_ms ?? 0) / 1000) * gaps);
@@ -48,8 +54,8 @@ function listen(media) {
 }
 
 // A text page's own controls: the text, whether it's spoken and shown,
-// and the voice.
-function textControls(item, i) {
+// the voice, and how long one that's only shown is up.
+function textControls(item, i, changed) {
   const text = h("textarea", {
     rows: 2,
     maxLength: 2000,
@@ -64,9 +70,25 @@ function textControls(item, i) {
     box.addEventListener("change", () => {
       if (box.checked) delete item[key]; else item[key] = false;
       voice.disabled = item.speak === false;
+      if (!showOnly(item)) delete item.seconds;
+      showing.hidden = !showOnly(item);
+      changed();
     });
     return h("label", { class: "check" }, box, label);
   };
+  // Only a page that's only shown has a time: it holds the stream that long.
+  const secs = numberInput(item.seconds ?? SHOW_SECS, {
+    min: 1, max: 60, step: 1, required: true, class: "secs",
+    "aria-label": `Seconds to show item ${i + 1}`,
+    oninput: () => {
+      const n = num(secs);
+      if (n == null || n === SHOW_SECS) delete item.seconds; else item.seconds = n;
+      changed();
+    },
+  });
+  const showing = h("label", { class: "check", title: "The playlist pauses, in silence, while it's up" },
+    "Show for", secs, "s");
+  showing.hidden = !showOnly(item);
   const names = voices?.voices ?? [];
   const voice = select([["", voices?.default_voice ? `Default (${voices.default_voice})` : "Default voice"],
     ...[...new Set([...names, ...(item.voice && !names.includes(item.voice) ? [item.voice] : [])])].map((v) => [v, v])], item.voice ?? "");
@@ -75,7 +97,7 @@ function textControls(item, i) {
   voice.addEventListener("change", () => { if (voice.value) item.voice = voice.value; else delete item.voice; });
   const noEngine = voices && !voices.engine;
   return h("div", { class: "grow text-item" }, text,
-    h("div", { class: "row small" }, check("speak", "Speak"), check("show", "Show on displays"),
+    h("div", { class: "row small" }, check("speak", "Speak"), check("show", "Show on displays"), showing,
       names.length > 0 || item.voice ? voice : null,
       noEngine && h("span", { class: "muted" }, "The mcast server has no text to speech yet: install Piper or eSpeak NG there.")));
 }
@@ -111,7 +133,7 @@ function itemsEditor(initial) {
           ? h("span", { class: "badge", title: "Text page" }, "T")
           : h("button", { type: "button", class: "icon", "aria-label": `Listen to ${item.media}`, onclick: () => listen(item.media) }, "▶"),
         isText(item)
-          ? textControls(item, i)
+          ? textControls(item, i, count)
           : h("span", { class: "grow" }, item.media,
             !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing")),
         h("span", { class: "muted small" }, len == null ? "" : len < 10 ? `${len.toFixed(1)} s` : seconds(len)),
@@ -124,6 +146,10 @@ function itemsEditor(initial) {
       }
       return li;
     }));
+    count();
+  };
+  // The count and length under the list.
+  const count = () => {
     const length = playlistLength({ items, gap_ms: 0 });
     total.textContent = items.length
       ? `${items.length} item${items.length === 1 ? "" : "s"}${length ? `, ${length}` : ""}`
@@ -168,7 +194,7 @@ function form(p, save, cancel) {
   },
     h("div", { class: "row" }, field("Name", name), field("Seconds between items", gap)),
     h("fieldset", { class: "part" }, h("legend", {}, "Plays, in order"), items.el),
-    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown appears with the next item heard."),
+    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown is up for its own time, while the playlist pauses in silence."),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));

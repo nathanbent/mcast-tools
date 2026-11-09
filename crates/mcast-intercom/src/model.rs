@@ -328,8 +328,17 @@ pub enum PlaylistItem {
         /// The voice to speak it in; unset is the server's default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         voice: Option<String>,
+        /// For a page that's only shown: how long the playlist pauses on
+        /// it, in seconds; unset is [`SHOW_SECS`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seconds: Option<u32>,
     },
 }
+
+/// How long a page that's only shown holds the playlist, by default.
+pub const SHOW_SECS: u32 = 5;
+/// The longest it can (the mcast server's longest pause).
+pub const MAX_SHOW_SECS: u32 = 60;
 
 /// Longest text page, in characters (as the mcast server speaks).
 pub const MAX_TEXT: usize = 2000;
@@ -350,7 +359,8 @@ impl PlaylistItem {
         }
     }
 
-    /// Its item in a `files` source: a media name, or text to say.
+    /// Its item in a `files` source: a media name, text to say, or for a
+    /// page that's only shown, a pause while it's up.
     fn source_item(&self) -> Option<Value> {
         match self {
             PlaylistItem::Sound { media } => Some(media.as_str().into()),
@@ -366,34 +376,32 @@ impl PlaylistItem {
                 }
                 Some(v)
             }
+            PlaylistItem::Text {
+                show: true,
+                seconds,
+                ..
+            } => Some(json!({ "silence_ms": seconds.unwrap_or(SHOW_SECS) * 1000 })),
             PlaylistItem::Text { .. } => None,
         }
     }
 }
 
 impl Playlist {
-    /// What to show as each item that's heard starts (by its index among
-    /// those heard): the text pages up to it, from the last item heard. A
-    /// text page that's only shown appears with the next item heard, or
-    /// with the last if none follows.
+    /// What to show as each item of the stream starts (by its index in
+    /// the `files` source): a text page that's shown goes up as its own
+    /// item does. One that's only shown is a pause of its own in the
+    /// stream, so it's up for that long before the next item plays.
     pub fn texts_by_item(&self) -> Vec<Vec<String>> {
-        let mut out: Vec<Vec<String>> = Vec::new();
-        let mut waiting: Vec<String> = Vec::new();
-        for item in &self.items {
-            if let PlaylistItem::Text {
-                text, show: true, ..
-            } = item
-            {
-                waiting.push(text.trim().to_string());
-            }
-            if item.audible() {
-                out.push(std::mem::take(&mut waiting));
-            }
-        }
-        if let Some(last) = out.last_mut() {
-            last.extend(waiting);
-        }
-        out
+        self.items
+            .iter()
+            .filter(|i| i.source_item().is_some())
+            .map(|i| match i {
+                PlaylistItem::Text {
+                    text, show: true, ..
+                } => vec![text.trim().to_string()],
+                _ => Vec::new(),
+            })
+            .collect()
     }
 
     /// Whether anything in it is shown on displays.
@@ -1438,6 +1446,7 @@ impl Config {
                         speak,
                         show,
                         voice,
+                        seconds,
                     } => {
                         let what = format!("{what}, item {}", n + 1);
                         if text.trim().is_empty() {
@@ -1448,6 +1457,14 @@ impl Config {
                         }
                         if !speak && !show {
                             bail!("{what}: text must be spoken, shown or both");
+                        }
+                        if let Some(n) = seconds {
+                            if *speak {
+                                bail!("{what}: only a page that's only shown has seconds");
+                            }
+                            if !(1..=MAX_SHOW_SECS).contains(n) {
+                                bail!("{what}: seconds is 1 to {MAX_SHOW_SECS}");
+                            }
                         }
                         if let Some(v) = voice {
                             if v.is_empty()
