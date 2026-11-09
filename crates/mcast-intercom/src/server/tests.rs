@@ -272,6 +272,8 @@ async fn plays_and_stops() {
     let (_, again) = p.call(Method::POST, "/announcements/bell/play", None).await;
     assert_eq!(again["state"], "failed");
     assert_eq!(again["targets"][0]["state"], "busy");
+    // Saying with what, by name: not the group and a job number.
+    assert_eq!(again["targets"][0]["error"], "\"Bell\" was playing there");
 
     let (s, v) = p.call(Method::DELETE, &format!("/runs/{id}"), None).await;
     assert_eq!(s, StatusCode::OK);

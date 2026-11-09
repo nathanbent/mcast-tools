@@ -748,9 +748,20 @@ impl Inner {
                 };
                 {
                     let mut st = self.lock();
+                    // Busy: say with what, in words (the server's message
+                    // names the group and a job number).
+                    let message = match e.job.filter(|_| e.is_conflict()) {
+                        Some(j) => match st.jobs.get(&j).and_then(|(r, _)| st.runs.get(r)) {
+                            Some(other) => format!("\"{}\" was playing there", other.name),
+                            None => format!(
+                                "Something else the mcast server sends was playing there (its job {j})"
+                            ),
+                        },
+                        None => e.message,
+                    };
                     if let Some(t) = st.runs.get_mut(&id).and_then(|r| r.targets.get_mut(i)) {
                         t.state = state;
-                        t.error = Some(e.message);
+                        t.error = Some(message);
                     }
                 }
                 self.emit(id);

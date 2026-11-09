@@ -23,7 +23,7 @@ export const defaultEncoding = () => {
 };
 
 function describe(t) {
-  const codec = t.encoding ? encodingLabel(t.encoding) : `${defaultEncoding().split(",")[0]} (default)`;
+  const codec = t.encoding ? encodingLabel(t.encoding) : `default ${defaultEncoding().split(",")[0]}`;
   const opts = [codec, t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
   return opts.length ? `${t.group} (${opts.join(", ")})` : t.group;
 }

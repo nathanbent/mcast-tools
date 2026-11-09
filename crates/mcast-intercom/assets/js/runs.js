@@ -2,7 +2,7 @@
 
 import { api } from "./api.js";
 import { h, ago, toast } from "./dom.js";
-import { isOver, atTime } from "./store.js";
+import { state, isOver, atTime } from "./store.js";
 
 const RUN_STATE = {
   playing: "playing", waiting: "between repeats", stopping: "stopping",
@@ -29,6 +29,18 @@ export async function stopRun(run) {
 
 function targetName(t) {
   return t.address && t.address !== t.group ? `${t.group} (${t.address})` : t.group;
+}
+
+// Where a target played, as people know it: the zones its group is in
+// (as the config has them now), with the group itself in small print. A
+// group no zone has any more shows as itself.
+function targetLabel(t) {
+  const zones = (state.config.zones ?? [])
+    .filter((z) => z.targets.some((x) => x.group === t.group))
+    .map((z) => z.name);
+  if (!zones.length) return h("span", { class: "mono" }, targetName(t));
+  return h("span", { class: "target" }, zones.join(", "), " ",
+    h("span", { class: "mono muted small" }, targetName(t)));
 }
 
 // Who heard it: speakers its zones expect, from their receiver reports.
@@ -78,7 +90,7 @@ export function runCard(run) {
       run.shown.length > 1 && ` (${run.shown.length} pages)`),
     h("div", { class: "targets" },
       run.targets.flatMap((t) => [
-        h("span", { class: "mono" }, targetName(t)),
+        targetLabel(t),
         h("span", { class: `badge ${t.state}` }, TARGET_STATE[t.state] ?? t.state),
         t.error && h("span", { class: "err" }, t.error),
       ])));
