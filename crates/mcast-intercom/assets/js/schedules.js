@@ -10,6 +10,7 @@ import { h, replace, toast, saved } from "./dom.js";
 import { state, subscribe, announcementName, siteName, fireTime, fromNow, atTime } from "./store.js";
 import { mountEditor, field, select } from "./editor.js";
 import { putSettings } from "./settings.js";
+import { arrangeable } from "./layout.js";
 
 const DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
 const WEEKDAYS = DAYS.slice(0, 5).map(([d]) => d);
@@ -304,6 +305,15 @@ const groupSwitch = (g) => h("label", { class: "check switch" },
   g.enabled ? "On" : "Off");
 
 export function mount(el, daysOffEl, groupsEl) {
+  // Admins can put the tab's sections in the order they want.
+  const tab = el.closest("#tab-schedules");
+  const sections = [
+    ["schedules", "Schedules", el],
+    ["days-off", "Days off", daysOffEl],
+    ["groups", "Schedule groups", groupsEl],
+  ].map(([id, title, body]) => ({ id, title, el: body.closest("section") }));
+  tab.replaceChildren(arrangeable("schedules", sections));
+
   const redrawDaysOff = daysOff(daysOffEl);
   let editor = null;
   const rerender = () => { editor?.render(); redrawDaysOff(); };
