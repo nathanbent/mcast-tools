@@ -1,15 +1,15 @@
 # Intercom: where things stand (handoff)
 
 Last updated 2026-11-09. Written at the end of a third session, and updated
-since for the work merged after it (#57, #58) and the receiver PR still open
-(#59). The second session
+since for the work merged after it (#57 to #60). The second session
 checked the first one's work, built everything left on the roadmap plus
 follow-ups, merged it all into `main`, and bumped the version to 0.5.5
 (#48). The third built **text pages in playlists** (#49, below), merged it,
 and released **v0.5.5**; then **v0.5.6**, with the webhook log in send order
 (#53) and the Panel's Customize mode from another session (#54). After the
-release, #57 and #58 hardened the core, and #59 (open) brings out-of-order
-packets and clock drift to the receiver. Read this first,
+release, #57 and #58 hardened the core, #59 brought out-of-order packets and
+clock-drift correction to the receiver, and #60 made the Schedules tab
+arrangeable. Read this first,
 then `intercom-roadmap.md` (the plan and what each item became) and
 `intercom-plan.md` (how the panel is built).
 
@@ -29,13 +29,10 @@ then `intercom-roadmap.md` (the plan and what each item became) and
 - **On `main` since v0.5.6, not yet released** (they go in 0.5.7):
   - **The real MSRV, 1.89** (nathanbent/mcast-tools#57): declared in `Cargo.toml`, checked by CI's `msrv` job, with clippy fixes to match and rustup notes in the README. It also fixed ShellCheck SC2015 in `mcast-play.sh` and lints that script in CI.
   - **MIT license, a clean stop on SIGTERM, and `MCAST_LISTEN`** (nathanbent/mcast-tools#58): `LICENSE` and `license = "MIT"` in every crate and release archive; `systemctl stop` or `docker stop` now stops every command the way Ctrl-C does (before, a `--wav` recording was left without a valid header); `mcast serve` reads its listen address from `MCAST_LISTEN`, with `--listen` taking precedence.
-- **"Arrange this page" on the Schedules tab** (on `claude/ecstatic-pasteur-i406yp`, for a PR): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
-- **One PR is open: nathanbent/mcast-tools#59,** the receiver half of #14 redone on `main`:
-  - A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one. `main` drops any packet that arrives after a later one.
-  - A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm.
-  - New stats: `reordered` and `drift_ppm`.
-  - CI is green and it merges cleanly, with no review comments. **It waits on a test on a real Pi with a speaker** (What's next, 1): the drift correction has only run in simulation.
-- New work branches from `main`; the next release needs a version bump first.
+  - **"Arrange this page" on the Schedules tab** (nathanbent/mcast-tools#60): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
+  - **Receiver: out-of-order packets and clock drift** (nathanbent/mcast-tools#59), the receiver half of #14 redone on `main`. A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one; before, any packet arriving after a later one was dropped. A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm. New stats: `reordered` and `drift_ppm`. Tested over real multicast with reordering: the old receiver lost 64 of about 350 packets, this one none. **The drift correction had only run in simulation** when the PR was opened; it was merged on 2026-11-09, and the Pi test is still listed in What's next, 1.
+- **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
+- **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's and #60's, which merged after the cleanup and can go too.
 
 The work came as six stacked PRs, merged in order with merge commits:
 
@@ -49,7 +46,7 @@ The work came as six stacked PRs, merged in order with merge commits:
 | nathanbent/mcast-tools#47 | `claude/intercom-webhook-log` | A delivery log for each webhook |
 
 - **Before merging,** CI was green on every PR's latest commit, with no merge conflicts and no review comments. Each was merged once the one below it had landed and it had been pointed at `main`.
-- **Their branches are still on GitHub** (the repo doesn't delete branches on merge). They can be deleted; nothing depends on them.
+- **Their branches are deleted.** The repo doesn't delete branches on merge; "Automatically delete head branches" (Settings → General) would.
 - **Watches and check-ins:** the session that did this was watching the PRs until they merged, and has no check-ins left.
 
 ## Checked
@@ -242,8 +239,8 @@ The v0.5.5 items, plus requests that came up along the way:
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
    - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
-   - **The receiver PR, #59, on a Pi with a speaker** (build its branch, `claude/intelligent-ramanujan-9guf2i`): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs. Merge #59 if it holds.
-2. **Fix anything the hardware turns up,** then bump to 0.5.7 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.7`).
+   - **The receiver's drift correction (#59) on a Pi with a speaker**, built from `main` (it isn't in a release yet), unless the owner already did this before merging it: run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs.
+2. **Fix anything the hardware turns up,** then bump to 0.5.7 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.7`). It carries #57 to #60.
 3. **Smaller follow-ups:**
    - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
@@ -267,6 +264,8 @@ The v0.5.5 items, plus requests that came up along the way:
 - **Releasing:** bump `version` in `Cargo.toml` (the lockfile follows on the next build), merge, then run the Release workflow from `main` with the matching tag.
 - **Build:** `cargo build -p mcast`. Needs `libasound2-dev`, `libopus-dev` and `pkg-config` (apt).
 - **Checks** (CI runs the same): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
+- **Run `rustup update stable` before trusting a local clippy.** CI uses the newest stable Rust, and a newer clippy brings new lints: #57's first CI run failed on one the older local clippy didn't have.
+- **Disk space:** a cloud session's disk is a fixed allowance, and `target/` grows past 25 GB once builds from two Rust versions pile up. `cargo clean` frees it.
 - **MSRV is 1.89** (`rust-version` in `Cargo.toml`), the oldest Rust that builds the workspace: `raptorq` uses AVX-512 intrinsics, stable since 1.89, and other dependencies need 1.88. CI's `msrv` job checks it with exactly 1.89, so keep that job and `rust-version` in step when a dependency needs more.
 - **Run it by hand:**
   - `mcast serve --media-dir DIR --no-monitor`
