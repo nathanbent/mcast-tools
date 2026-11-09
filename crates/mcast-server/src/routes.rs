@@ -107,6 +107,7 @@ pub(crate) async fn start_sender(
                         }
                         speak.push((i, say.clone(), voice.clone()));
                     }
+                    FileItem::Silence { .. } => {}
                 }
             }
         }
