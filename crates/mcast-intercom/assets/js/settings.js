@@ -111,6 +111,7 @@ function panelLook() {
     const next = box(l.show_next, "\"Next:\" (what's scheduled)");
     const playing = box(l.show_playing, "\"Now playing\"");
     const statsBox = box(l.show_stats, "Stats: plays today and over 7 days, busy or failed groups in the last 24 hours");
+    const zonesBox = box(l.show_zones, "Zones: each one quiet, or what's playing on it");
     const confirmE = box(l.confirm_emergency, "Ask before playing an emergency announcement");
     replace(el,
       h("p", { class: "muted" }, "How the Panel looks on every screen. Categories can have their own size and color, and announcements their own color and icon (in their editors)."),
@@ -119,12 +120,13 @@ function panelLook() {
         onsubmit: async (e) => {
           e.preventDefault();
           const panel = { size: size.value, mode: mode.value, show_details: details.b.checked, show_next: next.b.checked,
-            show_playing: playing.b.checked, show_stats: statsBox.b.checked, confirm_emergency: confirmE.b.checked };
+            show_playing: playing.b.checked, show_stats: statsBox.b.checked, show_zones: zonesBox.b.checked,
+            confirm_emergency: confirmE.b.checked };
           if (await putSettings({ panel }, "Panel look saved")) dirty = false;
         },
       },
         h("div", { class: "row" }, field("Button size", size), field("Layout", mode)),
-        h("div", { class: "checks column" }, statsBox.el, details.el, next.el, playing.el, confirmE.el),
+        h("div", { class: "checks column" }, statsBox.el, zonesBox.el, details.el, next.el, playing.el, confirmE.el),
         h("div", { class: "buttons" },
           h("button", { type: "submit", class: "primary" }, "Save"),
           h("button", { type: "button", onclick: draw }, "Undo changes"))),

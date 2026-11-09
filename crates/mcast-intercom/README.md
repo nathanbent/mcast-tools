@@ -402,7 +402,9 @@ all).
 
 **`panel`**: how the Panel looks: `{"size": "medium", "mode": "tiles",
 "show_details": true, "show_next": true, "show_playing": true, "show_stats": true,
-"confirm_emergency": false}` (the defaults; `mode` can be `list`). Set it in
+"show_zones": true, "confirm_emergency": false}` (the defaults; `mode` can be
+`list`). `show_zones` is the strip of zones under the stats, each quiet or
+with what's playing on it. Set it in
 Settings → Panel, or with `PUT /settings` (`"panel"`, replaced whole).
 
 **Playlists.** `[{"id", "name", "items", "gap_ms"}]`: sounds and text pages

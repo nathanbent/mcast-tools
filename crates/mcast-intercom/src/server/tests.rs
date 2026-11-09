@@ -2557,7 +2557,8 @@ async fn the_panel_look_colors_icons_and_confirming() {
     assert_eq!(
         v["panel"],
         json!({"size": "medium", "mode": "tiles", "show_details": true, "show_next": true,
-               "show_playing": true, "show_stats": true, "confirm_emergency": false})
+               "show_playing": true, "show_stats": true, "show_zones": true,
+               "confirm_emergency": false})
     );
     let look =
         json!({"size": "large", "mode": "list", "show_next": false, "confirm_emergency": true});
