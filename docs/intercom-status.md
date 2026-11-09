@@ -30,8 +30,9 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - **MIT license, a clean stop on SIGTERM, and `MCAST_LISTEN`** (nathanbent/mcast-tools#58): `LICENSE` and `license = "MIT"` in every crate and release archive; `systemctl stop` or `docker stop` now stops every command the way Ctrl-C does (before, a `--wav` recording was left without a valid header); `mcast serve` reads its listen address from `MCAST_LISTEN`, with `--listen` taking precedence.
   - **"Arrange this page" on the Schedules tab** (nathanbent/mcast-tools#60): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
   - **Receiver: out-of-order packets and clock drift** (nathanbent/mcast-tools#59), the receiver half of #14 redone on `main`. A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one; before, any packet arriving after a later one was dropped. A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm. New stats: `reordered` and `drift_ppm`. Tested over real multicast with reordering: the old receiver lost 64 of about 350 packets, this one none. **The drift correction had only run in simulation** when the PR was opened; it was merged on 2026-11-09, and the Pi test is still listed in What's next, 1.
-- **All three were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.8.
-- **On `claude/ecstatic-pasteur-i406yp`, for 0.5.8:** the owner's answers to the open questions (below), built. New work branches from `main`; the next release needs a version bump first.
+- **0.5.8 is bumped** (nathanbent/mcast-tools#65, then the Release workflow from `main` with the tag `v0.5.8`). It carries the owner's answers to the open questions (nathanbent/mcast-tools#64, below): pauses for pages only shown, the 5% loss threshold, the 10 s hold and the amy voice. **The panel and `mcast serve` go together:** a 0.5.8 panel can't play a page only shown through an older server.
+- **All were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.9.
+- New work branches from `main`; the next release needs a version bump first.
 - **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's (`claude/intelligent-ramanujan-9guf2i`) and #60's and #62's (`claude/ecstatic-pasteur-i406yp`), which merged after the cleanup and can go too: neither has anything that isn't on `main`.
 
 The work came as six stacked PRs, merged in order with merge commits:
@@ -240,7 +241,7 @@ The v0.5.5 items, plus requests that came up along the way:
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
    - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
    - **The receiver's drift correction (#59) on a Pi with a speaker** (most important: it's in every speaker's playback path, and it was merged and released without this test): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs.
-2. **Fix anything the hardware turns up,** then bump to 0.5.8 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.8`).
+2. **Fix anything the hardware turns up,** then bump to 0.5.9 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.9`). Add to the checks: a page only shown, on a real display, during its pause; and the amy voice downloading on a Pi.
 3. **Smaller follow-ups:**
    - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
@@ -248,7 +249,7 @@ The v0.5.5 items, plus requests that came up along the way:
 ## The owner's answers (2026-11-09)
 
 The questions left open by the earlier sessions are settled; the changes
-are on `claude/ecstatic-pasteur-i406yp`, for 0.5.8.
+are in nathanbent/mcast-tools#64, released in 0.5.8.
 
 1. **Delivery confirmation:** a speaker that loses more than 5% of a play
    (`runner::MAX_LOSS_PERCENT`) heard it **badly**. It's named in the run's
