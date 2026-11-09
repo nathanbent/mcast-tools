@@ -580,6 +580,19 @@ body.kiosk main { max-width: none; }
 .stats-strip .ok { color: var(--ok); }
 .stats-strip .stat-more { margin-left: auto; align-self: center; font-size: 13px; }
 
+/* What's playing where: a chip per zone, quiet or busy (by priority). */
+.zone-strip { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0 0 14px; padding: 0; }
+.zone-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--panel); font-size: 13px; }
+.zone-chip .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.zone-chip.quiet .zone-name { color: var(--muted); }
+.zone-chip.busy { --z: var(--ok); border-color: var(--z); background: color-mix(in srgb, var(--z) 10%, var(--panel)); }
+.zone-chip.busy.high { --z: var(--warn); }
+.zone-chip.busy.emergency { --z: var(--bad); }
+.zone-chip.busy .dot { background: var(--z); }
+.zone-chip.busy .zone-name { font-weight: 600; }
+.zone-chip .what { min-width: 0; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+
 /* Monitor: status colors (the same in both themes, always with a label). */
 .s-good { --s: #0ca30c; } .s-neutral { --s: #8b8f96; } .s-warn { --s: #fab219; } .s-critical { --s: #d03b3b; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); }

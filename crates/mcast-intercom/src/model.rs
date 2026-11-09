@@ -203,6 +203,9 @@ pub struct PanelLook {
     /// The stats strip: plays today and this week, problems in the last day.
     #[serde(skip_serializing_if = "is_true")]
     pub show_stats: bool,
+    /// The zones strip: each zone, quiet or with what's playing on it.
+    #[serde(skip_serializing_if = "is_true")]
+    pub show_zones: bool,
     /// Ask before playing an emergency announcement.
     #[serde(skip_serializing_if = "is_false")]
     pub confirm_emergency: bool,
@@ -217,6 +220,7 @@ impl Default for PanelLook {
             show_next: yes(),
             show_playing: yes(),
             show_stats: yes(),
+            show_zones: yes(),
             confirm_emergency: false,
         }
     }
@@ -236,6 +240,7 @@ impl PanelLook {
             "show_next": self.show_next,
             "show_playing": self.show_playing,
             "show_stats": self.show_stats,
+            "show_zones": self.show_zones,
             "confirm_emergency": self.confirm_emergency,
         })
     }

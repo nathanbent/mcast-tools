@@ -9,7 +9,7 @@ import { runCard, runState, stopRun } from "./runs.js";
 import { onTalk, pushToTalk, micProblem } from "./talk.js";
 
 // How the Panel looks (Settings → Panel), with the defaults filled in.
-export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, show_stats: true, confirm_emergency: false };
+export const LOOK_DEFAULTS = { size: "medium", mode: "tiles", show_details: true, show_next: true, show_playing: true, show_stats: true, show_zones: true, confirm_emergency: false };
 // The URL can set this screen's size and layout.
 const look = () => {
   const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
@@ -173,6 +173,30 @@ function statsStrip(next) {
     !state.view.kiosk && h("a", { class: "link stat-more", href: "#history" }, "History →"));
 }
 
+// What's playing where: each zone this screen's announcements reach, quiet
+// or with what's playing on it now (the panel's own plays), colored by
+// priority.
+function zonesStrip(anns, active) {
+  const ids = new Set(anns.flatMap((a) => [...a.zones, ...(a.parts ?? []).flatMap((p) => p.zones)]));
+  const zones = state.config.zones.filter((z) => ids.has(z.id));
+  if (!zones.length) return null;
+  const rank = { normal: 0, high: 1, emergency: 2 };
+  return h("ul", { class: "zone-strip", "aria-label": "What's playing where" }, zones.map((z) => {
+    const groups = new Set(z.targets.map((t) => t.group));
+    const runs = active.filter((r) => r.targets.some((t) => groups.has(t.group) && (t.state === "starting" || t.state === "playing")));
+    const top = runs.reduce((a, r) => (!a || rank[r.priority] > rank[a.priority] ? r : a), null);
+    const what = runs.map((r) => r.name).join(", ");
+    return h("li", {
+      class: `zone-chip ${top ? `busy ${top.priority}` : "quiet"}`,
+      title: what ? `${z.name}: playing ${what}` : `${z.name}: quiet`,
+      "aria-label": what ? `${z.name}: playing ${what}` : `${z.name}: quiet`,
+    },
+      h("span", { class: "dot", "aria-hidden": "true" }),
+      h("span", { class: "zone-name", "aria-hidden": "true" }, z.name),
+      what && h("span", { class: "what", "aria-hidden": "true" }, what));
+  }));
+}
+
 export function mount(el) {
   panelEl = el;
   const render = () => {
@@ -193,6 +217,7 @@ export function mount(el) {
         h("span", { class: "muted" }, "Next: "), h("strong", {}, next.name),
         next.site && ` at ${siteName(next.site)}`,
         ` · ${fireTime(next)} `, h("span", { class: "muted" }, `(${fromNow(next.at_ms)})`)),
+      look().show_zones && zonesStrip(anns, active),
       anns.length > 0 && tagBar(anns),
       anns.length
         ? groups(anns.filter((a) => !filter || (a.tags ?? []).some((t) => t.toLowerCase() === filter.toLowerCase())))
