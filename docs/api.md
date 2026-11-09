@@ -140,6 +140,10 @@ The engine is found when the server starts:
 
 1. `--tts-command CMD` (`MCAST_TTS_COMMAND`): run with `sh -c`, the text on
    stdin, a WAV on stdout, the voice asked for in `$MCAST_TTS_VOICE`.
+   A command can't be asked which voices it has, so list them with
+   `--tts-voice-list a,b,c` (`MCAST_TTS_VOICE_LIST`) for `GET /voices` to
+   offer. Without `--tts-voice`, the command picks the voice when a request
+   names none.
 2. Piper, if `piper` is on the `PATH` and `--tts-voices DIR` (default
    `/usr/local/share/mcast/voices`) holds at least one voice (`NAME.onnx`
    with its `NAME.onnx.json`). `voice` names one; the default is

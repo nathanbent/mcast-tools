@@ -1070,6 +1070,7 @@ async fn speaks_text_items_and_says_which_item_plays() {
             "cat >> '{0}/said'; cat '{0}/speech.wav'",
             dir.display()
         )),
+        command_voices: vec!["af_heart".into(), "bm_george".into()],
         cache: Some(dir.join(".tts-cache")),
         ..Default::default()
     });
@@ -1079,6 +1080,7 @@ async fn speaks_text_items_and_says_which_item_plays() {
 
     let (_, v) = call(&h, "GET", "/api/v1/voices", None, None).await;
     assert_eq!(v["engine"], "command", "{v}");
+    assert_eq!(v["voices"], json!(["af_heart", "bm_george"]), "{v}");
 
     let mut events = h.state.0.events.subscribe();
     let items = json!(["a.wav", {"say": "Library closes in ten minutes"}, "a.wav"]);
