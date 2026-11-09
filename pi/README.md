@@ -128,6 +128,30 @@ installs eSpeak NG by default (`TEXT_TO_SPEECH=espeak`: small, robotic).
   `install.sh` on such a Pi downloads `en_US-amy-medium` beside it, and
   amy, first by name, becomes the voice (unless `pi.conf` sets
   `PIPER_VOICE`). Delete the lessac files to free their 60 MB.
+
+`TEXT_TO_SPEECH=kokoro` sets up Kokoro instead: more natural than Piper,
+with many voices, but bigger and slower (best on a Pi 5):
+- Kokoro (`kokoro-onnx`) goes in a Python venv in `/opt/kokoro`, with its
+  model (checked against its SHA-256). `mcast serve` runs
+  `/usr/local/bin/mcast-kokoro` for each page it hasn't spoken before, as
+  set in `/etc/mcast/tts.env`. There's no extra service or port.
+- The panel offers the 28 English voices (`af_`/`am_`: American female and
+  male, `bf_`/`bm_`: British). `KOKORO_VOICES` lists others, comma-separated
+  (`mcast-kokoro --voices` lists them all), and `KOKORO_VOICE` is the one used
+  when a page names none (`af_heart`).
+- `KOKORO_MODEL`: `full` needs about 500 MB of memory while speaking, `int8`
+  about 250 MB and sounds a little rougher. It's `int8` on a Pi with less
+  than 3 GB unless set. About 500 MB on disk either way, with the venv.
+- Speaking takes a while on a Pi: a sentence or two is a few seconds, but
+  `mcast serve` gives up on a page after 60 s, so keep spoken pages short.
+  (A 2000-character page took 25 s on a 4-core x86 VM; it hasn't been
+  timed on a Pi yet.)
+- `install.sh` speaks once as the `mcast` user to check it works. If it
+  doesn't, eSpeak NG speaks instead and the summary says why. Setting
+  `TEXT_TO_SPEECH` to anything else later removes `tts.env` and stops using
+  Kokoro (`/opt/kokoro` stays; delete it to free the space).
+
+Either way:
 - What's spoken is kept in `/var/lib/mcast/tts-cache`, so the same words are
   only synthesized once.
 - `journalctl -u mcast` says at start which engine it found.

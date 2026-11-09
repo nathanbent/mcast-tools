@@ -26,6 +26,9 @@ MCAST_IFACE="any"
 MCAST_EXTRA_ARGS=""
 TEXT_TO_SPEECH=espeak
 PIPER_VOICE="en_US-amy-medium"
+KOKORO_VOICE="af_heart"
+KOKORO_VOICES=""
+KOKORO_MODEL=""
 ENABLE_INTERCOM=no
 INTERCOM_LISTEN="0.0.0.0:8651"
 INTERCOM_TOKEN=""
@@ -218,22 +221,36 @@ EOF
 }
 
 # Text to speech for mcast serve (spoken text pages in intercom playlists):
-# eSpeak NG from apt, or Piper (natural voices) with one voice. mcast serve
-# uses Piper when it has a voice, else eSpeak NG.
+# eSpeak NG from apt, Piper (natural voices) with one voice, or Kokoro (more
+# natural still, many voices). mcast serve uses Kokoro when tts.env names it,
+# else Piper when it has a voice, else eSpeak NG.
 install_tts() {
     on "$INSTALL_MCAST" || return 0
     case ${TEXT_TO_SPEECH,,} in
-        none | no | "") return 0 ;;
-        espeak | piper) ;;
+        none | no | "")
+            use_kokoro no
+            return 0
+            ;;
+        espeak | piper | kokoro) ;;
         *)
-            echo "TEXT_TO_SPEECH must be espeak, piper or none, not \"$TEXT_TO_SPEECH\"" >&2
+            echo "TEXT_TO_SPEECH must be espeak, piper, kokoro or none, not \"$TEXT_TO_SPEECH\"" >&2
             exit 1
             ;;
     esac
     step "Text to speech"
-    # eSpeak NG either way: it's what speaks without a Piper voice.
+    # eSpeak NG always: it's what speaks without Piper or Kokoro.
     apt_install espeak-ng
-    [ "${TEXT_TO_SPEECH,,}" = piper ] || return 0
+    case ${TEXT_TO_SPEECH,,} in
+        kokoro) install_kokoro ;;
+        piper)
+            use_kokoro no
+            install_piper
+            ;;
+        *) use_kokoro no ;;
+    esac
+}
+
+install_piper() {
 
     local arch voices=/usr/local/share/mcast/voices
     arch=$(dpkg --print-architecture)
@@ -278,6 +295,120 @@ install_tts() {
     fi
     note "Text to speech: Piper, voice $v (more voices go in $voices; restart mcast after adding one)"
     systemctl restart mcast.service 2>/dev/null || true
+}
+
+# Point mcast serve at Kokoro (use_kokoro yes VOICE LIST) or not (use_kokoro
+# no), through /etc/mcast/tts.env, and restart it if that changed.
+use_kokoro() {
+    local env=/etc/mcast/tts.env new=""
+    if [ "$1" = yes ]; then
+        new="# Read by mcast.service. Written by install.sh (TEXT_TO_SPEECH=kokoro).
+MCAST_TTS_COMMAND=/usr/local/bin/mcast-kokoro
+MCAST_TTS_VOICE=$2
+MCAST_TTS_VOICE_LIST=$3"
+    fi
+    if [ -z "$new" ]; then
+        [ -f "$env" ] || return 0
+        rm -f "$env"
+    else
+        [ "$(cat "$env" 2>/dev/null)" = "$new" ] && return 0
+        printf '%s\n' "$new" >"$env.tmp"
+        chown root:mcast "$env.tmp"
+        chmod 0640 "$env.tmp"
+        mv "$env.tmp" "$env"
+    fi
+    systemctl restart mcast.service 2>/dev/null || true
+}
+
+# Kokoro (kokoro-onnx) in a venv in /opt/kokoro, run by mcast serve through
+# /usr/local/bin/mcast-kokoro for each page it hasn't spoken before.
+KOKORO_ONNX_VERSION=0.6.1
+KOKORO_FILES="https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+install_kokoro() {
+    local dir=/opt/kokoro arch model sum mem_kb
+    arch=$(dpkg --print-architecture)
+    if [ "$arch" != arm64 ] && [ "$arch" != amd64 ]; then
+        note "Kokoro NOT installed: there's no build for $arch. eSpeak NG speaks instead."
+        use_kokoro no
+        return 0
+    fi
+    # The full model needs about 500 MB of memory while it speaks, the int8
+    # one about 250 MB and sounds a little rougher.
+    model=${KOKORO_MODEL,,}
+    if [ -z "$model" ]; then
+        mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+        if [ "${mem_kb:-0}" -lt 3000000 ]; then model=int8; else model=full; fi
+    fi
+    case $model in
+        full)
+            model=kokoro-v1.0.onnx
+            sum=7d5df8ecf7d4b1878015a32686053fd0eebe2bc377234608764cc0ef3636a6c5
+            ;;
+        int8)
+            model=kokoro-v1.0.int8.onnx
+            sum=6e742170d309016e5891a994e1ce1559c702a2ccd0075e67ef7157974f6406cb
+            ;;
+        *)
+            echo "KOKORO_MODEL must be full, int8 or empty, not \"$KOKORO_MODEL\"" >&2
+            exit 1
+            ;;
+    esac
+
+    apt_install python3-venv
+    install -d -m 0755 "$dir" "$dir/models"
+    [ -x "$dir/venv/bin/python3" ] || python3 -m venv "$dir/venv"
+    if ! "$dir/venv/bin/pip" install -q --disable-pip-version-check "kokoro-onnx==$KOKORO_ONNX_VERSION"; then
+        note "Kokoro NOT installed: pip couldn't install kokoro-onnx. eSpeak NG speaks instead."
+        use_kokoro no
+        return 0
+    fi
+    if ! kokoro_file "$model" "$sum" ||
+        ! kokoro_file voices-v1.0.bin bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d; then
+        note "Kokoro NOT installed: its model didn't download (from $KOKORO_FILES). eSpeak NG speaks instead."
+        use_kokoro no
+        return 0
+    fi
+    ln -sfn "models/$model" "$dir/kokoro.onnx"
+    ln -sfn models/voices-v1.0.bin "$dir/voices.bin"
+    install -m 0755 "$FILES/mcast-kokoro" /usr/local/bin/mcast-kokoro
+
+    # The voices the panel offers: English (American and British) unless
+    # pi.conf lists others.
+    local list=${KOKORO_VOICES// /}
+    if [ -z "$list" ]; then
+        list=$(/usr/local/bin/mcast-kokoro --voices | grep -E '^[ab][fm]_' | paste -sd, -)
+    fi
+    # Speak once as mcast, as mcast serve will.
+    local wav
+    wav=$(mktemp)
+    if ! echo "Text to speech is working." |
+        runuser -u mcast -- env MCAST_TTS_VOICE="$KOKORO_VOICE" /usr/local/bin/mcast-kokoro >"$wav" ||
+        [ "$(head -c 4 "$wav")" != RIFF ]; then
+        rm -f "$wav"
+        note "Kokoro NOT used: it didn't speak with voice \"$KOKORO_VOICE\" (try: echo hi | mcast-kokoro >/dev/null). eSpeak NG speaks instead."
+        use_kokoro no
+        return 0
+    fi
+    rm -f "$wav"
+    use_kokoro yes "$KOKORO_VOICE" "$list"
+    local count
+    count=$(tr ',' '\n' <<<"$list" | grep -c .)
+    note "Text to speech: Kokoro ($model), voice ${KOKORO_VOICE:-af_heart}; the panel offers $count voices (KOKORO_VOICES in pi.conf; mcast-kokoro --voices lists them all)"
+}
+
+# Download a Kokoro model file into /opt/kokoro/models unless it's there,
+# checking its SHA-256: kokoro_file NAME SHA256
+kokoro_file() {
+    local f=/opt/kokoro/models/$1
+    if [ -f "$f" ] && echo "$2  $f" | sha256sum -c --quiet - 2>/dev/null; then
+        return 0
+    fi
+    if curl -fsSL -o "$f.part" "$KOKORO_FILES/$1" && echo "$2  $f.part" | sha256sum -c --quiet -; then
+        mv "$f.part" "$f"
+    else
+        rm -f "$f.part"
+        return 1
+    fi
 }
 
 install_intercom() {
