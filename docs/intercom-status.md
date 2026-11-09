@@ -1,7 +1,7 @@
 # Intercom: where things stand (handoff)
 
 Last updated 2026-11-09. Written at the end of a third session, and updated
-since for the work merged after it (#57 to #60). The second session
+since for the work merged after it (#57 to #62) and the release of v0.5.7. The second session
 checked the first one's work, built everything left on the roadmap plus
 follow-ups, merged it all into `main`, and bumped the version to 0.5.5
 (#48). The third built **text pages in playlists** (#49, below), merged it,
@@ -15,7 +15,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
 
 ## Where things stand
 
-- **Everything is on `main` and released, as v0.5.6.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+- **Everything is on `main` and released, as v0.5.7.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
   - last-heard times in the Zones list;
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
@@ -25,14 +25,14 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - customizing the Panel in place, with drag and drop that works on touch screens and from the keyboard (nathanbent/mcast-tools#54, from another session).
 - **v0.5.5 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.5, tag `v0.5.5` on `7f3c8c7` (the merge of #49), with binaries for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon) and Windows. The owner chose to ship it all as 0.5.5; there's no separate 0.6.0. Pis upgrade with `sudo mcast update`.
 - **v0.5.6 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.6, tag `v0.5.6` on `1f29642` (the merge of the bump, nathanbent/mcast-tools#55), with the same platforms. It adds #53 and #54, and #50 fixed a flaky test.
-- **Both were released before the hardware checks** below (What's next, 1). Their results decide whether a 0.5.7 is needed.
-- **0.5.7 is bumped, not yet released** (the bump is its own PR; then the Release workflow from `main` with the tag `v0.5.7`). It carries what's on `main` since v0.5.6:
+- **v0.5.7 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.7, tag `v0.5.7` on `a676587` (the merge of the bump, nathanbent/mcast-tools#62), with the same platforms. It carries:
   - **The real MSRV, 1.89** (nathanbent/mcast-tools#57): declared in `Cargo.toml`, checked by CI's `msrv` job, with clippy fixes to match and rustup notes in the README. It also fixed ShellCheck SC2015 in `mcast-play.sh` and lints that script in CI.
   - **MIT license, a clean stop on SIGTERM, and `MCAST_LISTEN`** (nathanbent/mcast-tools#58): `LICENSE` and `license = "MIT"` in every crate and release archive; `systemctl stop` or `docker stop` now stops every command the way Ctrl-C does (before, a `--wav` recording was left without a valid header); `mcast serve` reads its listen address from `MCAST_LISTEN`, with `--listen` taking precedence.
   - **"Arrange this page" on the Schedules tab** (nathanbent/mcast-tools#60): admins order its sections, Schedules, Days off and Schedule groups, as on Settings, kept as `schedules` in the layout. Page-only: `PUT /layout/{tab}` already took any tab. Checked in a browser: arrange, save, reload, and back to the usual order.
   - **Receiver: out-of-order packets and clock drift** (nathanbent/mcast-tools#59), the receiver half of #14 redone on `main`. A reorder stage puts out-of-order packets back in order, waiting up to half the playout latency for a missing one; before, any packet arriving after a later one was dropped. A variable-ratio resampler steered by the jitter buffer's level corrects clock drift up to ±1000 ppm. New stats: `reordered` and `drift_ppm`. Tested over real multicast with reordering: the old receiver lost 64 of about 350 packets, this one none. **The drift correction had only run in simulation** when the PR was opened; it was merged on 2026-11-09, and the Pi test is still listed in What's next, 1.
-- **The 0.5.7 bump's PR is open** (from `claude/ecstatic-pasteur-i406yp`). New work branches from `main`.
-- **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's and #60's, which merged after the cleanup and can go too.
+- **All three were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.8.
+- **No PRs are open.** New work branches from `main`; the next release needs a version bump first.
+- **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's (`claude/intelligent-ramanujan-9guf2i`) and #60's and #62's (`claude/ecstatic-pasteur-i406yp`), which merged after the cleanup and can go too: neither has anything that isn't on `main`.
 
 The work came as six stacked PRs, merged in order with merge commits:
 
@@ -234,13 +234,13 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Try the hardware** with v0.5.6 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
+1. **Try the hardware** with v0.5.7 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
    - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
-   - **The receiver's drift correction (#59) on a Pi with a speaker**, built from `main` (it isn't in a release yet), unless the owner already did this before merging it: run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs.
-2. **Release 0.5.7** once its bump is merged: the Release workflow from `main`, tag `v0.5.7`. It carries #57 to #60. Anything the hardware turns up goes in a 0.5.8.
+   - **The receiver's drift correction (#59) on a Pi with a speaker** (most important: it's in every speaker's playback path, and it was merged and released without this test): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs.
+2. **Fix anything the hardware turns up,** then bump to 0.5.8 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.8`).
 3. **Smaller follow-ups:**
    - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
