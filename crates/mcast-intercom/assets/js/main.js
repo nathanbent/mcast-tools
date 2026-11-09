@@ -239,7 +239,11 @@ async function start() {
   onRunEnded((run) => {
     const played = run.targets.filter((t) => t.played > 0).length;
     if (run.state === "done") toast(`"${run.name}" played to ${played} of ${run.targets.length} groups`, "ok");
-    else if (run.state === "failed") toast(`"${run.name}": ${run.error ?? "failed"}`, "error");
+    else if (run.state === "failed") {
+      // One reason for every group (a busy one, say): give it in words.
+      const why = [...new Set(run.targets.map((t) => t.error).filter(Boolean))];
+      toast(why.length === 1 ? `"${run.name}" didn't play: ${why[0]}` : `"${run.name}": ${run.error ?? "failed"}`, "error");
+    }
     else if (run.state === "missed") toast(`"${run.name}": ${run.error}`, "info");
   });
   // Speakers going offline between plays, and coming back.

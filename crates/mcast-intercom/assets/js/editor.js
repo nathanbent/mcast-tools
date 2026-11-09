@@ -64,7 +64,8 @@ export function mountEditor(el, spec) {
   //         form(item, save, cancel), label?(item) for messages (default: its name),
   //         before?() for anything to show above the list,
   //         sections?(items) => [{ head: node or null, items }] to show the rows
-  //           under headings (a head is put in a full-width row) }
+  //           under headings (a head is put in a full-width row),
+  //         actions?(item) => buttons to put before Edit and Delete }
   const list = h("div");
   const formArea = h("div");
   let editing; // undefined: no form open; null: a new one; otherwise the id
@@ -118,6 +119,7 @@ export function mountEditor(el, spec) {
               sec.items.map((item) => h("tr", { class: spec.rowClass?.(item) || null },
                 columns.map(([, cell, wide]) => h("td", { class: wide && "wide" }, cell(item))),
                 h("td", { class: "actions" }, h("div", { class: "buttons nowrap" },
+                  spec.actions?.(item),
                   h("button", { onclick: () => open(item) }, "Edit"),
                   h("button", { class: "danger", onclick: () => remove(item) }, "Delete")))))))))
         : h("p", { class: "muted" }, `No ${spec.plural ?? `${spec.kind}s`} yet.`),

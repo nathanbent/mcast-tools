@@ -468,6 +468,38 @@ pub(super) async fn play(
     Ok((StatusCode::CREATED, Json(run)))
 }
 
+/// Check a zone's speakers: its chime, to it alone, as an ordinary play
+/// ("Test: Hall"), so it's on the Panel and in the history, with the
+/// zone's encoding and volume, and a busy group says so.
+pub(super) async fn test_zone(
+    State(s): State<AppState>,
+    Extension(caller): Extension<Caller>,
+    Path(id): Path<String>,
+) -> ApiResult<(StatusCode, Json<Run>)> {
+    let mut cfg = s.load().await?;
+    let Some(zone) = cfg.zones.iter().find(|z| z.id == id) else {
+        return Err(not_found::<Zone>(&id));
+    };
+    let test: Announcement = serde_json::from_value(json!({
+        "id": format!("test:{id}"),
+        "name": format!("Test: {}", zone.name),
+        "audio": "chime_only",
+        "zones": [id],
+    }))
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let which = test.id.clone();
+    cfg.announcements.push(test);
+    let runner = s.0.runner.clone();
+    let trigger = caller.trigger();
+    let run = tokio::task::spawn_blocking(move || runner.play(&cfg, &which, trigger))
+        .await?
+        .map_err(|e| match e {
+            PlayError::NoAnnouncement(_) => ApiError::new(StatusCode::NOT_FOUND, e.to_string()),
+            PlayError::Server(m) => ApiError::new(StatusCode::BAD_GATEWAY, m),
+        })?;
+    Ok((StatusCode::CREATED, Json(run)))
+}
+
 /// Runs; a trigger token sees only those of its announcements.
 pub(super) async fn list_runs(
     State(s): State<AppState>,

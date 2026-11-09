@@ -848,6 +848,7 @@ const ROUTES: &[(&str, &str)] = &[
     ("PUT", "/announcements/{id}"),
     ("DELETE", "/announcements/{id}"),
     ("POST", "/announcements/{id}/play"),
+    ("POST", "/zones/{id}/test"),
     ("GET", "/live/{id}"),
     ("GET", "/schedules"),
     ("POST", "/schedules"),
@@ -2243,6 +2244,50 @@ async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
         )
         .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+#[tokio::test]
+async fn tests_a_zone_with_its_chime() {
+    let p = panel(None);
+    p.set_up().await;
+    let (s, run) = p.call(Method::POST, "/zones/hall/test", None).await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    // An ordinary play, to that zone alone, named for it.
+    assert_eq!(run["name"], "Test: Hall");
+    assert_eq!(run["announcement"], "test:hall");
+    assert_eq!(run["state"], "playing");
+    assert_eq!(run["targets"].as_array().unwrap().len(), 1, "{run}");
+    assert_eq!(run["targets"][0]["group"], "zone-1");
+    let req = p.fake.requests().pop().unwrap();
+    assert_eq!(req["source"], json!({"type": "chime"}), "{req}");
+    // On the runs list like any play; nothing saved to the config.
+    let (_, runs) = p.call(Method::GET, "/runs", None).await;
+    assert!(runs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["name"] == "Test: Hall"));
+    let (_, cfg) = p.call(Method::GET, "/config", None).await;
+    assert_eq!(cfg["announcements"].as_array().unwrap().len(), 1, "{cfg}");
+    // Busy while that plays: said so, by name.
+    let (_, again) = p.call(Method::POST, "/zones/hall/test", None).await;
+    assert_eq!(again["targets"][0]["state"], "busy");
+    assert_eq!(
+        again["targets"][0]["error"],
+        "\"Test: Hall\" was playing there"
+    );
+    let (s, _) = p.call(Method::POST, "/zones/nowhere/test", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    // Admins only.
+    let p = panel(Some("s3cret"));
+    let desk = p
+        .token(Some("s3cret"), json!({"name": "Desk", "role": "operator"}))
+        .await;
+    let (s, _) = p
+        .call_with(Method::POST, "/zones/hall/test", None, Some(&desk))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
