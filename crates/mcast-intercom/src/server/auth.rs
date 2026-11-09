@@ -364,6 +364,7 @@ pub fn access(method: &Method, path: &str) -> Option<Access> {
         "/tokens" | "/tokens/{id}" | "/layout/{tab}" => Admin,
         "/inputs" | "/inputs/{id}" => Admin,
         "/inputs/{id}/test" if *method == Method::POST => Admin,
+        "/zones/{id}/test" if *method == Method::POST => Admin,
         "/input-status" if get => Admin,
         "/backup" if get => Admin,
         "/restore" if *method == Method::POST => Admin,

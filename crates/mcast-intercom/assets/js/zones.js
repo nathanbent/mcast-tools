@@ -1,7 +1,7 @@
 // Zones: sets of multicast groups (phonebook names or addresses), each with
 // the codec and volume its speakers need.
 
-import { h, replace, ago } from "./dom.js";
+import { h, replace, ago, toast } from "./dom.js";
 import { state, siteName, onRunSettled, subscribe } from "./store.js";
 import { api } from "./api.js";
 import { mountEditor, field, select, numberInput, num } from "./editor.js";
@@ -26,6 +26,25 @@ function describe(t) {
   const codec = t.encoding ? encodingLabel(t.encoding) : `default ${defaultEncoding().split(",")[0]}`;
   const opts = [codec, t.volume_db != null && `${t.volume_db > 0 ? "+" : ""}${t.volume_db} dB`].filter(Boolean);
   return opts.length ? `${t.group} (${opts.join(", ")})` : t.group;
+}
+
+// Play the chime to one zone, to check its speakers. It's an ordinary
+// play ("Test: Hall"), so it shows on the Panel and in the history.
+async function testZone(z, button) {
+  button.disabled = true;
+  try {
+    const run = await api("POST", `/zones/${encodeURIComponent(z.id)}/test`);
+    const t = run.targets.find((x) => x.error);
+    // One that didn't play at all gets the Panel's toast as it ends.
+    if (run.state === "failed") return;
+    if (t) toast(`Testing ${z.name}, but not everywhere: ${t.error}`, "error");
+    else toast(`Playing the chime to ${z.name}`, "ok");
+  } catch (e) {
+    toast(`Couldn't test ${z.name}: ${e.message}`, "error");
+  } finally {
+    // Long enough for the chime, so a second press doesn't find it busy.
+    setTimeout(() => { button.disabled = false; }, 3000);
+  }
 }
 
 // The speakers expected to hear a zone's pages: names as receivers give
@@ -241,6 +260,10 @@ export function mount(el) {
       ...(state.config.zones.some((z) => z.displays?.length)
         ? [["Displays", (z) => (z.displays?.length ? z.displays.join(", ") : "—"), true]] : []),
     ],
+    actions: (z) => h("button", {
+      title: `Play the chime to ${z.name} alone, to check its speakers`,
+      onclick: (e) => testZone(z, e.currentTarget),
+    }, "Test"),
     form,
   });
   // Last pages come from the history: worth asking while some zone lists

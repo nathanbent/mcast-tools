@@ -396,6 +396,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(delete::<Announcement>),
         )
         .route("/announcements/{id}/play", post(play))
+        .route("/zones/{id}/test", post(test_zone))
         .route("/live/{id}", get(live::live))
         .route("/schedules", get(list::<Schedule>).post(create::<Schedule>))
         .route(
