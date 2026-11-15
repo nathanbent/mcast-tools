@@ -1,7 +1,7 @@
 # Intercom: where things stand (handoff)
 
 Last updated 2026-11-15. Written at the end of a third session, and updated
-since for the work merged after it (#57 to #78) and the releases of v0.5.7 to v0.5.13. The second session
+since for the work merged after it (#57 to #80) and the releases of v0.5.7 to v0.5.14. The second session
 checked the first one's work, built everything left on the roadmap plus
 follow-ups, merged it all into `main`, and bumped the version to 0.5.5
 (#48). The third built **text pages in playlists** (#49, below), merged it,
@@ -15,7 +15,7 @@ then `intercom-roadmap.md` (the plan and what each item became) and
 
 ## Where things stand
 
-- **Everything is on `main` and released, as v0.5.13.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
+- **Everything is on `main` and released, as v0.5.14.** Every item on the roadmap (v0.5.5 and v0.6.0) is built, plus follow-ups:
   - last-heard times in the Zones list;
   - alerts when a speaker goes offline between plays;
   - per-site webhooks and monitor;
@@ -40,13 +40,16 @@ then `intercom-roadmap.md` (the plan and what each item became) and
   - **What's playing where, on the Panel** (nathanbent/mcast-tools#73).
   - **`--tts-timeout` for `mcast serve`, and the panel waits for slow speech** (nathanbent/mcast-tools#74): each text item gets 60 s to be spoken unless `--tts-timeout SECS` (`MCAST_TTS_TIMEOUT`) says otherwise, and the Pi installer sets 180 for Kokoro. The panel used to give up on starting a page after 30 s, while the server was still speaking it, and then the server played it anyway; starting a sender now waits up to 30 minutes.
 - **v0.5.12 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.12, tag `v0.5.12` on `30c651b` (the merge of the bump, nathanbent/mcast-tools#77), with the same platforms. It carries **display options and polish for both web pages** (nathanbent/mcast-tools#76): the header's theme button opens a menu for the theme, an accent color, the density and the text size, kept per browser or set for one screen by its URL (`?theme=dark&accent=teal&density=compact&text=large`; the kiosk link builder offers theme and text size). Dark mode's primary buttons and All stop are readable, links follow the accent, buttons, tabs and tiles react to the pointer, and the Panel and Monitor tabs lost the card around their cards. In `app.css`, font sizes multiply by `--fs` and spacing uses `--pad`, `--gap` and the like, so new styles should too.
-- **0.5.13 is bumped** (the Release workflow from `main` with the tag `v0.5.13`). It carries nathanbent/mcast-tools#78:
+- **v0.5.13 is released:** https://github.com/nathanbent/mcast-tools/releases/tag/v0.5.13, tag `v0.5.13` on `9b17a56` (the merge of the bump, nathanbent/mcast-tools#79), with the same platforms. It carries nathanbent/mcast-tools#78:
   - **Emoji in text pages and messages:** typed, picked in the editors, or as shortcodes (`:warning:`); shown on displays and left out of speech.
   - **Text on displays with any audio:** an announcement's (and a part's) own `text`, and text on a playlist's sounds; no speech engine needed.
   - **Pages over multicast:** a page sent to display groups carries its name, priority and end in the text stream ([text-page-metadata.md](text-page-metadata.md)); `mcast text recv --json` and `mcast text send --page`; a zone's `plain_displays` sends the words alone. TouchFrame (nathanbent/TouchFrame#2) is the display that reads them, and has push to talk.
   - **Text made safe to show in one place** (the new `mcast-plain` crate): control characters and escape sequences are taken out of what's sent and received, and of names from RTCP and SAP.
   - **The CLI is a module per command family,** and the CLI and API share one transcript of a text channel (`mcast_text::Transcript`).
-- **All were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.14.
+- **0.5.14 is bumped** (the Release workflow from `main` with the tag `v0.5.14`). It carries nathanbent/mcast-tools#80:
+  - **Text is its own kind of announcement audio:** `"audio": {"text": {"text": "..."}}`, spoken, shown or both, with no sound file and no playlist (a part can be text too). `TextPage` is one type, shared with a playlist's text pages; `Config::sequence` plays text as a playlist of that one page.
+  - **A shorter announcement editor:** a name, what it plays (a choice of kind, each with only its own fields) and where. Chimes, repeats, sound, the Panel button and parts are folded away, each saying what it's set to.
+- **All were released before the hardware checks** below (What's next, 1). Anything they turn up goes in a 0.5.15.
 - New work branches from `main`; the next release needs a version bump first.
 - **Old branches and PRs are cleared up:** #14 and #23 were closed, and what was worth keeping went into #58 and #59. The unmerged probes branch was dropped, since the roadmap decided probes are `mcast receive` endpoints. Every merged `claude/` branch was deleted, apart from #59's (`claude/intelligent-ramanujan-9guf2i`) and #60's and #62's (`claude/ecstatic-pasteur-i406yp`), which merged after the cleanup and can go too: neither has anything that isn't on `main`.
 
@@ -250,13 +253,13 @@ The v0.5.5 items, plus requests that came up along the way:
 
 ## What's next
 
-1. **Try the hardware** with v0.5.13 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
+1. **Try the hardware** with v0.5.14 (`sudo mcast update`, then re-run `install.sh`). Nothing here has run on real hardware yet:
    - **A GPIO button on a Pi** (#45). Wire a switch from GPIO17 (header pin 11) to ground, add it in Settings → Buttons and contacts, and press it. The state should change and the announcement play.
    - **Delivery confirmation and offline alerts** with real speakers on the network (#43). These were tested only with receivers on one machine, over loopback. Run `mcast receive --name ROOM` on two or three speakers and list them in a zone. A play should say who heard it, and unplugging one should bring an offline alert after about a minute.
    - **Text pages on a Pi** with `TEXT_TO_SPEECH=piper`: the voice downloads, a spoken page sounds right, and `mcast text recv -g GROUP` on another box shows it.
    - **The Panel's Customize mode on a real iPad or iPhone** (#54): press and hold drags a button, a swipe still scrolls, and the ⠿ handle drags at once. It was only tried on an emulated Android tablet.
    - **The receiver's drift correction (#59) on a Pi with a speaker** (most important: it's in every speaker's playback path, and it was merged and released without this test): run `mcast audio recv --stats 5` or a speaker's `mcast receive` for 10 minutes or more. `drift` should settle at a steady value, `underruns` and `overflows` should stay at 0, and `top` shows what the resampler costs.
-2. **Fix anything the hardware turns up,** then bump to 0.5.14 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.14`). Add to the checks: pages over multicast on a real display (TouchFrame on a Pi: an emergency page with the panel link off, and push to talk with a USB microphone); a T.140 receiver that isn't mcast (an IP phone), which should show a page's lines and nothing else; a page only shown, on a real display, during its pause; the amy voice downloading on a Pi; and `TEXT_TO_SPEECH=kokoro` on a Pi 4 and a Pi 5: a sentence and a long page, timed, spoken through `mcast.service`.
+2. **Fix anything the hardware turns up,** then bump to 0.5.15 in its own PR and release it the same way (Release workflow from `main`, tag `v0.5.15`). Add to the checks: pages over multicast on a real display (TouchFrame on a Pi: an emergency page with the panel link off, and push to talk with a USB microphone); a T.140 receiver that isn't mcast (an IP phone), which should show a page's lines and nothing else; a page only shown, on a real display, during its pause; the amy voice downloading on a Pi; and `TEXT_TO_SPEECH=kokoro` on a Pi 4 and a Pi 5: a sentence and a long page, timed, spoken through `mcast.service`.
 3. **Smaller follow-ups:**
    - "Arrange this page" is now on the Schedules tab too (see *Where things stand*). The other tabs have one section each, so there's nothing more to arrange.
    - (The flaky `webhooks_keep_a_log_of_their_deliveries` test was fixed in nathanbent/mcast-tools#50: it now waits for each delivery to be logged before setting off the next.)
