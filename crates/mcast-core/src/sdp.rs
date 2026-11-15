@@ -170,8 +170,9 @@ pub fn parse(text: &str) -> Result<SessionDescription, SdpError> {
         let bad = || SdpError::Invalid(line.to_string());
         match (kind, media.last_mut()) {
             ("o", _) => origin = Some(parse_origin(value).ok_or_else(bad)?),
-            ("s", None) => name = value.to_string(),
-            ("i", None) => info = Some(value.to_string()),
+            // The name and description are shown as they come.
+            ("s", None) => name = mcast_plain::label(value),
+            ("i", None) => info = Some(mcast_plain::label(value)),
             ("c", None) => connection = Some(parse_connection(value).ok_or_else(bad)?),
             ("c", Some(m)) => m.connection = Some(parse_connection(value).ok_or_else(bad)?),
             ("a", m) => {
@@ -336,6 +337,16 @@ mod tests {
     fn roundtrips() {
         let sdp = parse(AES67).unwrap();
         assert_eq!(parse(&sdp.to_string()).unwrap(), sdp);
+    }
+
+    #[test]
+    fn names_are_made_safe_to_show() {
+        let sdp = parse(
+            "v=0\no=- 1 1 IN IP4 10.0.0.1\ns=\u{1b}]0;x\u{7}Lobby \u{1F514}\u{1b}[5m\ni=a\u{202E}b\nt=0 0\n",
+        )
+        .unwrap();
+        assert_eq!(sdp.name, "Lobby \u{1F514}");
+        assert_eq!(sdp.info.as_deref(), Some("ab"));
     }
 
     #[test]

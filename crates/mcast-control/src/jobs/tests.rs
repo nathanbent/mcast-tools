@@ -295,18 +295,33 @@ fn text_channel_sends_and_hears_lines() {
         Err(StartError::Conflict { .. })
     ));
 
-    let sent = jobs.send_text(talker.id, "hello\nsecond line").unwrap();
+    // Emoji go through whole, shortcodes become emoji, and what a display
+    // shouldn't get (here a colour code and a bell) is left out.
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    let sent = jobs
+        .send_text(
+            talker.id,
+            &format!("hello\r\n:warning: second\u{7} \u{1b}[31mline {family}"),
+        )
+        .unwrap();
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().all(|l| l.own && l.from == "desk"));
+    let second = format!("\u{26A0}\u{FE0F} second line {family}");
+    assert_eq!(sent[1].text, second);
     wait_for("both lines to arrive", || {
         jobs.text_history(listener.id).unwrap().len() == 2
     });
     let heard = jobs.text_history(listener.id).unwrap();
     assert_eq!(heard[0].text, "hello");
-    assert_eq!(heard[1].text, "second line");
+    assert_eq!(heard[1].text, second);
     assert!(!heard[0].own);
     // The talker doesn't hear itself back, only its own record.
     assert_eq!(jobs.text_history(talker.id).unwrap().len(), 2);
+    // Nothing but control characters is nothing to send.
+    assert_eq!(
+        jobs.send_text(talker.id, "\u{1b}[2J\u{7}"),
+        Err(TextError::Empty)
+    );
     assert!(events
         .lock()
         .unwrap()

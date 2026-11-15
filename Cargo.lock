@@ -1367,6 +1367,7 @@ dependencies = [
  "mcast-file",
  "mcast-intercom",
  "mcast-monitor",
+ "mcast-plain",
  "mcast-server",
  "mcast-text",
  "mcast-tui",
@@ -1382,6 +1383,7 @@ dependencies = [
  "cpal",
  "hound",
  "mcast-core",
+ "mcast-plain",
  "opus",
  "rtrb",
  "rustfft",
@@ -1398,6 +1400,7 @@ dependencies = [
  "mcast-core",
  "mcast-file",
  "mcast-monitor",
+ "mcast-plain",
  "mcast-text",
  "serde",
  "serde_json",
@@ -1408,6 +1411,7 @@ name = "mcast-core"
 version = "0.5.12"
 dependencies = [
  "libc",
+ "mcast-plain",
  "socket2 0.5.10",
 ]
 
@@ -1436,6 +1440,7 @@ dependencies = [
  "mcast-audio",
  "mcast-control",
  "mcast-core",
+ "mcast-plain",
  "mcast-server",
  "rcgen",
  "ring",
@@ -1460,6 +1465,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcast-plain"
+version = "0.5.12"
+
+[[package]]
 name = "mcast-server"
 version = "0.5.12"
 dependencies = [
@@ -1482,6 +1491,7 @@ version = "0.5.12"
 dependencies = [
  "anyhow",
  "mcast-core",
+ "mcast-plain",
 ]
 
 [[package]]

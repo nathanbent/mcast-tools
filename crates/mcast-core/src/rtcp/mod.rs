@@ -347,9 +347,10 @@ fn parse_sdes(body: &[u8], count: usize) -> Result<Vec<SdesChunk>, RtcpError> {
             }
             let len = *body.get(i + 1).ok_or(RtcpError::TooShort)? as usize;
             let text = body.get(i + 2..i + 2 + len).ok_or(RtcpError::TooShort)?;
+            // Names are shown as they come, so make them safe to show here.
             chunk
                 .items
-                .push((kind, String::from_utf8_lossy(text).into_owned()));
+                .push((kind, mcast_plain::label(&String::from_utf8_lossy(text))));
             i += 2 + len;
         }
         // Chunks end on a 32-bit boundary.
@@ -421,7 +422,7 @@ pub fn parse(buf: &[u8]) -> Result<Vec<Packet>, RtcpError> {
                 let tail = &body[count * 4..];
                 let reason = tail.first().and_then(|&n| {
                     tail.get(1..1 + n as usize)
-                        .map(|t| String::from_utf8_lossy(t).into_owned())
+                        .map(|t| mcast_plain::label(&String::from_utf8_lossy(t)))
                 });
                 Packet::Bye { ssrcs, reason }
             }
@@ -714,6 +715,32 @@ mod tests {
         let (from, p) = Playout::from_app(&parsed[4]).unwrap();
         assert_eq!((from, p.media_ssrc), (7, 0xdead_beef));
         assert!((p.latency_secs().unwrap() - 0.0523).abs() < 1e-6);
+    }
+
+    #[test]
+    fn names_and_reasons_are_made_safe_to_show() {
+        let sent = vec![
+            Packet::Sdes(vec![SdesChunk {
+                ssrc: 1,
+                items: vec![(SDES_NAME, "Front\u{1b}[2J desk \u{1F6AA}\u{7}".into())],
+            }]),
+            Packet::Bye {
+                ssrcs: vec![1],
+                reason: Some("gone\r\n\u{1b}]0;x\u{7}home".into()),
+            },
+        ];
+        let got = parse(&encode(&sent)).unwrap();
+        let Packet::Sdes(chunks) = &got[0] else {
+            panic!("{got:?}")
+        };
+        assert_eq!(chunks[0].item(SDES_NAME), Some("Front desk \u{1F6AA}"));
+        assert_eq!(
+            got[1],
+            Packet::Bye {
+                ssrcs: vec![1],
+                reason: Some("gone home".into())
+            }
+        );
     }
 
     #[test]

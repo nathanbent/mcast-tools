@@ -3,9 +3,16 @@
 use crate::t140::BACKSPACE;
 use std::time::{Duration, Instant};
 
+/// Longest line, in bytes: a sender that never ends its line has it ended
+/// for it here.
+pub const MAX_LINE: usize = 8000;
+
 /// Collects one source's text until a line ends. Real-time text can arrive
 /// a character at a time (and be erased with backspace), so the partial line
 /// is kept here and shown once it ends or the sender stops typing.
+///
+/// Lines come out safe to show ([`mcast_plain::clean`]): the text is
+/// whatever someone on the network sent.
 #[derive(Debug, Clone)]
 pub struct LineBuffer {
     partial: String,
@@ -27,26 +34,34 @@ impl LineBuffer {
         let mut done = Vec::new();
         for c in text.chars() {
             match c {
-                '\n' => done.push(std::mem::take(&mut self.partial)),
+                '\n' => done.push(self.finish()),
                 // Erasing past the start of the line can't undo what's shown.
                 BACKSPACE => {
                     self.partial.pop();
                 }
-                c => self.partial.push(c),
+                c => {
+                    self.partial.push(c);
+                    if self.partial.len() >= MAX_LINE {
+                        done.push(self.finish());
+                    }
+                }
             }
         }
         done
     }
 
+    fn finish(&mut self) -> String {
+        mcast_plain::clean(&std::mem::take(&mut self.partial))
+    }
+
     /// The unfinished line, if the sender has gone quiet for `after`.
     pub fn take_stale(&mut self, now: Instant, after: Duration) -> Option<String> {
-        (!self.partial.is_empty() && now.duration_since(self.last) >= after)
-            .then(|| std::mem::take(&mut self.partial))
+        (!self.partial.is_empty() && now.duration_since(self.last) >= after).then(|| self.finish())
     }
 
     /// The unfinished line, whatever its age.
     pub fn take(&mut self) -> Option<String> {
-        (!self.partial.is_empty()).then(|| std::mem::take(&mut self.partial))
+        (!self.partial.is_empty()).then(|| self.finish())
     }
 }
 
@@ -70,5 +85,27 @@ mod tests {
         );
         assert_eq!(b.push("\n\n", t0), vec![String::new(), String::new()]);
         assert_eq!(b.take(), None);
+    }
+
+    #[test]
+    fn lines_come_out_safe_to_show_with_their_emoji() {
+        let t0 = Instant::now();
+        let mut b = LineBuffer::new(t0);
+        // An escape sequence split across packets, and a joined emoji.
+        assert!(b.push("\u{1b}]0;ti", t0).is_empty());
+        assert_eq!(
+            b.push("tle\u{7}Fire \u{1F468}\u{200D}\u{1F692}\u{1b}[2J\n", t0),
+            vec!["Fire \u{1F468}\u{200D}\u{1F692}".to_string()]
+        );
+        // Backspace takes an emoji in one go when it's one character.
+        assert_eq!(
+            b.push("ok \u{1F525}\u{8}\u{2705}\n", t0),
+            vec!["ok \u{2705}".to_string()]
+        );
+        // A line that never ends is ended for it.
+        let long = b.push(&"x".repeat(MAX_LINE + 10), t0);
+        assert_eq!(long.len(), 1);
+        assert_eq!(long[0].len(), MAX_LINE);
+        assert_eq!(b.take(), Some("x".repeat(10)));
     }
 }

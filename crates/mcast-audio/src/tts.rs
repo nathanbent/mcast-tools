@@ -169,8 +169,13 @@ impl Tts {
 
     /// Speak `text`, returning a WAV of it (from the cache when it's been
     /// spoken before).
+    ///
+    /// The engine gets the words only ([`mcast_plain::spoken`]): emoji and
+    /// their shortcodes are for displays, and engines read them out as
+    /// nonsense or stop at them.
     pub fn speak(&self, text: &str, voice: Option<&str>) -> Result<PathBuf> {
-        let text = text.trim();
+        let text = mcast_plain::spoken(text);
+        let text = text.as_str();
         if text.is_empty() {
             bail!("there's no text to speak");
         }
@@ -495,6 +500,15 @@ mod tests {
         let b = tts.speak("Fire drill at three", Some("en-gb")).unwrap();
         assert_ne!(a, b);
         assert!(crate::file::AudioFile::open(&a).is_ok());
+        // Emoji, shortcodes and escape codes aren't spoken, so this is the same speech.
+        let decorated = tts
+            .speak(
+                ":rotating_light: Fire drill \u{1F525} at three\u{1b}[0m \u{1F6A8}",
+                None,
+            )
+            .unwrap();
+        assert_eq!(a, decorated);
+        assert!(tts.speak("\u{1F525} :fire:", None).is_err());
         // Synthesized twice: once per voice.
         let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
         assert_eq!(calls, "Fire drill at three\n\nFire drill at three\nen-gb\n");

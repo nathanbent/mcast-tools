@@ -618,6 +618,21 @@ mcast text chat -n Alice                      # send what you type, print everyo
 A half-typed line is shown once its sender has been quiet for 3 s.
 `--raw` prints the characters as they arrive, with no names.
 
+Emoji work, typed as themselves or as shortcodes, by the names GitHub and
+Slack use; a name that isn't known (and `10:30:00`) stays as typed:
+
+```bash
+mcast text send ":warning: Fire drill at 3pm :fire:"   # arrives as "⚠️ Fire drill at 3pm 🔥"
+```
+
+Text is plain text everywhere it goes. What's sent and what's received
+both have taken out what no screen should be sent: control characters and
+terminal escape sequences (a log's colour codes, or a line that would
+retitle or redraw a receiver's terminal), characters that reorder or hide
+the text around them, and piles of stacked accents. Senders' names (from
+RTCP and SAP) get the same, on one line. The web pages only ever put it on
+the page as text, never as markup.
+
 `chat` is send and receive on one group (default `239.69.1.1:5004`, kept away
 from the audio and paging groups), without SAP. Everyone who runs
 `mcast text chat` on the same group sees each other's lines:
@@ -850,7 +865,8 @@ schedules, time zone and days off. A Sounds tab manages the mcast server's
 sound files in folders. Playlists play sounds and text pages in order; a text
 page is spoken by `mcast serve`, shown on the zones' text displays (`mcast
 text recv`) and on a full-screen display page (`?display=1`), or both, as the
-playlist reaches it. Live announcements are push to talk from the
+playlist reaches it. A page can carry emoji (typed, picked in the editor, or
+as shortcodes like `:warning:`): they're shown, and left out of the speech. Live announcements are push to talk from the
 browser's microphone, which browsers only allow over HTTPS:
 `--tls-self-signed` (or `--tls-cert`/`--tls-key`) serves the panel that way.
 It is its own server with its own token (`--panel-token`); `--url` and
@@ -879,17 +895,18 @@ file's format and the panel's API. On a Raspberry Pi, `ENABLE_INTERCOM=yes` in
 
 | Crate | Purpose |
 |---|---|
+| `crates/mcast-plain` | Plain text for everything that shows, sends or speaks it: what's safe to show, emoji and their shortcodes, the words a speech engine gets. No dependencies |
 | `crates/mcast-core` | Multicast sockets (v4/v6), RTP, RTCP (packets and sender/receiver sessions), SAP announce/directory, SDP parse/write |
 | `crates/mcast-audio` | Codecs (L16/L24, G.711, G.722, Opus), voice/music processing (`process`, `dsp`), resamplers, packetizer, reorder and jitter buffers, drift control, sender & receiver, device I/O (cpal) |
-| `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, SDP |
+| `crates/mcast-text` | Real-time text: T.140 + RFC 2198 redundancy, sender, receiver, line buffering, the transcript (who said what) the CLI and API both show, SDP |
 | `crates/mcast-file` | Files over multicast: RaptorQ encoding, packet format, receiver/assembler, terminal picture preview |
 | `crates/mcast-monitor` | Stream monitor: per-source rate, loss, jitter, TTL, DSCP, level; RTCP senders and listeners |
 | `crates/mcast-control` | Send/receive requests shared by the CLI and the API; jobs, SAP list and monitor as background services |
 | `crates/mcast-server` | HTTP/JSON API (`mcast serve`) |
 | `crates/mcast-tui` | Terminal front end (`mcast tui`), an API client built on ratatui |
-| `crates/mcast-intercom` | Intercom panel (`mcast intercom`): zones, announcements, schedules, its own web page and API; an API client that uses no other mcast crate |
+| `crates/mcast-intercom` | Intercom panel (`mcast intercom`): zones, announcements, schedules, its own web page and API; an API client that uses no other mcast crate but `mcast-plain` |
 | `crates/mcast-web` | Web GUI: plain HTML/CSS/JS modules in `assets/` (one per panel, no build step), embedded in the binary |
-| `crates/mcast` | The `mcast` CLI |
+| `crates/mcast` | The `mcast` CLI: a module per command family (`audio`, `text`, `file`, `monitor`, `serve`, `intercom`, `book`, `presets`, `update`) |
 | `scripts/mcast-play.sh` | ffmpeg-based paging script |
 | `pi/` | Raspberry Pi appliance build: `mcast serve` as a service, LLDP/CDP, SSH, Cockpit, firewall ([pi/README.md](pi/README.md)) |
 

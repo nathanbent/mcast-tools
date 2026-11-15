@@ -27,6 +27,7 @@ rustfft = "6"
 symphonia = { version = "0.5", features = ["all"] }
 libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
+mcast-plain = { path = "crates/mcast-plain" }
 mcast-core = { path = "crates/mcast-core" }
 mcast-audio = { path = "crates/mcast-audio" }
 mcast-monitor = { path = "crates/mcast-monitor" }

@@ -7,8 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 
 # Only talks to `mcast serve` over HTTP: no dependency on the other mcast
-# crates, so it can move out of this workspace on its own.
+# crates, so it can move out of this workspace on its own. The exception is
+# mcast-plain (text pages: emoji, and what's shown and spoken), which has no
+# dependencies of its own and would move with it.
 [dependencies]
+mcast-plain.workspace = true
 anyhow.workspace = true
 axum = { workspace = true, features = ["ws"] }
 futures-util.workspace = true

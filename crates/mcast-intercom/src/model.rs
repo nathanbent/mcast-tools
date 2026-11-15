@@ -254,8 +254,11 @@ fn is_tiles(m: &PanelMode) -> bool {
     *m == PanelMode::Tiles
 }
 
-/// Longest icon (an emoji or a few characters), in characters.
+/// Longest icon (an emoji or a few characters), in characters as they're
+/// seen: an emoji made of several (a flag, a family) is one.
 pub const MAX_ICON: usize = 4;
+/// And in code points, however they join up.
+const MAX_ICON_CHARS: usize = 32;
 
 fn check_look(what: &str, color: &Option<String>, icon: &Option<String>) -> Result<()> {
     if let Some(c) = color {
@@ -264,8 +267,13 @@ fn check_look(what: &str, color: &Option<String>, icon: &Option<String>) -> Resu
         }
     }
     if let Some(i) = icon {
-        let n = i.chars().count();
-        if n == 0 || n > MAX_ICON || i.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        let n = mcast_plain::emoji::count(i);
+        if n == 0
+            || n > MAX_ICON
+            || i.chars().count() > MAX_ICON_CHARS
+            || i.chars().any(char::is_whitespace)
+            || mcast_plain::clean(i) != *i
+        {
             bail!("{what}: an icon is an emoji or up to {MAX_ICON} characters, no spaces");
         }
     }
@@ -323,7 +331,8 @@ pub enum PlaylistItem {
     /// `{"type": "text", "text": "The library closes in ten minutes"}`: a
     /// text page, spoken by the mcast server's text to speech (`speak`)
     /// and shown on the displays of the zones it plays to (`show`), as the
-    /// playlist reaches it.
+    /// playlist reaches it. Emoji (typed, or as shortcodes: `:bell:`) are
+    /// shown and not spoken.
     Text {
         text: String,
         #[serde(default = "yes", skip_serializing_if = "is_true")]
@@ -360,7 +369,30 @@ impl PlaylistItem {
     pub fn audible(&self) -> bool {
         match self {
             PlaylistItem::Sound { .. } => true,
-            PlaylistItem::Text { speak, .. } => *speak,
+            PlaylistItem::Text { .. } => self.spoken().is_some(),
+        }
+    }
+
+    /// A text page's words for the speech engine, when it's spoken: no
+    /// emoji. A page of nothing but emoji has nothing to say, so it's only
+    /// shown.
+    pub fn spoken(&self) -> Option<String> {
+        match self {
+            PlaylistItem::Text {
+                text, speak: true, ..
+            } => Some(mcast_plain::spoken(text)).filter(|t| !t.is_empty()),
+            _ => None,
+        }
+    }
+
+    /// A text page as displays get it, when it's shown: shortcodes as
+    /// emoji, and nothing that isn't safe to show.
+    pub fn shown(&self) -> Option<String> {
+        match self {
+            PlaylistItem::Text {
+                text, show: true, ..
+            } => Some(mcast_plain::shown(text).trim().to_string()).filter(|t| !t.is_empty()),
+            _ => None,
         }
     }
 
@@ -369,24 +401,17 @@ impl PlaylistItem {
     fn source_item(&self) -> Option<Value> {
         match self {
             PlaylistItem::Sound { media } => Some(media.as_str().into()),
-            PlaylistItem::Text {
-                text,
-                speak: true,
-                voice,
-                ..
-            } => {
-                let mut v = json!({ "say": text.trim() });
-                if let Some(voice) = voice {
-                    v["voice"] = voice.as_str().into();
+            PlaylistItem::Text { voice, seconds, .. } => {
+                if let Some(say) = self.spoken() {
+                    let mut v = json!({ "say": say });
+                    if let Some(voice) = voice {
+                        v["voice"] = voice.as_str().into();
+                    }
+                    return Some(v);
                 }
-                Some(v)
+                self.shown()
+                    .map(|_| json!({ "silence_ms": seconds.unwrap_or(SHOW_SECS) * 1000 }))
             }
-            PlaylistItem::Text {
-                show: true,
-                seconds,
-                ..
-            } => Some(json!({ "silence_ms": seconds.unwrap_or(SHOW_SECS) * 1000 })),
-            PlaylistItem::Text { .. } => None,
         }
     }
 }
@@ -400,20 +425,13 @@ impl Playlist {
         self.items
             .iter()
             .filter(|i| i.source_item().is_some())
-            .map(|i| match i {
-                PlaylistItem::Text {
-                    text, show: true, ..
-                } => vec![text.trim().to_string()],
-                _ => Vec::new(),
-            })
+            .map(|i| i.shown().into_iter().collect())
             .collect()
     }
 
     /// Whether anything in it is shown on displays.
     pub fn shows_text(&self) -> bool {
-        self.items
-            .iter()
-            .any(|i| matches!(i, PlaylistItem::Text { show: true, .. }))
+        self.items.iter().any(|i| i.shown().is_some())
     }
 }
 
@@ -1454,7 +1472,7 @@ impl Config {
                         seconds,
                     } => {
                         let what = format!("{what}, item {}", n + 1);
-                        if text.trim().is_empty() {
+                        if mcast_plain::shown(text).trim().is_empty() {
                             bail!("{what}: the text is empty");
                         }
                         if text.chars().count() > MAX_TEXT {
@@ -1463,8 +1481,11 @@ impl Config {
                         if !speak && !show {
                             bail!("{what}: text must be spoken, shown or both");
                         }
+                        if !show && item.spoken().is_none() {
+                            bail!("{what}: there are no words to speak (emoji are only shown)");
+                        }
                         if let Some(n) = seconds {
-                            if *speak {
+                            if item.spoken().is_some() {
                                 bail!("{what}: only a page that's only shown has seconds");
                             }
                             if !(1..=MAX_SHOW_SECS).contains(n) {

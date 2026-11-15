@@ -1,0 +1,11 @@
+[package]
+name = "mcast-plain"
+description = "Plain text for mcast-tools: what's safe to show, what's spoken, and emoji"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# No dependencies, on purpose: everything that shows, sends or speaks text
+# uses this, including crates that otherwise stand alone.
+[dependencies]

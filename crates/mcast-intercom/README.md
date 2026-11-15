@@ -116,6 +116,19 @@ A playlist item can be a text page, spoken, shown, or both (the default):
 
   A page stays up while the run plays, and for 10 s after it ends; a
   stopped run's come down at once.
+- **Emoji** are shown and never spoken. Type or paste them, pick one from
+  the row under the 🙂 button in the editor, or write a shortcode by the
+  name GitHub and Slack use (`:warning:`, `:fire:`, `:bell:`,
+  `:rotating_light:`; a name that isn't known stays as typed). Displays
+  get `⚠️ Fire drill at 3pm 🔥`; the speech engine gets `Fire drill at
+  3pm`. A page of nothing but emoji has nothing to say, so it's only
+  shown, for its *Show for* time. The display page uses the browser's
+  emoji font: a kiosk on Linux needs one installed (Debian's
+  `fonts-noto-color-emoji`).
+- **Plain text only.** A page is shown as text, never as markup, and has
+  taken out of it what no screen should be sent: control characters and
+  terminal escape sequences, characters that reorder or hide the text
+  around them, and piles of stacked accents.
 - **Parts** show their own playlist's pages, on their own zones' displays.
 
 It needs an mcast server from 0.5.5 on: older ones refuse spoken items,
@@ -382,7 +395,7 @@ the text pages of what plays here (see *Text pages*); up to 20.
 | `category` | none | The Panel heading it's under (a category's id); none puts it under "Other" |
 | `tags` | none | For filtering the Panel: up to 20, each up to 32 characters, no commas |
 | `color` | its category's | Its button's color: `red`, `orange`, `amber`, `green`, `teal`, `blue`, `purple` or `grey` (high and emergency keep their amber or red edge) |
-| `icon` | none | An emoji (up to 4 characters, no spaces) on its button |
+| `icon` | none | An emoji, or up to 4 characters, on its button (no spaces; an emoji made of several, such as a flag or a family, counts as one) |
 | `confirm` | `false` | Ask "are you sure?" before playing it from the Panel |
 | `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ...}]`, `audio` as above but not live. A zone can be in only one place: the announcement's own `zones` or one part |
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |

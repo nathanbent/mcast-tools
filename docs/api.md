@@ -50,7 +50,7 @@ Errors are JSON: `{"error": "message"}`.
 | POST | `/receivers` | Start receiving (body: receive request). `201` with the job |
 | POST | `/texts` | Join a text channel (body: text request). `201` with the job |
 | POST | `/jobs/{id}/live` | For a sender with a `live` source: the request body, as it arrives, is the page's audio, 16-bit little-endian PCM at the source's rate and channels (send it chunked). When the body ends, the page plays what's left, then its end chime and tail, and finishes. Returns `{"bytes"}` then, or `409` if the job was stopped first |
-| POST | `/jobs/{id}/text` | `{"text": "..."}`: send on a text channel, a line per line. Returns the lines |
+| POST | `/jobs/{id}/text` | `{"text": "..."}`: send on a text channel, a line per line. Emoji shortcodes (`:fire:`) become emoji, and control characters and escape sequences are taken out. Returns the lines as sent |
 | GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
 | POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
 | POST | `/file-receivers` | Receive files into the media directory (body: file receive request). `201` with the job |
@@ -135,6 +135,9 @@ minutes"}`, with an optional `voice`. The server speaks each into a WAV
 before the sender starts (so `POST /senders` takes longer the first time),
 and keeps it in a cache, so the same words in the same voice are spoken
 once. Up to 2000 characters per item; the job's `request` shows the text.
+The engine gets the words only: emoji, and shortcodes for them (`:bell:`),
+are left out, since engines read them out as nonsense or stop at them. An
+item with nothing else in it fails with `400`.
 
 The engine is found when the server starts:
 
