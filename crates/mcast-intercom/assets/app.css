@@ -437,6 +437,12 @@ fieldset.part > p { margin: 0; }
 .target-main .field { flex: 1; }
 .target-options > summary { margin: 0; font-size: calc(13px * var(--fs)); }
 .target-options[open] > summary { margin-bottom: 10px; }
+.when-weekly { display: flex; flex-direction: column; gap: 10px; }
+.times-row, .times { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.times .time { display: inline-flex; align-items: center; gap: 2px; }
+.times input[type="time"] { width: auto; }
+details.later { margin: 6px 0 14px; }
+details.add-day { margin-top: 12px; }
 /* A section folded away until it's wanted, with what it's set to beside its name */
 details.part { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
 details.part > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0; color: var(--text); list-style-position: outside; }
