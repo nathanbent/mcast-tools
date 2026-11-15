@@ -17,11 +17,12 @@
 //! first, minus any that the command line sets again or conflicts with, so
 //! options typed on the command line always win.
 
+use crate::audio::{DiscoverArgs, RecvArgs, SendArgs};
+use crate::monitor::MonitorArgs;
 use crate::update::UpdateArgs;
-use crate::{DiscoverArgs, MonitorArgs, RecvArgs, SendArgs};
 use anyhow::{anyhow, bail, Context, Result};
 use clap::parser::ValueSource;
-use clap::{Arg, Args, Command};
+use clap::{Arg, Args, Command, Subcommand};
 use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
@@ -619,6 +620,159 @@ fn strings(options: &[OsString]) -> Result<Vec<String>> {
                 .with_context(|| format!("option {o:?} isn't valid UTF-8"))
         })
         .collect()
+}
+
+#[derive(Subcommand)]
+#[command(after_help = "Examples:
+  mcast preset create page-1 -g 239.192.2.1:10000 -e g711u --tos 184 --no-sap
+  mcast preset set page-1 -p -C -L 800          # add or change options
+  mcast preset unset page-1 chime               # remove one (by name or flag)
+  mcast @page-1 --file page.wav                 # run it; options given here win
+  mcast audio send -P page-1 --file page.wav    # same
+  mcast preset create lobby --recv -s lobby -v -6
+  mcast preset create zones --monitor 239.192.2.1:10000 239.192.2.2:10000 --sap
+  mcast @zones --log                            # groups given here replace the preset's
+  mcast preset create sap2 --discover --sap-group 239.195.255.255:9875 --sdp
+  mcast preset create dev --update -b dev --path ~/src/mcast-tools
+
+Presets are kept in ~/.config/mcast/presets.conf ($MCAST_PRESETS overrides),
+one option per line; the file can be edited by hand.")]
+pub(crate) enum PresetCommand {
+    /// Create a preset for `audio send` (or `audio recv` with --recv, `audio
+    /// discover` with --discover, `monitor` with --monitor, `update` with
+    /// --update), with any options
+    Create {
+        name: String,
+        /// The preset is for `mcast audio recv` (put this before the options)
+        #[arg(long)]
+        recv: bool,
+        /// The preset is for `mcast audio discover` (put this before the options)
+        #[arg(long, conflicts_with = "recv")]
+        discover: bool,
+        /// The preset is for `mcast monitor` (put this before the options)
+        #[arg(long, conflicts_with_all = ["recv", "discover"])]
+        monitor: bool,
+        /// The preset is for `mcast update` (put this before the options)
+        #[arg(long, conflicts_with_all = ["recv", "discover", "monitor"])]
+        update: bool,
+        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor, update)
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// Add or change options (creating a send preset if needed); they replace
+    /// the same option, or ones they conflict with, e.g. --file replaces --tone
+    Set {
+        name: String,
+        /// Options, exactly as for `mcast audio send` (or recv, discover, monitor, update); see their --help
+        #[arg(
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// Remove options, named like `group`, `--group` or `-g` (`groups` for monitor's groups)
+    Unset {
+        name: String,
+        #[arg(required = true, allow_hyphen_values = true, value_name = "OPTION")]
+        options: Vec<String>,
+    },
+    /// Run a preset; extra options are added and override it. Shortcut: mcast @NAME
+    Run {
+        name: String,
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "OPTIONS"
+        )]
+        options: Vec<OsString>,
+    },
+    /// List presets, or show one, as the commands they run
+    #[command(visible_aliases = ["ls", "show"])]
+    List { name: Option<String> },
+    /// Copy a preset to a new name
+    #[command(visible_alias = "cp")]
+    Copy { from: String, to: String },
+    /// Delete a preset
+    #[command(visible_alias = "rm")]
+    Delete { name: String },
+}
+
+pub(crate) fn run(c: PresetCommand) -> Result<()> {
+    let mut store = Store::load()?;
+    match c {
+        PresetCommand::Create {
+            name,
+            recv,
+            discover,
+            monitor,
+            update,
+            options,
+        } => {
+            let kind = if recv {
+                Kind::Recv
+            } else if discover {
+                Kind::Discover
+            } else if monitor {
+                Kind::Monitor
+            } else if update {
+                Kind::Update
+            } else {
+                Kind::Send
+            };
+            let p = store.create(&name, kind, &options)?;
+            println!("created {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Set { name, options } => {
+            let (p, created) = store.set(&name, &options)?;
+            let verb = if created { "created" } else { "updated" };
+            println!("{verb} {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Unset { name, options } => {
+            let p = store.unset(&name, &options)?;
+            println!("updated {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Run { name, .. } => {
+            // `expand` rewrites `preset run NAME` before parsing.
+            bail!("can't run preset \"{name}\"");
+        }
+        PresetCommand::List { name: Some(name) } => {
+            println!("{}", store.get(&name)?.command_line());
+            return Ok(());
+        }
+        PresetCommand::List { name: None } => {
+            if store.presets.is_empty() {
+                eprintln!(
+                    "no presets in {}; create one with `mcast preset create NAME [OPTIONS]`",
+                    store.path.display()
+                );
+            }
+            let width = store
+                .presets
+                .iter()
+                .map(|p| p.name.len())
+                .max()
+                .unwrap_or(0);
+            for p in &store.presets {
+                println!("{:<width$}  {}", p.name, p.command_line());
+            }
+            return Ok(());
+        }
+        PresetCommand::Copy { from, to } => {
+            let p = store.copy(&from, &to)?;
+            println!("created {}: {}", p.name, p.command_line());
+        }
+        PresetCommand::Delete { name } => {
+            store.delete(&name)?;
+            println!("deleted {name}");
+        }
+    }
+    store.save()
 }
 
 #[cfg(test)]
