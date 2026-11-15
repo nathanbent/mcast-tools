@@ -56,12 +56,18 @@ impl LineBuffer {
 
     /// The unfinished line, if the sender has gone quiet for `after`.
     pub fn take_stale(&mut self, now: Instant, after: Duration) -> Option<String> {
-        (!self.partial.is_empty() && now.duration_since(self.last) >= after).then(|| self.finish())
+        // Nothing left once it's made safe to show (only control strings,
+        // say) is nothing to show.
+        (!self.partial.is_empty() && now.duration_since(self.last) >= after)
+            .then(|| self.finish())
+            .filter(|l| !l.is_empty())
     }
 
     /// The unfinished line, whatever its age.
     pub fn take(&mut self) -> Option<String> {
-        (!self.partial.is_empty()).then(|| self.finish())
+        (!self.partial.is_empty())
+            .then(|| self.finish())
+            .filter(|l| !l.is_empty())
     }
 }
 
@@ -102,6 +108,14 @@ mod tests {
             b.push("ok \u{1F525}\u{8}\u{2705}\n", t0),
             vec!["ok \u{2705}".to_string()]
         );
+        // A half-typed line of nothing that's shown isn't a line.
+        assert!(b.push("\u{98}for a program\u{9c}", t0).is_empty());
+        assert_eq!(
+            b.take_stale(t0 + Duration::from_secs(9), Duration::from_secs(3)),
+            None
+        );
+        assert!(b.push("\u{98}again\u{9c}", t0).is_empty());
+        assert_eq!(b.take(), None);
         // A line that never ends is ended for it.
         let long = b.push(&"x".repeat(MAX_LINE + 10), t0);
         assert_eq!(long.len(), 1);

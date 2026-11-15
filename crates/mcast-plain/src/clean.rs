@@ -47,6 +47,9 @@ pub fn clean(text: &str) -> String {
             '\u{1b}' => skip_escape(&mut chars),
             // The one-character form of `ESC [`.
             '\u{9b}' => skip_csi(&mut chars),
+            // And of the strings (DCS, SOS, OSC, PM, APC): what's in one
+            // is for a program, never for showing.
+            '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
             c if is_tag(c) => {
                 if was_flag {
                     out.push(c);
@@ -102,30 +105,35 @@ fn skip_escape(chars: &mut Peekable<Chars>) {
         // and never past the end of the line.
         Some(']' | 'P' | 'X' | '^' | '_') => {
             chars.next();
-            while let Some(&c) = chars.peek() {
-                match c {
-                    '\n' | '\r' => break,
-                    '\u{7}' | '\u{9c}' => {
-                        chars.next();
-                        break;
-                    }
-                    '\u{1b}' => {
-                        chars.next();
-                        if chars.peek() == Some(&'\\') {
-                            chars.next();
-                        }
-                        break;
-                    }
-                    _ => {
-                        chars.next();
-                    }
-                }
-            }
+            skip_string(chars);
         }
         // Two- and three-character sequences: intermediates, then a final.
         _ => {
             while chars.next_if(|c| matches!(c, ' '..='/')).is_some() {}
             chars.next_if(|c| matches!(c, '0'..='~'));
+        }
+    }
+}
+
+/// Skip a control string's contents and its terminator (BEL or ST).
+fn skip_string(chars: &mut Peekable<Chars>) {
+    while let Some(&c) = chars.peek() {
+        match c {
+            '\n' | '\r' => break,
+            '\u{7}' | '\u{9c}' => {
+                chars.next();
+                break;
+            }
+            '\u{1b}' => {
+                chars.next();
+                if chars.peek() == Some(&'\\') {
+                    chars.next();
+                }
+                break;
+            }
+            _ => {
+                chars.next();
+            }
         }
     }
 }
@@ -151,6 +159,9 @@ mod tests {
         assert_eq!(clean("\u{1b}]0;pwned\u{1b}\\ok"), "ok");
         assert_eq!(clean("\u{1b}]0;pwned\nnext"), "\nnext");
         assert_eq!(clean("\u{1b}(Bx \u{1b}cy \u{1b}"), "x y ");
+        // The one-character forms of a string: its contents aren't shown either.
+        assert_eq!(clean("a\u{98}for a program\u{9c}b"), "ab");
+        assert_eq!(clean("\u{9d}0;title\u{7}ok\u{90}x\u{1b}\\!"), "ok!");
         // An escape cut short doesn't eat the text after it.
         assert_eq!(clean("\u{1b}[31"), "");
         assert_eq!(clean("\u{1b}[\u{e9}t\u{e9}"), "\u{e9}t\u{e9}");
