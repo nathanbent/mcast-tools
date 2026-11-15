@@ -192,6 +192,8 @@ struct PartDisplays {
     zones: Vec<String>,
     /// Its zones' display groups, as written.
     groups: Vec<String>,
+    /// Those of them that get only the words.
+    plain_groups: Vec<String>,
 }
 
 /// A text page to show now: on the panel's display page for `zones`, and
@@ -207,6 +209,9 @@ pub struct Shown {
     /// Display groups (phonebook names or addresses).
     #[serde(skip)]
     pub groups: Vec<String>,
+    /// Those of them that get only the words, without what the page is.
+    #[serde(skip)]
+    pub plain_groups: Vec<String>,
     pub text: Vec<String>,
     pub at_ms: u64,
 }
@@ -902,6 +907,7 @@ impl Inner {
                     priority: run.priority,
                     zones: d.zones.clone(),
                     groups: d.groups.clone(),
+                    plain_groups: d.plain_groups.clone(),
                     text: text.clone(),
                     at_ms,
                 };
@@ -1241,6 +1247,9 @@ fn part_displays(cfg: &Config, a: &Announcement, site: Option<&str>) -> Vec<Part
             d.zones.push(z.id.clone());
             for g in &z.displays {
                 add_name(&mut d.groups, g);
+                if z.plain_displays {
+                    add_name(&mut d.plain_groups, g);
+                }
             }
         }
         out.push(d);

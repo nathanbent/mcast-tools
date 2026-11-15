@@ -52,6 +52,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "up".into(),
                 name: "Upstairs".into(),
@@ -68,6 +69,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "down".into(),
                 name: "Downstairs".into(),
@@ -76,6 +78,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "two".into(),
                 name: "Just two".into(),

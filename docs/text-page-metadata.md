@@ -1,6 +1,6 @@
 # Design: page metadata over multicast
 
-Status: proposed, not built.
+Status: built (mcast-tools after 0.5.12).
 
 ## The gap
 
@@ -41,8 +41,8 @@ Why there, and not beside the stream:
 The cost is a receiver that doesn't follow the standard and shows the
 string. Our own do the right thing already: `mcast_plain::clean` drops
 control strings and their contents, so `mcast text recv` from this version
-on shows such a page as its plain lines. A zone's display can be marked
-`plain` to send it no metadata at all.
+on shows such a page as its plain lines. A zone can be set to send its
+displays the words alone (`plain_displays`).
 
 ## What is sent
 
@@ -85,25 +85,36 @@ only drops it shows no blank line for it.
   today, gathered by timing. Nothing is worse than now.
 - Text outside a page (someone using `mcast text send`) is unchanged.
 
-## Changes
+## Where it is in the code
 
 - **mcast-text**
-  - The line buffer hands control strings to a small page assembler
-    instead of dropping them.
-  - `Transcript` gains `Entry::Page { id, name, priority, hold, lines }`
-    and `Entry::Clear { id, now }`.
-  - The sender gets a way to queue an element; it shares the 400-byte
+  - `page`: the elements, written and read.
+  - `lines`: the line buffer takes control strings out of the text as
+    they come and hands on those that are elements.
+  - `transcript`: puts a page together, as `Entry::Page` (its lines with
+    what it is) and `Entry::Clear`. A page whose `show` is lost goes up
+    once its sender has been quiet for 3 s.
+  - `sender`: `push_page` and `push_element`. Elements share the 400-byte
     chunking and the redundancy with the text.
-- **mcast (CLI)**: `text recv --json` prints `{"type": "page", …}` and
-  `{"type": "clear", …}`. Without `--json` nothing changes.
-- **mcast serve API**: `POST /jobs/{id}/text` takes an optional `page`
-  (`id`, `name`, `priority`, `hold_s`), and a new call clears one. Text
-  lines read back from a channel say which page they belong to.
-- **Intercom panel**: sends pages with their metadata, and `clear` when a
-  run ends or is stopped. A zone display can be `plain`.
-- **TouchFrame**: reads `page` and `clear` from `--json`; drops the
-  timing, the word list and the fixed hold for pages that have them, and
-  matches a page to the panel's by `ID`.
+- **mcast (CLI)**
+  - `text recv --json` prints `{"type": "page", "id", "name", "priority",
+    "hold_s", "text": [lines], …}` and `{"type": "clear", "id", "now"}`.
+    Without `--json` a page is printed as its lines.
+  - `text send --page TITLE [--priority P] [--hold SECS] MESSAGE` sends
+    one, and its `clear` straight after, so it's up for `--hold` seconds.
+- **mcast serve API**
+  - `POST /jobs/{id}/text` takes an optional `page` (`id`, `name`,
+    `priority`, `hold_s`); `POST /jobs/{id}/text/clear` (`page`, `now`)
+    ends one.
+  - Lines read back from a channel have `page` when they're of one, and a
+    `text_cleared` event says when one comes down.
+- **Intercom panel**: sends each page to its zones' display groups as a
+  page, and `clear` when the run ends (`now` when it was stopped). A zone
+  with `plain_displays` gets the words alone, as does an mcast server from
+  before pages.
+- **TouchFrame**: reads `page` and `clear` from `--json`. For those pages
+  nothing is guessed: no timing, no word list, no fixed hold; and a page
+  that also comes from the panel is matched to it by its id.
 
 ## Not solved here
 

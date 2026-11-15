@@ -4,6 +4,12 @@
 //!
 //! The runner says when a run reaches a text page ([`Change::Shown`]);
 //! this keeps the page up while the run plays and for [`HOLD`] after.
+//!
+//! Display groups get each page as a page: its lines with its name and
+//! priority, and its end when the run ends (`docs/text-page-metadata.md`),
+//! so a display that only hears multicast shows it as the display page
+//! does. Groups of a zone with `plain_displays`, and an mcast server too
+//! old to send pages, get the words alone.
 
 use crate::backend::Backend;
 use crate::model::Priority;
@@ -48,7 +54,35 @@ pub struct Page {
 pub struct Displays {
     board: Mutex<Vec<Page>>,
     on_page: Box<dyn Fn(&Page) + Send + Sync>,
-    work: Mutex<mpsc::Sender<(Vec<String>, Vec<String>)>>,
+    work: Mutex<mpsc::Sender<Work>>,
+    /// The pages each run sent to display groups as pages, to clear when
+    /// it ends.
+    sent: Mutex<HashMap<RunId, Vec<SentPage>>>,
+}
+
+/// A page sent as a page: its id, and the groups it went to.
+type SentPage = (String, Vec<String>);
+
+/// Something for the channels' thread to send.
+enum Work {
+    /// A page's lines to `groups`; with `page`, as a page.
+    Text {
+        groups: Vec<String>,
+        text: Vec<String>,
+        page: Option<serde_json::Value>,
+    },
+    /// The page comes down.
+    Clear {
+        groups: Vec<String>,
+        id: String,
+        now: bool,
+    },
+}
+
+/// A page's id on the wire: its run and when it went up, as the API's
+/// pages have them, so a display that gets it both ways can tell.
+pub fn page_id(run: RunId, at_ms: u64) -> String {
+    format!("{run}.{at_ms}")
 }
 
 impl Displays {
@@ -66,6 +100,7 @@ impl Displays {
             board: Mutex::new(Vec::new()),
             on_page: Box::new(on_page),
             work: Mutex::new(tx),
+            sent: Mutex::default(),
         }
     }
 
@@ -93,6 +128,20 @@ impl Displays {
                 for p in &ended {
                     (self.on_page)(p);
                 }
+                let now = run.state == crate::RunState::Stopped;
+                for (id, groups) in self
+                    .sent
+                    .lock()
+                    .unwrap()
+                    .remove(&run.id)
+                    .unwrap_or_default()
+                {
+                    let _ = self
+                        .work
+                        .lock()
+                        .unwrap()
+                        .send(Work::Clear { groups, id, now });
+                }
             }
             _ => {}
         }
@@ -118,12 +167,39 @@ impl Displays {
             board.drain(..over);
         }
         (self.on_page)(&page);
-        if !s.groups.is_empty() {
-            let _ = self
-                .work
-                .lock()
-                .unwrap()
-                .send((s.groups.clone(), s.text.clone()));
+        let (plain, paged): (Vec<String>, Vec<String>) = s
+            .groups
+            .iter()
+            .cloned()
+            .partition(|g| s.plain_groups.contains(g));
+        let work = self.work.lock().unwrap();
+        if !plain.is_empty() {
+            let _ = work.send(Work::Text {
+                groups: plain,
+                text: s.text.clone(),
+                page: None,
+            });
+        }
+        if !paged.is_empty() {
+            let id = page_id(s.run, s.at_ms);
+            let mut sent = self.sent.lock().unwrap();
+            // Runs that never ended here (the panel was told of no end) don't pile up.
+            if sent.len() > KEEP {
+                sent.clear();
+            }
+            sent.entry(s.run)
+                .or_default()
+                .push((id.clone(), paged.clone()));
+            let _ = work.send(Work::Text {
+                groups: paged,
+                text: s.text.clone(),
+                page: Some(json!({
+                    "id": id,
+                    "name": s.name,
+                    "priority": s.priority,
+                    "hold_s": HOLD.as_secs(),
+                })),
+            });
         }
     }
 
@@ -146,6 +222,8 @@ struct Channels {
     backend: Arc<dyn Backend>,
     /// Address → (job, last used).
     open: HashMap<String, (u64, Instant)>,
+    /// The mcast server is too old to send pages: it gets the words.
+    no_pages: bool,
 }
 
 impl Channels {
@@ -153,13 +231,15 @@ impl Channels {
         Self {
             backend,
             open: HashMap::new(),
+            no_pages: false,
         }
     }
 
-    fn run(mut self, rx: mpsc::Receiver<(Vec<String>, Vec<String>)>) {
+    fn run(mut self, rx: mpsc::Receiver<Work>) {
         loop {
             match rx.recv_timeout(Duration::from_secs(30)) {
-                Ok((groups, text)) => self.send(&groups, &text),
+                Ok(Work::Text { groups, text, page }) => self.send(&groups, &text, page.as_ref()),
+                Ok(Work::Clear { groups, id, now }) => self.clear(&groups, &id, now),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -168,9 +248,10 @@ impl Channels {
         self.close_idle(Duration::ZERO);
     }
 
-    fn send(&mut self, groups: &[String], text: &[String]) {
-        let line = text.join("\n");
+    /// The groups' addresses: as written, or by their phonebook names.
+    fn addresses(&self, groups: &[String]) -> Vec<(String, String)> {
         let mut book = None;
+        let mut out = Vec::new();
         for g in groups {
             let address = match g.trim().parse::<SocketAddr>() {
                 Ok(a) => a.to_string(),
@@ -189,15 +270,49 @@ impl Channels {
                     }
                 }
             };
-            if let Err(e) = self.send_to(&address, &line) {
+            out.push((g.clone(), address));
+        }
+        out
+    }
+
+    fn send(&mut self, groups: &[String], text: &[String], page: Option<&serde_json::Value>) {
+        let line = text.join("\n");
+        for (g, address) in self.addresses(groups) {
+            if let Err(e) = self.send_to(&address, &line, page) {
                 eprintln!("mcast intercom: showing text on {g}: {e}");
+            }
+        }
+    }
+
+    /// Take a page down on the groups whose channel is still open (a
+    /// channel that's gone took its pages' displays' attention with it:
+    /// they bring a page down by themselves when no end comes).
+    fn clear(&mut self, groups: &[String], id: &str, now: bool) {
+        if self.no_pages {
+            return;
+        }
+        for (g, address) in self.addresses(groups) {
+            let Some(&(job, _)) = self.open.get(&address) else {
+                continue;
+            };
+            match self.backend.clear_page(job, id, now) {
+                Ok(()) => {
+                    self.open.insert(address, (job, Instant::now()));
+                }
+                Err(e) if e.status == 404 => self.no_pages = true,
+                Err(e) => eprintln!("mcast intercom: clearing text on {g}: {e}"),
             }
         }
     }
 
     /// Send on the group's channel, opening it if need be, and once more
     /// on a new one if the old one has gone (the server restarted, say).
-    fn send_to(&mut self, address: &str, line: &str) -> Result<(), crate::BackendError> {
+    fn send_to(
+        &mut self,
+        address: &str,
+        line: &str,
+        page: Option<&serde_json::Value>,
+    ) -> Result<(), crate::BackendError> {
         for fresh in [false, true] {
             let job = match self.open.get(address) {
                 Some((job, _)) if !fresh => *job,
@@ -217,7 +332,14 @@ impl Channels {
                     job
                 }
             };
-            match self.backend.send_text(job, line) {
+            let page = page.filter(|_| !self.no_pages);
+            let mut sent = self.backend.send_text(job, line, page);
+            // A server from before pages refuses the field: the words still go.
+            if page.is_some() && sent.as_ref().is_err_and(|e| matches!(e.status, 400 | 422)) {
+                self.no_pages = true;
+                sent = self.backend.send_text(job, line, None);
+            }
+            match sent {
                 Ok(()) => {
                     self.open.insert(address.to_string(), (job, Instant::now()));
                     return Ok(());
@@ -257,6 +379,7 @@ mod tests {
             priority: Priority::Normal,
             zones: zones.iter().map(|z| z.to_string()).collect(),
             groups: groups.iter().map(|g| g.to_string()).collect(),
+            plain_groups: Vec::new(),
             text: vec![text.to_string()],
             at_ms: now_ms(),
         }
@@ -348,17 +471,73 @@ mod tests {
     fn reopens_a_channel_that_went_away() {
         let fake = Arc::new(Fake::default());
         let mut ch = Channels::new(fake.clone());
-        ch.send(&["239.9.9.9:5004".into()], &["one".into()]);
+        ch.send(&["239.9.9.9:5004".into()], &["one".into()], None);
         let job = fake.running_on("239.9.9.9:5004").unwrap();
         fake.end(job, "stopped");
-        ch.send(&["239.9.9.9:5004".into()], &["two".into()]);
+        ch.send(&["239.9.9.9:5004".into()], &["two".into()], None);
         assert_eq!(fake.texts().len(), 2);
         assert_ne!(fake.running_on("239.9.9.9:5004"), Some(job));
         // Idle channels are closed, freeing their groups.
         ch.close_idle(Duration::ZERO);
         assert_eq!(fake.running_on("239.9.9.9:5004"), None);
         // A name that isn't in the phonebook is skipped.
-        ch.send(&["Nowhere".into()], &["three".into()]);
+        ch.send(&["Nowhere".into()], &["three".into()], None);
         assert_eq!(fake.texts().len(), 2);
+    }
+
+    #[test]
+    fn display_groups_get_pages_as_pages_and_their_end() {
+        let fake = Arc::new(Fake::default());
+        let d = Displays::start(fake.clone(), |_| {});
+        let mut s = shown(
+            7,
+            &["hall"],
+            &["239.1.2.3:5004", "239.1.2.4:5004"],
+            "Fire drill",
+        );
+        s.priority = Priority::Emergency;
+        s.plain_groups = vec!["239.1.2.4:5004".into()];
+        let id = page_id(7, s.at_ms);
+        d.observe(&Change::Shown(&s));
+        assert_eq!(wait_for(&fake, 2).len(), 2);
+        // The page's name, priority and hold go to the group that takes
+        // pages; the plain one gets only the words.
+        let pages = fake.pages();
+        assert_eq!(pages.len(), 1, "{pages:?}");
+        assert_eq!(pages[0].0, "239.1.2.3:5004");
+        assert_eq!(
+            pages[0].1,
+            json!({"id": id, "name": "Closing", "priority": "emergency", "hold_s": 10})
+        );
+        // Stopped by hand: it comes down at once, there and only there.
+        let mut run = crate::Run::for_tests(7);
+        run.state = crate::RunState::Stopped;
+        run.shown.push(crate::runner::ShownText {
+            part: None,
+            round: 1,
+            item: Some(0),
+            text: vec!["x".into()],
+            at_ms: 0,
+        });
+        d.observe(&Change::Run(&run));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fake.cleared().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(fake.cleared(), [("239.1.2.3:5004".to_string(), id, true)]);
+    }
+
+    #[test]
+    fn an_older_server_gets_the_words() {
+        let fake = Arc::new(Fake::default());
+        fake.set_no_pages();
+        let mut ch = Channels::new(fake.clone());
+        let page = json!({"id": "1.2", "name": "X", "priority": "normal", "hold_s": 10});
+        ch.send(&["239.9.9.8:5004".into()], &["one".into()], Some(&page));
+        ch.send(&["239.9.9.8:5004".into()], &["two".into()], Some(&page));
+        assert_eq!(fake.texts().len(), 2);
+        assert!(fake.pages().is_empty());
+        ch.clear(&["239.9.9.8:5004".into()], "1.2", false);
+        assert!(fake.cleared().is_empty());
     }
 }

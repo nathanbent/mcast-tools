@@ -15,12 +15,14 @@
 //! each line completes.
 
 pub mod lines;
+pub mod page;
 pub mod receiver;
 pub mod sender;
 pub mod session;
 pub mod t140;
 pub mod transcript;
 
+pub use page::{PageInfo, Priority};
 pub use session::TextInfo;
 pub use transcript::{Entry, Transcript};
 

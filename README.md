@@ -621,6 +621,20 @@ prints one JSON object per line for another program to read (a display, a
 logger): `{"type": "line", "from": "Ops", "ssrc": "…", "text": "…",
 "at_ms": …}`, and `joined`, `named`, `left` and `warning` for the rest.
 
+A message can go as a **page**: lines that go up together on a display,
+with a heading, a priority and an end. The intercom sends its text pages
+this way, and so can anything else:
+
+```bash
+mcast text send --page "Lunch" --priority high --hold 30 "Pizza in the hall :pizza:"
+```
+
+A display that knows pages (`mcast text recv --json` prints `page` and
+`clear`, and [TouchFrame](https://github.com/nathanbent/TouchFrame) shows
+them) gets the heading, the priority and how long to stay up. Any other
+T.140 receiver shows the lines: what a page is rides in the text as
+strings a receiver leaves out ([docs/text-page-metadata.md](docs/text-page-metadata.md)).
+
 Emoji work, typed as themselves or as shortcodes, by the names GitHub and
 Slack use; a name that isn't known (and `10:30:00`) stays as typed:
 

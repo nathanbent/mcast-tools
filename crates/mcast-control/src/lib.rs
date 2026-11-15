@@ -12,8 +12,8 @@ pub mod watch;
 
 pub use announcements::{Announced, Announcements};
 pub use jobs::{
-    JobId, JobInfo, JobKind, JobState, Jobs, LiveError, ReceivedFile, StartError, TextError,
-    TextLine,
+    JobId, JobInfo, JobKind, JobState, Jobs, LiveError, PageRef, PageRequest, ReceivedFile,
+    StartError, TextError, TextLine,
 };
 pub use phonebook::Phonebook;
 pub use request::{FileRecvRequest, FileSendRequest, RecvRequest, SendRequest, TextRequest};
@@ -60,6 +60,15 @@ pub enum Event {
         job: JobId,
         ssrc: u32,
         name: String,
+    },
+    /// A page on a text channel comes down: after its hold, or at once
+    /// with `now`. `ssrc` is its sender's, or missing for one of our own.
+    TextCleared {
+        job: JobId,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ssrc: Option<u32>,
+        page: String,
+        now: bool,
     },
     /// A file finished arriving and was saved.
     FileReceived {

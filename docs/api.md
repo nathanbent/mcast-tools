@@ -50,7 +50,8 @@ Errors are JSON: `{"error": "message"}`.
 | POST | `/receivers` | Start receiving (body: receive request). `201` with the job |
 | POST | `/texts` | Join a text channel (body: text request). `201` with the job |
 | POST | `/jobs/{id}/live` | For a sender with a `live` source: the request body, as it arrives, is the page's audio, 16-bit little-endian PCM at the source's rate and channels (send it chunked). When the body ends, the page plays what's left, then its end chime and tail, and finishes. Returns `{"bytes"}` then, or `409` if the job was stopped first |
-| POST | `/jobs/{id}/text` | `{"text": "..."}`: send on a text channel, a line per line. Emoji shortcodes (`:fire:`) become emoji, and control characters and escape sequences are taken out. Returns the lines as sent |
+| POST | `/jobs/{id}/text` | `{"text": "..."}`: send on a text channel, a line per line. Emoji shortcodes (`:fire:`) become emoji, and control characters and escape sequences are taken out. Returns the lines as sent. With `"page": {"id", "name", "priority", "hold_s"}` (all optional: a made-up id, no name, `normal`, 10) the text goes as one page: displays that know pages put its lines up together, headed with `name`, until it's cleared (see [text-page-metadata.md](text-page-metadata.md)); other receivers show the lines |
+| POST | `/jobs/{id}/text/clear` | `{"page": "ID", "now": false}`: take a page down on the displays that put it up, after its hold or at once with `now`. `204` |
 | GET | `/jobs/{id}/text` | Recent lines on a text channel (up to 200), oldest first |
 | POST | `/file-senders` | Send media files (body: file send request). `201` with the job |
 | POST | `/file-receivers` | Receive files into the media directory (body: file receive request). `201` with the job |
@@ -380,7 +381,8 @@ its data is JSON with that `type` too:
 | `stream_added`, `stream_changed` | `{"stream": STREAM}` |
 | `stream_removed` | `{"stream": STREAM, "reason": "deleted"\|"expired"}` |
 | `monitor` | `{"snapshot": SNAPSHOT}`, every second |
-| `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one |
+| `text_line` | `{"line": LINE}`: a line received on a text channel, or typed into one. A line of a page has `page`: `{"id", "name", "priority", "hold_s"}`; a page's lines come together, with the same `at_ms` |
+| `text_cleared` | `{"job", "ssrc", "page", "now"}`: page `page` on channel `job` comes down, after its `hold_s` or at once with `now` (`ssrc` is its sender's; missing for one cleared here) |
 | `text_renamed` | `{"job", "ssrc", "name"}`: a sender's name (from RTCP) arrived after lines from it went out labelled with its address; those lines on channel `job` from `ssrc` (not your own) are now `name`'s. The lines `GET /jobs/{id}/text` returns are relabelled too |
 | `file_received` | `{"job": ID, "file": {"name", "sent_as", "bytes", "content_type", "verified", "from", "at_ms"}}` |
 | `phonebook_changed` | `{}`: the phonebook was changed through the API; fetch it again |

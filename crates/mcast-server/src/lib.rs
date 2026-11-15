@@ -23,7 +23,7 @@ use media::{
 };
 use phonebook::{delete_phonebook, list_phonebook, put_phonebook};
 use routes::*;
-use text::{send_text, start_text, text_history};
+use text::{clear_page, send_text, start_text, text_history};
 
 use anyhow::{bail, Context, Result};
 use axum::extract::rejection::JsonRejection;
@@ -242,6 +242,7 @@ pub fn router(state: AppState) -> Router {
         .route("/media-move", post(move_media))
         .route("/texts", post(start_text))
         .route("/jobs/{id}/text", get(text_history).post(send_text))
+        .route("/jobs/{id}/text/clear", post(clear_page))
         .route("/jobs/{id}/live", post(live::stream_live))
         .route("/file-senders", post(start_file_sender))
         .route("/file-receivers", post(start_file_receiver))

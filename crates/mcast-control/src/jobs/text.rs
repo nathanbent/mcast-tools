@@ -7,11 +7,12 @@ use super::{
 use crate::request::TextRequest;
 use crate::{now_ms, Event};
 use anyhow::anyhow;
+use mcast_text::page::{self, Element, PageInfo, Priority};
 use mcast_text::receiver::{self, TextReceiverConfig};
 use mcast_text::sender::TextSender;
 use mcast_text::session::TextInfo;
 use mcast_text::{Entry, Transcript};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,6 +37,95 @@ pub struct TextLine {
     /// Typed here rather than received.
     pub own: bool,
     pub at_ms: u64,
+    /// The page it's a line of, when its sender said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<PageRef>,
+}
+
+/// The page a line belongs to.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PageRef {
+    pub id: String,
+    /// What to head it with.
+    pub name: String,
+    /// `normal`, `high` or `emergency`.
+    pub priority: &'static str,
+    /// Seconds it stays up after it's cleared.
+    pub hold_s: u32,
+}
+
+impl From<&PageInfo> for PageRef {
+    fn from(p: &PageInfo) -> Self {
+        Self {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            priority: p.priority.name(),
+            hold_s: p.hold_s,
+        }
+    }
+}
+
+/// How long a page stays up after it's cleared, unless it says.
+pub const DEFAULT_HOLD_S: u32 = 10;
+/// The longest it can ask for.
+pub const MAX_HOLD_S: u32 = 3600;
+
+/// Sends text as a page: lines that go up together on displays that know
+/// pages, with a name and a priority (see `docs/text-page-metadata.md`).
+/// Other receivers show the lines.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PageRequest {
+    /// Tells it from other pages (letters, digits, `.-_`); one is made up
+    /// when it's left out. Clear the page by it.
+    pub id: Option<String>,
+    /// What displays head it with.
+    pub name: String,
+    /// `normal`, `high` or `emergency`.
+    pub priority: String,
+    /// Seconds it stays up after it's cleared.
+    pub hold_s: u32,
+}
+
+impl Default for PageRequest {
+    fn default() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            priority: "normal".into(),
+            hold_s: DEFAULT_HOLD_S,
+        }
+    }
+}
+
+impl PageRequest {
+    fn info(&self) -> Result<PageInfo, TextError> {
+        let bad = |m: String| Err(TextError::BadPage(m));
+        let id = match &self.id {
+            Some(id) if page::is_page_id(id) => id.clone(),
+            Some(id) => {
+                return bad(format!(
+                    "\"{id}\" isn't a page id (letters, digits and .-_)"
+                ))
+            }
+            None => format!("p{}.{:08x}", now_ms(), mcast_core::random_u32()),
+        };
+        let Some(priority) = Priority::parse(&self.priority) else {
+            return bad(format!(
+                "no priority \"{}\" (normal, high or emergency)",
+                self.priority
+            ));
+        };
+        if self.hold_s > MAX_HOLD_S {
+            return bad(format!("hold_s is at most {MAX_HOLD_S}"));
+        }
+        Ok(PageInfo {
+            id,
+            name: mcast_plain::label(&mcast_plain::shown(&self.name)),
+            priority,
+            hold_s: self.hold_s,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -66,6 +156,8 @@ pub enum TextError {
     Ended,
     Empty,
     TooLong,
+    /// Something wrong with a page's id, priority or hold.
+    BadPage(String),
 }
 
 impl fmt::Display for TextError {
@@ -76,6 +168,7 @@ impl fmt::Display for TextError {
             TextError::NotSending => "that text channel only listens",
             TextError::Ended => "that text channel has ended",
             TextError::Empty => "nothing to send",
+            TextError::BadPage(m) => return f.write_str(m),
             TextError::TooLong => {
                 return write!(f, "too much text at once ({MAX_SEND} characters at most)")
             }
@@ -247,6 +340,60 @@ impl Jobs {
     /// (`:fire:`) become emoji and what isn't safe to show is taken out
     /// ([`mcast_plain::shown`]). Returns the lines as sent and recorded.
     pub fn send_text(&self, id: JobId, text: &str) -> Result<Vec<TextLine>, TextError> {
+        self.send(id, text, None)
+    }
+
+    /// Send text as a page (see [`PageRequest`]); blank lines are left out.
+    pub fn send_page(
+        &self,
+        id: JobId,
+        text: &str,
+        page: &PageRequest,
+    ) -> Result<Vec<TextLine>, TextError> {
+        self.send(id, text, Some(page.info()?))
+    }
+
+    /// Take a page down on the displays that put it up: after its hold,
+    /// or at once with `now`.
+    pub fn clear_page(&self, id: JobId, page: &str, now: bool) -> Result<(), TextError> {
+        if !page::is_page_id(page) {
+            return Err(TextError::BadPage(format!("\"{page}\" isn't a page id")));
+        }
+        let (input, _) = self.text_input(id)?;
+        let clear = Element::Clear {
+            id: page.to_string(),
+            now,
+        };
+        input.send(clear.encode()).map_err(|_| TextError::Ended)?;
+        self.shared.emit(Event::TextCleared {
+            job: id,
+            ssrc: None,
+            page: page.to_string(),
+            now,
+        });
+        Ok(())
+    }
+
+    /// A sending channel's input and our name on it.
+    fn text_input(&self, id: JobId) -> Result<(mpsc::Sender<String>, String), TextError> {
+        let st = self.shared.lock();
+        let job = st.jobs.get(&id).ok_or(TextError::NoJob)?;
+        let ch = job.text.as_ref().ok_or(TextError::NotText)?;
+        if !job.info.state.is_active() {
+            return Err(TextError::Ended);
+        }
+        Ok((
+            ch.input.clone().ok_or(TextError::NotSending)?,
+            ch.name.clone(),
+        ))
+    }
+
+    fn send(
+        &self,
+        id: JobId,
+        text: &str,
+        page: Option<PageInfo>,
+    ) -> Result<Vec<TextLine>, TextError> {
         let text = mcast_plain::shown(text);
         let text = text.trim_end_matches('\n');
         if text.trim().is_empty() {
@@ -255,23 +402,26 @@ impl Jobs {
         if text.chars().count() > MAX_SEND {
             return Err(TextError::TooLong);
         }
-        let (input, name) = {
-            let st = self.shared.lock();
-            let job = st.jobs.get(&id).ok_or(TextError::NoJob)?;
-            let ch = job.text.as_ref().ok_or(TextError::NotText)?;
-            if !job.info.state.is_active() {
-                return Err(TextError::Ended);
-            }
-            (
-                ch.input.clone().ok_or(TextError::NotSending)?,
-                ch.name.clone(),
-            )
+        let (input, name) = self.text_input(id)?;
+        let page_ref = page.as_ref().map(PageRef::from);
+        let text: Vec<&str> = match &page {
+            // A page is its lines; a blank one would only be a gap on a sign.
+            Some(_) => text.split('\n').filter(|l| !l.trim().is_empty()).collect(),
+            None => text.split('\n').collect(),
         };
-        let mut lines = Vec::new();
-        for line in text.split('\n') {
+        if let Some(info) = &page {
+            // In one piece, so nothing else on the channel lands inside it.
             input
-                .send(format!("{line}\n"))
+                .send(page::encode_page(info, &text.join("\n")))
                 .map_err(|_| TextError::Ended)?;
+        }
+        let mut lines = Vec::new();
+        for line in text {
+            if page.is_none() {
+                input
+                    .send(format!("{line}\n"))
+                    .map_err(|_| TextError::Ended)?;
+            }
             let line = TextLine {
                 job: id,
                 from: name.clone(),
@@ -279,6 +429,7 @@ impl Jobs {
                 text: line.to_string(),
                 own: true,
                 at_ms: now_ms(),
+                page: page_ref.clone(),
             };
             self.shared.text_line(line.clone());
             lines.push(line);
@@ -352,6 +503,36 @@ fn receive(
                     text,
                     own: false,
                     at_ms: now_ms(),
+                    page: None,
+                }),
+                Entry::Page {
+                    ssrc,
+                    from,
+                    info,
+                    lines,
+                } => {
+                    let at_ms = now_ms();
+                    for text in lines {
+                        shared.text_line(TextLine {
+                            job: id,
+                            from: from.clone(),
+                            ssrc: Some(ssrc),
+                            text,
+                            own: false,
+                            at_ms,
+                            page: Some(PageRef::from(&info)),
+                        });
+                    }
+                }
+                Entry::Clear {
+                    ssrc,
+                    id: page,
+                    now,
+                } => shared.emit(Event::TextCleared {
+                    job: id,
+                    ssrc: Some(ssrc),
+                    page,
+                    now,
                 }),
                 Entry::Joined { .. } => shared.text_stats(id, |t| t.senders = senders),
                 // Relabel the lines already out rather than leave an address.

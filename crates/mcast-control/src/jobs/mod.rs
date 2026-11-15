@@ -10,7 +10,7 @@ mod text;
 
 pub use audio::LiveError;
 pub use file::ReceivedFile;
-pub use text::{TextError, TextLine};
+pub use text::{PageRef, PageRequest, TextError, TextLine};
 
 use crate::request::{FileRecvRequest, FileSendRequest, RecvRequest, SendRequest, TextRequest};
 use crate::{now_ms, Event, EventSink};

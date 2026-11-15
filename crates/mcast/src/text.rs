@@ -5,10 +5,13 @@ use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 use mcast_core::rtcp::RtcpConfig;
 use mcast_core::sap::{Directory, DirectoryEvent};
+use mcast_text::page::Element;
 use mcast_text::receiver::{self, TextReceiverConfig};
 use mcast_text::sender::{self, TextSender, TextSenderConfig};
 use mcast_text::t140::{BACKSPACE, DEFAULT_RED_PT, DEFAULT_T140_PT};
-use mcast_text::{Entry, TextInfo, Transcript, DEFAULT_GROUP as DEFAULT_TEXT_GROUP};
+use mcast_text::{
+    Entry, PageInfo, Priority, TextInfo, Transcript, DEFAULT_GROUP as DEFAULT_TEXT_GROUP,
+};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,6 +82,16 @@ pub struct TextSendArgs {
     /// Name announced to receivers [default: "<hostname> text"]
     #[arg(short, long)]
     name: Option<String>,
+    /// Send the message as a page headed with this: displays that know pages put its lines
+    /// up together, under this name (others show the lines). Needs a message
+    #[arg(long, value_name = "TITLE", requires = "message")]
+    page: Option<String>,
+    /// The page's priority: normal, high or emergency
+    #[arg(long, value_name = "PRIORITY", requires = "page", default_value = "normal", value_parser = parse_priority)]
+    priority: Priority,
+    /// Seconds the page stays up on displays
+    #[arg(long, value_name = "SECS", requires = "page", default_value_t = 20)]
+    hold: u32,
     /// Don't announce the stream with SAP
     #[arg(long)]
     no_sap: bool,
@@ -117,7 +130,8 @@ pub struct TextRecvArgs {
     #[arg(long)]
     raw: bool,
     /// Print one JSON object per line instead, for another program to read:
-    /// {"type": "line", "from", "ssrc", "text", "at_ms"}, and "joined", "named", "left", "warning"
+    /// {"type": "line", "from", "ssrc", "text", "at_ms"}; "page" (lines that go up together,
+    /// with "id", "name", "priority", "hold_s") and "clear"; and "joined", "named", "left", "warning"
     #[arg(long, conflicts_with = "raw")]
     json: bool,
     /// Stop after this many seconds
@@ -148,6 +162,10 @@ pub fn run(cmd: TextCommand, stop: &AtomicBool) -> Result<()> {
         TextCommand::Recv(a) => recv(a, stop),
         TextCommand::Chat(a) => chat(a, stop),
     }
+}
+
+fn parse_priority(s: &str) -> Result<Priority, String> {
+    Priority::parse(s).ok_or_else(|| format!("\"{s}\" isn't normal, high or emergency"))
 }
 
 /// The name we were given, as the others see it: on one line and safe to show.
@@ -226,7 +244,25 @@ fn send(a: TextSendArgs, stop: &AtomicBool) -> Result<()> {
         stdin_lines()
     } else {
         let (tx, rx) = mpsc::channel();
-        tx.send(a.message.join(" ") + "\n")?;
+        let message = a.message.join(" ");
+        match &a.page {
+            // Nothing follows to clear it, so it clears itself: up for `hold`.
+            Some(title) => {
+                let info = PageInfo {
+                    id: format!("cli{}.{:08x}", std::process::id(), mcast_core::random_u32()),
+                    name: mcast_plain::shown(title),
+                    priority: a.priority,
+                    hold_s: a.hold,
+                };
+                let clear = Element::Clear {
+                    id: info.id.clone(),
+                    now: false,
+                };
+                s.push_page(&info, &mcast_plain::shown(&message));
+                s.push_element(&clear);
+            }
+            None => tx.send(message + "\n")?,
+        }
         rx
     };
     drive(&mut s, rx, stop)?;
@@ -314,6 +350,13 @@ impl Printer {
         for e in entries {
             match e {
                 Entry::Line { from, text, .. } => println!("{from}: {text}"),
+                // In a terminal a page is its lines; --json says what they are.
+                Entry::Page { from, lines, .. } => {
+                    for text in lines {
+                        println!("{from}: {text}");
+                    }
+                }
+                Entry::Clear { .. } => {}
                 Entry::Joined { ssrc, from } if !self.raw && !self.chat => {
                     eprintln!("[text from {from}, ssrc {ssrc:08x}]")
                 }
@@ -346,6 +389,18 @@ fn entry_json(e: Entry) -> serde_json::Value {
     match e {
         Entry::Line { ssrc, from, text } => {
             json!({"type": "line", "from": from, "ssrc": ssrc_hex(ssrc), "text": text, "at_ms": at_ms})
+        }
+        Entry::Page {
+            ssrc,
+            from,
+            info,
+            lines,
+        } => json!({
+            "type": "page", "from": from, "ssrc": ssrc_hex(ssrc), "id": info.id, "name": info.name,
+            "priority": info.priority.name(), "hold_s": info.hold_s, "text": lines, "at_ms": at_ms
+        }),
+        Entry::Clear { ssrc, id, now } => {
+            json!({"type": "clear", "ssrc": ssrc_hex(ssrc), "id": id, "now": now, "at_ms": at_ms})
         }
         Entry::Joined { ssrc, from } => {
             json!({"type": "joined", "ssrc": ssrc_hex(ssrc), "address": from.to_string(), "at_ms": at_ms})

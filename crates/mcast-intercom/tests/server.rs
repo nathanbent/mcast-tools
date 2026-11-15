@@ -112,6 +112,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "both".into(),
                 name: "Both".into(),
@@ -125,6 +126,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "busy".into(),
                 name: "Busy".into(),
@@ -635,6 +637,7 @@ fn says_which_receivers_heard_a_page() {
     cfg.zones.push(Zone {
         listeners: vec!["Lobby".into(), "Hall".into()],
         displays: Vec::new(),
+        plain_displays: false,
         site: None,
         id: "ears".into(),
         name: "Ears".into(),

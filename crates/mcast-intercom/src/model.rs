@@ -805,6 +805,11 @@ pub struct Zone {
     /// text pages of what plays here, as real-time text (`mcast text recv`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub displays: Vec<String>,
+    /// Send its displays only the words: no page name, priority or end
+    /// (see `docs/text-page-metadata.md`). For a display that shows what it
+    /// should leave out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain_displays: bool,
 }
 
 /// Most expected listeners a zone can have.

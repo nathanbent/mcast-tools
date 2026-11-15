@@ -111,7 +111,12 @@ A playlist item can be a text page, spoken, shown, or both (the default):
   - each zone's **text displays**: groups that get it as real-time text
     (RFC 4103), shown by `mcast text recv -g GROUP` on any screen. The
     panel keeps a text channel open per group (named "Intercom") while it's
-    used, and closes it after five idle minutes;
+    used, and closes it after five idle minutes. Each page goes with what
+    it is: the announcement's name and priority, and its end when the run
+    ends (at once when it's stopped), so a display that knows pages
+    (`mcast text recv --json`, TouchFrame) shows it as the display page
+    does, from multicast alone. Other receivers show its lines. It needs
+    an mcast server after 0.5.12; older ones send the words;
   - the **display page** (above), and the run card.
 
   A page stays up while the run plays, and for 10 s after it ends; a
@@ -393,6 +398,8 @@ out to use the server's default. `site`: the site it's at, if any.
 *Who heard it*), e.g. `["Lobby", "Office"]`; up to 100, each once.
 `displays`: text displays, groups (phonebook names or addresses) that get
 the text pages of what plays here (see *Text pages*); up to 20.
+`plain_displays`: `true` sends them only the words, without each page's
+name, priority and end.
 
 **Announcements.** `id`, `name` and `zones` (zone ids), then:
 

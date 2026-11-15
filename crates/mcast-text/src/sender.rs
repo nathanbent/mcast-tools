@@ -1,5 +1,6 @@
 //! Sends real-time text to a multicast group.
 
+use crate::page::{self, Element, PageInfo};
 use crate::session;
 use crate::t140::{self, encode_red, RedBlock, CLOCK_RATE, MAX_OFFSET};
 use anyhow::{Context, Result};
@@ -172,6 +173,18 @@ impl TextSender {
     /// Queue text to send (plain text; `\n` ends a line).
     pub fn push(&mut self, text: &str) {
         self.pending.push_str(&t140::to_t140(text));
+    }
+
+    /// Queue a page: its lines, marked as one page with its name and
+    /// priority for receivers that know pages (see [`crate::page`]).
+    pub fn push_page(&mut self, info: &PageInfo, text: &str) {
+        self.pending
+            .push_str(&t140::to_t140(&page::encode_page(info, text)));
+    }
+
+    /// Queue an element by itself: a page's "clear", say.
+    pub fn push_element(&mut self, element: &Element) {
+        self.pending.push_str(&element.encode());
     }
 
     /// True when everything queued, and its redundant copies, has been sent.
