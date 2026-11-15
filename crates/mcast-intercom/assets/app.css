@@ -437,6 +437,29 @@ fieldset.part > p { margin: 0; }
 .target-main .field { flex: 1; }
 .target-options > summary { margin: 0; font-size: calc(13px * var(--fs)); }
 .target-options[open] > summary { margin-bottom: 10px; }
+.when-weekly { display: flex; flex-direction: column; gap: 10px; }
+.times-row, .times { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.times .time { display: inline-flex; align-items: center; gap: 2px; }
+.times input[type="time"] { width: auto; }
+details.later { margin: 6px 0 14px; }
+details.add-day { margin-top: 12px; }
+/* A tab's section folded to its heading and what it's set to */
+section.fold > details > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 0; list-style: none; }
+section.fold > details > summary::-webkit-details-marker { display: none; }
+section.fold > details > summary::before { content: "▸"; color: var(--muted); }
+section.fold > details[open] > summary::before { content: "▾"; }
+section.fold > details > summary h2 { margin: 0; }
+section.fold > details[open] > summary { margin-bottom: 14px; }
+section.fold details.part + details.part, section.fold form + details.part { margin-top: 12px; }
+/* One button for what can be done to a row */
+details.row-menu { display: inline-block; }
+details.row-menu > summary { list-style: none; margin: 0; padding: 4px 12px; border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); font-size: calc(16px * var(--fs)); line-height: 1.2; }
+details.row-menu > summary::-webkit-details-marker { display: none; }
+details.row-menu > summary:hover, details.row-menu[open] > summary { background: var(--bg); }
+.row-menu-items { position: fixed; z-index: 30; min-width: 190px; display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.row-menu-items button { text-align: left; width: 100%; border: 0; background: none; }
+.row-menu-items button:hover:not(:disabled) { background: var(--bg); }
+.row-menu-items button.danger { color: var(--bad, #b91c1c); }
 /* A section folded away until it's wanted, with what it's set to beside its name */
 details.part { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
 details.part > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0; color: var(--text); list-style-position: outside; }

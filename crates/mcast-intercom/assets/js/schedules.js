@@ -8,13 +8,14 @@
 import { api } from "./api.js";
 import { h, replace, toast, saved } from "./dom.js";
 import { state, subscribe, announcementName, siteName, fireTime, fromNow, atTime } from "./store.js";
-import { mountEditor, field, select } from "./editor.js";
+import { mountEditor, field, select, more, unfoldInvalid } from "./editor.js";
 import { putSettings } from "./settings.js";
 import { arrangeable } from "./layout.js";
 
 const DAYS = [["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"], ["sun", "Sun"]];
 const WEEKDAYS = DAYS.slice(0, 5).map(([d]) => d);
 const ALL = "*"; // the "all sites" view; "" is schedules with no site
+const NEXT = 3; // how many of what's coming up show without asking
 
 export function describeWhen(when) {
   if (when.once) return `Once, ${when.once.replace("T", " ")}`;
@@ -67,23 +68,45 @@ const setGroup = (g, enabled) =>
   put(`/schedule-groups/${encodeURIComponent(g.id)}`, { ...g, enabled }, `${g.name} ${enabled ? "on" : "off"}`);
 const setSite = (site, changes, done) => put(`/sites/${encodeURIComponent(site.id)}`, { ...site, ...changes }, done);
 
+// The times of day a weekly schedule plays at: a time box each, so there's
+// nothing to type in a format. One with seconds keeps them.
+function timesEditor(initial) {
+  const rows = [];
+  const list = h("div", { class: "times" });
+  const add = (value = "") => {
+    const input = h("input", { type: "time", value, step: value.length > 5 ? 1 : 60, "aria-label": "Time" });
+    const row = { input, el: null };
+    row.el = h("span", { class: "time" }, input,
+      h("button", { type: "button", class: "icon", "aria-label": "Remove this time", title: "Remove this time",
+        onclick: () => { if (rows.length > 1) { rows.splice(rows.indexOf(row), 1); row.el.remove(); } else input.value = ""; } }, "✕"));
+    rows.push(row);
+    list.append(row.el);
+    return input;
+  };
+  for (const t of initial) add(t);
+  if (!rows.length) add();
+  return {
+    el: h("div", { class: "field" }, h("span", {}, "At"),
+      h("div", { class: "times-row" }, list,
+        h("button", { type: "button", onclick: () => add().focus() }, "Add a time"))),
+    // The first must be filled in for a weekly schedule; the rest may be left empty.
+    require: (on) => { rows[0].input.required = on; },
+    value: () => [...new Set(rows.map((r) => r.input.value).filter(Boolean))].sort(),
+  };
+}
+
 function form(s, save, cancel) {
   const weekly = s?.when.weekly ?? { days: WEEKDAYS, times: [] };
-  const name = h("input", { value: s?.name ?? "", maxLength: 64, placeholder: "Optional" });
+  const name = h("input", { value: s?.name ?? "", maxLength: 64, placeholder: "The announcement's" });
   // Live announcements are talked on, not scheduled.
   const playable = state.config.announcements.filter((a) => a.audio !== "live");
   const announcement = select(
     playable.map((a) => [a.id, a.name]),
     s?.announcement ?? playable[0]?.id ?? "");
-  const kind = select([["weekly", "Every week"], ["once", "Once"]], s?.when.once ? "once" : "weekly");
+  let kind = s?.when.once ? "once" : "weekly";
   const days = DAYS.map(([d, l]) => ({ d, box: h("input", { type: "checkbox", checked: weekly.days.includes(d) }), l }));
   const setDays = (which) => { for (const x of days) x.box.checked = which.includes(x.d); };
-  const times = h("input", {
-    value: weekly.times.join(", "),
-    placeholder: "08:30, 12:00, 15:15",
-    pattern: "\\s*\\d{2}:\\d{2}(:\\d{2})?\\s*(,\\s*\\d{2}:\\d{2}(:\\d{2})?\\s*)*",
-    title: "24-hour times, separated by commas",
-  });
+  const times = timesEditor(weekly.times);
   const once = h("input", { type: "datetime-local", value: s?.when.once?.slice(0, 16) ?? "" });
   const enabled = h("input", { type: "checkbox", checked: s ? s.enabled : true });
   // A new one goes to the site being looked at.
@@ -92,33 +115,42 @@ function form(s, save, cancel) {
     s ? s.site ?? "" : v === ALL ? "" : v);
   const group = select([["", "No group"], ...groups().map((g) => [g.id, g.name])], s?.group ?? "");
 
-  const weeklyPart = h("div", { class: "row" },
-    h("fieldset", {}, h("legend", {}, "Days"),
+  const weeklyPart = h("div", { class: "when-weekly" },
+    h("div", { class: "field" }, h("span", {}, "On"),
       h("div", { class: "days" },
         days.map((x) => h("label", { class: "check" }, x.box, x.l)),
         h("button", { type: "button", class: "link", onclick: () => setDays(WEEKDAYS) }, "weekdays"),
         h("button", { type: "button", class: "link", onclick: () => setDays(DAYS.map(([d]) => d)) }, "every day"))),
-    field("Times", times, "24-hour, separated by commas"));
+    times.el);
   const oncePart = field("Date and time", once);
   const showKind = () => {
-    weeklyPart.hidden = kind.value !== "weekly";
-    oncePart.hidden = kind.value !== "once";
-    times.required = kind.value === "weekly";
-    once.required = kind.value === "once";
+    weeklyPart.hidden = kind !== "weekly";
+    oncePart.hidden = kind !== "once";
+    times.require(kind === "weekly");
+    once.required = kind === "once";
   };
-  kind.onchange = showKind;
   showKind();
+  const kinds = [["weekly", "Every week"], ["once", "Once"]].map(([k, text]) => h("label", { class: "check" },
+    h("input", { type: "radio", name: "schedule-when", value: k, checked: k === kind, onchange: () => { kind = k; showKind(); } }), text));
+
+  // What few schedules need, folded away and saying what it's set to.
+  const options = more("Options",
+    () => [name.value.trim() && `called ${name.value.trim()}`,
+      site.value && `at ${site.selectedOptions[0]?.textContent}`,
+      group.value && `in ${group.selectedOptions[0]?.textContent}`,
+      enabled.checked ? "on" : "off"].filter(Boolean).join(", "),
+    h("div", { class: "row" },
+      field("Name", name, "To tell it from the announcement's other schedules"),
+      sites().length > 0 && field("Site", site, "A site's schedule plays only to the announcement's zones there, in the site's time zone"),
+      groups().length > 0 && field("Group", group, "It plays only while its group is on")),
+    h("label", { class: "check" }, enabled, "On"));
+  options.refresh();
 
   const submit = (e) => {
     e.preventDefault();
-    const when = kind.value === "once"
+    const when = kind === "once"
       ? { once: once.value }
-      : {
-          weekly: {
-            days: days.filter((x) => x.box.checked).map((x) => x.d),
-            times: times.value.split(",").map((t) => t.trim()).filter(Boolean),
-          },
-        };
+      : { weekly: { days: days.filter((x) => x.box.checked).map((x) => x.d), times: times.value() } };
     save({
       name: name.value.trim(), announcement: announcement.value, enabled: enabled.checked, when,
       site: site.value || null, group: group.value || null,
@@ -128,17 +160,16 @@ function form(s, save, cancel) {
   if (!playable.length) {
     return h("p", { class: "muted" }, "Add an announcement first (live ones can't be scheduled).");
   }
-  return h("form", { onsubmit: submit },
-    h("div", { class: "row" }, field("Plays", announcement), field("Name", name), field("When", kind)),
-    weeklyPart,
-    oncePart,
-    (sites().length > 0 || groups().length > 0) && h("div", { class: "row" },
-      sites().length > 0 && field("Site", site, "A site's schedule plays only to the announcement's zones there, in the site's time zone"),
-      groups().length > 0 && field("Group", group, "It plays only while its group is on")),
-    h("label", { class: "check" }, enabled, "On"),
+  return unfoldInvalid(h("form", { class: "sectioned", onsubmit: submit, oninput: options.refresh, onchange: options.refresh },
+    field("Plays", announcement),
+    h("fieldset", { class: "part" }, h("legend", {}, "When"),
+      h("div", { class: "checks", role: "radiogroup", "aria-label": "When it plays" }, kinds),
+      weeklyPart,
+      oncePart),
+    options,
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
-      h("button", { type: "button", onclick: cancel }, "Cancel")));
+      h("button", { type: "button", onclick: cancel }, "Cancel"))));
 }
 
 // ---- the site bar and overview ----
@@ -281,9 +312,10 @@ function daysOff(el) {
   subscribe(["config"], render);
   render();
   el.replaceChildren(intro, list,
-    h("form", { class: "editor-form", onsubmit: add },
-      h("div", { class: "row" }, field("From", from), field("To", to, "Leave empty for one day"), field("Name", name)),
-      h("div", { class: "buttons" }, h("button", { type: "submit", class: "primary" }, "Add day off"))));
+    h("details", { class: "part add-day" }, h("summary", {}, h("span", { class: "part-title" }, "Add a day off")),
+      h("form", { class: "sectioned", onsubmit: add },
+        h("div", { class: "row" }, field("From", from), field("To", to, "Leave empty for one day"), field("Name", name, "Optional")),
+        h("div", { class: "buttons" }, h("button", { type: "submit", class: "primary" }, "Add day off")))));
   return render;
 }
 
@@ -336,8 +368,11 @@ export function mount(el, daysOffEl, groupsEl) {
         status(v),
         v === ALL && sites().length > 0 && overview(rerender),
         h("h2", {}, v === ALL && sites().length ? "Coming up everywhere" : "Coming up"),
-        firesList(fires, 0, v === ALL && sites().length > 0),
-        h("h2", {}, "Schedules"),
+        firesList(fires.slice(0, NEXT), 0, v === ALL && sites().length > 0),
+        fires.length > NEXT && h("details", { class: "later" },
+          h("summary", {}, `${fires.length - NEXT} more after that`),
+          firesList(fires.slice(NEXT), 0, v === ALL && sites().length > 0)),
+        h("h2", {}, "What plays when"),
       ];
     },
     // Under their groups, each with its switch; the rest after them.

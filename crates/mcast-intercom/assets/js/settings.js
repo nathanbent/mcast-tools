@@ -4,7 +4,7 @@
 // connection to the mcast server.
 
 import { api, download, postFile } from "./api.js";
-import { h, replace, toast } from "./dom.js";
+import { h, replace, toast, saved } from "./dom.js";
 import { state, subscribe } from "./store.js";
 import { field, select, numberInput, num, mountEditor, SIZES } from "./editor.js";
 import { chimeField, chooserLink, openChooser } from "./chimes.js";
@@ -27,7 +27,63 @@ export async function putSettings(body, done) {
   }
 }
 
-const card = (title, ...children) => h("section", {}, h("h2", {}, title), ...children);
+// A section of the tab: folded to a line that says what it's set to, and
+// opened by its heading. Each browser remembers which it left open.
+const opened = new Set(saved.get("settings.open", []));
+function card(id, title, summary, body) {
+  const now = h("span", { class: "muted small" });
+  const fold = h("details", {
+    open: opened.has(id),
+    ontoggle: () => {
+      if (fold.open) opened.add(id); else opened.delete(id);
+      saved.set("settings.open", [...opened]);
+    },
+  }, h("summary", {}, h("h2", {}, title), now), body);
+  const el = h("section", { class: "fold" }, fold);
+  el.refresh = () => { now.textContent = summary(); };
+  el.refresh();
+  return el;
+}
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+const chimeName = (c) => (c == null || c === "none" ? "no chime" : typeof c === "string" ? c : c.file ?? "a file");
+
+// What each section says while it's folded.
+const SUMMARY = {
+  panel: () => {
+    const l = { ...LOOK_DEFAULTS, ...(state.config.panel ?? {}) };
+    return `${l.size[0].toUpperCase()}${l.size.slice(1)} ${l.mode === "list" ? "rows" : "tiles"}; links for kiosks and display pages`;
+  },
+  defaults: () => {
+    const d = state.config.defaults ?? {};
+    return [`${chimeName(d.chime)} before, ${chimeName(d.end_chime)} after`,
+      d.mode && `${d.mode} processing`, d.encoding && `${d.encoding} codec`].filter(Boolean).join(", ");
+  },
+  "time-zone": () => `${state.upcoming.time_zone ?? "…"}${state.config.time_zone ? "" : " (the server's)"}`,
+  sites: () => {
+    const n = (state.config.sites ?? []).length;
+    return n ? plural(n, "site") : "None: everything is one place";
+  },
+  chimes: () => {
+    const hidden = state.chimes.filter((c) => c.hidden).length;
+    return state.chimes.length ? `Showing ${state.chimes.length - hidden} of ${state.chimes.length}` : "";
+  },
+  history: () => {
+    const d = state.config.history_days ?? 90;
+    return d ? `Kept for ${plural(d, "day")}` : "Kept for ever";
+  },
+  tokens: () => "Who can use the panel, and what each may do",
+  "other-systems": () => "Trigger URLs and webhooks",
+  inputs: () => {
+    const n = (state.config.inputs ?? []).length;
+    return n ? plural(n, "input") : "GPIO pins that play announcements: none";
+  },
+  backup: () => "Download the config and sounds, or put a backup back",
+  connection: () => {
+    const b = state.backend;
+    return !b ? "…" : b.connected ? `Connected to ${b.url}` : `Can't reach ${b.url}`;
+  },
+};
 
 // How many announcements leave a setting to the default.
 function usage(key) {
@@ -166,8 +222,9 @@ function kioskLink() {
     return `${location.origin}${location.pathname}${qs ? `?${qs}` : ""}#panel`;
   };
   const update = () => { out.textContent = url(); };
-  const box = h("fieldset", { class: "part", oninput: update, onchange: update },
-    h("legend", {}, "A link for one screen"),
+  const box = h("details", { class: "part", oninput: update, onchange: update },
+    h("summary", {}, h("span", { class: "part-title" }, "A link for one screen"),
+      h("span", { class: "muted small" }, "A wall tablet or kiosk that shows only the Panel")),
     h("p", { class: "muted small" },
       "Open this on a wall tablet or kiosk. Kiosk shows only the Panel and keeps the screen awake. Choosing categories or a tag only narrows what that screen shows; to make sure a screen can only play some categories, sign it in with an operator token limited to them (Access tokens)."),
     h("label", { class: "check" }, kiosk, " Kiosk: only the Panel, no tabs"),
@@ -196,8 +253,9 @@ function displayLink() {
     return `${location.origin}${location.pathname}?${q.toString().replace(/%2C/g, ",")}`;
   };
   const update = () => { out.textContent = url(); };
-  const box = h("fieldset", { class: "part", onchange: update },
-    h("legend", {}, "Display page"),
+  const box = h("details", { class: "part", onchange: update },
+    h("summary", {}, h("span", { class: "part-title" }, "A link for a display page"),
+      h("span", { class: "muted small" }, "A sign that shows the text of what plays")),
     h("p", { class: "muted small" },
       "A full-screen sign for a TV or tablet: it shows the text pages of playlists as they play to its zones, and the time in between. Sign it in with an operator token. Zones can also send text pages to text displays (Zones → Text displays)."),
     h("div", { class: "checks" }, h("span", { class: "muted small" }, "Zones:"),
@@ -438,6 +496,7 @@ export function mount(el) {
     ["inputs", "Buttons and contacts", inputs.mount],
     ["backup", "Backup and restore", backupRestore],
     ["connection", "Connection", connection],
-  ].map(([id, title, make]) => ({ id, title, el: card(title, make()) }));
+  ].map(([id, title, make]) => ({ id, title, el: card(id, title, SUMMARY[id], make()) }));
+  subscribe(["config", "server", "upcoming"], () => { for (const s of sections) s.el.refresh(); });
   el.replaceChildren(arrangeable("settings", sections));
 }

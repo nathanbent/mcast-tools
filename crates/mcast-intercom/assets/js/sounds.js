@@ -322,6 +322,35 @@ function tagChips(tags) {
   }, t));
 }
 
+// What can be done to one row, behind one button: [label, action, class]
+// each; an action of null is shown but can't be chosen.
+function rowMenu(label, items) {
+  const menu = h("div", { class: "row-menu-items", role: "menu" },
+    items.filter(Boolean).map(([text, action, cls]) => h("button", {
+      type: "button", role: "menuitem", class: cls ?? null, disabled: !action,
+      onclick: () => { box.open = false; action(); },
+    }, text)));
+  const box = h("details", {
+    class: "row-menu",
+    ontoggle: () => {
+      if (!box.open) return;
+      // One at a time, and placed against the button, clear of the table's scrolling.
+      for (const other of document.querySelectorAll("details.row-menu[open]")) if (other !== box) other.open = false;
+      const r = box.getBoundingClientRect();
+      menu.style.top = `${Math.min(r.bottom + 4, innerHeight - menu.offsetHeight - 8)}px`;
+      menu.style.right = `${innerWidth - r.right}px`;
+    },
+  }, h("summary", { "aria-label": `Actions for ${label}`, title: "Rename, move, tag, hide or delete" }, "⋯"), menu);
+  return box;
+}
+// A click elsewhere, or Escape, closes an open one.
+document.addEventListener("click", (e) => {
+  for (const m of document.querySelectorAll("details.row-menu[open]")) if (!m.contains(e.target)) m.open = false;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") for (const m of document.querySelectorAll("details.row-menu[open]")) m.open = false;
+});
+
 // One row: a file `f`, or a folder `f` (with `folder: true`). `path`: show
 // the whole path (in search results).
 function row(f, { asFolder = false, path = false } = {}) {
@@ -349,17 +378,14 @@ function row(f, { asFolder = false, path = false } = {}) {
     h("td", { class: "small" }, asFolder ? "" : length(f.audio, f.audio_error)),
     h("td", { class: "wide muted small" }, asFolder ? `${n} item${n === 1 ? "" : "s"}` : bytes(f.bytes)),
     h("td", { class: "wide small" }, used.length ? used.join(", ") : h("span", { class: "muted" }, "—")),
-    h("td", { class: "actions" }, changing && h("div", { class: "buttons nowrap" },
-      !asFolder && h("button", { onclick: () => editTags(name) }, "Tags"),
-      h("button", { onclick: () => move(name, asFolder) }, "Rename/move"),
-      h("button", { onclick: () => setHidden(name, !f.hidden), title: "Hidden files are left out of the announcement lists" },
-        f.hidden ? "Unhide" : "Hide"),
-      h("button", {
-        class: "danger",
-        disabled: used.length > 0 || (asFolder && n > 0),
-        title: used.length ? `Used by ${used.join(", ")}` : asFolder && n > 0 ? "Empty it first" : null,
-        onclick: () => remove(name, asFolder),
-      }, "Delete"))));
+    h("td", { class: "actions" }, changing && rowMenu(label, [
+      !asFolder && ["Tags…", () => editTags(name)],
+      ["Rename or move…", () => move(name, asFolder)],
+      [f.hidden ? "Show in the lists again" : "Hide from the lists", () => setHidden(name, !f.hidden)],
+      used.length ? ["Can't delete: in use", null]
+        : asFolder && n > 0 ? ["Can't delete: not empty", null]
+          : ["Delete…", () => remove(name, asFolder), "danger"],
+    ])));
   return asFolder ? dropTarget(tr, name) : tr;
 }
 
@@ -483,9 +509,8 @@ function render() {
             shown.map((f) => row(f, { path: searching })))))
       : h("p", { class: "muted" }, searching ? "Nothing matches." : "No sound files yet: upload or record some."),
     !changing && h("p", { class: "muted small" }, "This token can listen to sounds but not change them."),
-    h("p", { class: "muted small" },
-      changing ? "Drag files onto a folder (or the path above) to move them; select several to move, tag, hide or delete them together. " : "",
-      "Files live on the mcast server, so its own pages see the same folders. Hidden files and folders are only left out of the panel's lists; announcements that use one still play it."));
+    changing && h("p", { class: "muted small" },
+      "Drop files here to upload them. Drag a row onto a folder to move it, or tick several to change them together."));
 }
 
 export function mount(target) {
