@@ -5,26 +5,23 @@ use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 use mcast_core::rtcp::RtcpConfig;
 use mcast_core::sap::{Directory, DirectoryEvent};
-use mcast_text::lines::LineBuffer;
+use mcast_text::page::Element;
 use mcast_text::receiver::{self, TextReceiverConfig};
 use mcast_text::sender::{self, TextSender, TextSenderConfig};
-use mcast_text::t140::{DEFAULT_RED_PT, DEFAULT_T140_PT};
-use mcast_text::TextInfo;
-use std::collections::HashMap;
+use mcast_text::t140::{BACKSPACE, DEFAULT_RED_PT, DEFAULT_T140_PT};
+use mcast_text::{
+    Entry, PageInfo, Priority, TextInfo, Transcript, DEFAULT_GROUP as DEFAULT_TEXT_GROUP,
+};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Text gets its own default group, away from audio and paging groups.
-const DEFAULT_TEXT_GROUP: &str = "239.69.1.1:5004";
-/// Show a half-typed line once its sender has been quiet this long.
-const STALE_LINE: Duration = Duration::from_secs(3);
-
 #[derive(Subcommand)]
 pub enum TextCommand {
-    /// Send text: the arguments as one message, or each line typed/piped on stdin
+    /// Send text: the arguments as one message, or each line typed/piped on stdin.
+    /// Emoji work, typed or as shortcodes (:fire: :warning: :bell:)
     Send(TextSendArgs),
     /// Print text from a stream; finds one via SAP unless --group is given
     Recv(TextRecvArgs),
@@ -85,6 +82,16 @@ pub struct TextSendArgs {
     /// Name announced to receivers [default: "<hostname> text"]
     #[arg(short, long)]
     name: Option<String>,
+    /// Send the message as a page headed with this: displays that know pages put its lines
+    /// up together, under this name (others show the lines). Needs a message
+    #[arg(long, value_name = "TITLE", requires = "message")]
+    page: Option<String>,
+    /// The page's priority: normal, high or emergency
+    #[arg(long, value_name = "PRIORITY", requires = "page", default_value = "normal", value_parser = parse_priority)]
+    priority: Priority,
+    /// Seconds the page stays up on displays
+    #[arg(long, value_name = "SECS", requires = "page", default_value_t = 20)]
+    hold: u32,
     /// Don't announce the stream with SAP
     #[arg(long)]
     no_sap: bool,
@@ -122,6 +129,11 @@ pub struct TextRecvArgs {
     /// Print text the moment it arrives, without names or line buffering
     #[arg(long)]
     raw: bool,
+    /// Print one JSON object per line instead, for another program to read:
+    /// {"type": "line", "from", "ssrc", "text", "at_ms"}; "page" (lines that go up together,
+    /// with "id", "name", "priority", "hold_s") and "clear"; and "joined", "named", "left", "warning"
+    #[arg(long, conflicts_with = "raw")]
+    json: bool,
     /// Stop after this many seconds
     #[arg(short, long)]
     duration: Option<f64>,
@@ -152,6 +164,17 @@ pub fn run(cmd: TextCommand, stop: &AtomicBool) -> Result<()> {
     }
 }
 
+fn parse_priority(s: &str) -> Result<Priority, String> {
+    Priority::parse(s).ok_or_else(|| format!("\"{s}\" isn't normal, high or emergency"))
+}
+
+/// The name we were given, as the others see it: on one line and safe to show.
+fn own_name(name: &Option<String>) -> Option<String> {
+    name.as_deref()
+        .map(mcast_plain::label)
+        .filter(|n| !n.is_empty())
+}
+
 /// Lines from stdin, read on a thread so sending isn't blocked on typing.
 fn stdin_lines() -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
@@ -166,7 +189,9 @@ fn stdin_lines() -> mpsc::Receiver<String> {
     rx
 }
 
-/// Feed `input` to the sender until it ends (then flush) or `stop`.
+/// Feed `input` to the sender until it ends (then flush) or `stop`. What's
+/// typed goes out as [`mcast_plain::shown`] makes it: shortcodes as emoji,
+/// and nothing a display shouldn't be sent (a log's colour codes, say).
 fn drive(s: &mut TextSender, input: mpsc::Receiver<String>, stop: &AtomicBool) -> Result<()> {
     let mut open = true;
     while !stop.load(Ordering::Relaxed) && (open || !s.idle()) {
@@ -178,10 +203,10 @@ fn drive(s: &mut TextSender, input: mpsc::Receiver<String>, stop: &AtomicBool) -
         if open {
             match input.recv_timeout(wait) {
                 Ok(text) => {
-                    s.push(&text);
+                    s.push(&mcast_plain::shown(&text));
                     // Take whatever else is already typed or piped.
                     while let Ok(more) = input.try_recv() {
-                        s.push(&more);
+                        s.push(&mcast_plain::shown(&more));
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -196,10 +221,7 @@ fn drive(s: &mut TextSender, input: mpsc::Receiver<String>, stop: &AtomicBool) -
 }
 
 fn send(a: TextSendArgs, stop: &AtomicBool) -> Result<()> {
-    let name = a
-        .name
-        .clone()
-        .unwrap_or_else(|| format!("{} text", hostname()));
+    let name = own_name(&a.name).unwrap_or_else(|| format!("{} text", hostname()));
     let announce = (!a.no_sap).then(|| sender::Announce {
         name: name.clone(),
         sap_group: a.sap_group,
@@ -222,7 +244,25 @@ fn send(a: TextSendArgs, stop: &AtomicBool) -> Result<()> {
         stdin_lines()
     } else {
         let (tx, rx) = mpsc::channel();
-        tx.send(a.message.join(" ") + "\n")?;
+        let message = a.message.join(" ");
+        match &a.page {
+            // Nothing follows to clear it, so it clears itself: up for `hold`.
+            Some(title) => {
+                let info = PageInfo {
+                    id: format!("cli{}.{:08x}", std::process::id(), mcast_core::random_u32()),
+                    name: mcast_plain::shown(title),
+                    priority: a.priority,
+                    hold_s: a.hold,
+                };
+                let clear = Element::Clear {
+                    id: info.id.clone(),
+                    now: false,
+                };
+                s.push_page(&info, &mcast_plain::shown(&message));
+                s.push_element(&clear);
+            }
+            None => tx.send(message + "\n")?,
+        }
         rx
     };
     drive(&mut s, rx, stop)?;
@@ -261,107 +301,120 @@ fn find_text_stream(
 }
 
 /// Prints received text: whole lines labelled with the sender's name, or
-/// raw characters as they arrive.
+/// raw characters as they arrive. Either way it's made safe for a terminal.
 struct Printer {
     raw: bool,
-    /// Chat: say "joined" by name instead of listing sources.
+    /// A JSON object per line, for another program.
+    json: bool,
+    /// Chat: say who's here by name instead of listing sources.
     chat: bool,
-    labels: HashMap<u32, String>,
-    lines: HashMap<u32, LineBuffer>,
+    transcript: Transcript,
 }
 
 impl Printer {
     fn new(raw: bool, chat: bool) -> Self {
         Self {
             raw,
+            json: false,
             chat,
-            labels: HashMap::new(),
-            lines: HashMap::new(),
+            transcript: Transcript::new(),
         }
-    }
-
-    fn line(&self, ssrc: u32, text: &str) {
-        let label = self
-            .labels
-            .get(&ssrc)
-            .cloned()
-            .unwrap_or_else(|| format!("{ssrc:08x}"));
-        println!("{label}: {text}");
     }
 
     fn event(&mut self, e: receiver::Event<'_>) {
-        let now = Instant::now();
-        match e {
-            receiver::Event::NewSource { ssrc, from } => {
-                self.labels
-                    .entry(ssrc)
-                    .or_insert_with(|| from.ip().to_string());
-                if !self.raw && !self.chat {
-                    eprintln!("[text from {from}, ssrc {ssrc:08x}]");
-                }
-            }
-            receiver::Event::Named { ssrc, name } => {
-                if self.chat && !self.labels.values().any(|l| *l == name) {
-                    eprintln!("[{name} is here]");
-                }
-                self.labels.insert(ssrc, name);
-            }
-            receiver::Event::Text { ssrc, text } => {
-                if self.raw {
-                    print!("{text}");
-                    let _ = std::io::stdout().flush();
-                    return;
-                }
-                let buf = self
-                    .lines
-                    .entry(ssrc)
-                    .or_insert_with(|| LineBuffer::new(now));
-                for line in buf.push(text, now) {
-                    self.line(ssrc, &line);
-                }
-            }
-            receiver::Event::Tick => {
-                let stale: Vec<(u32, String)> = self
-                    .lines
-                    .iter_mut()
-                    .filter_map(|(&ssrc, b)| b.take_stale(now, STALE_LINE).map(|t| (ssrc, t)))
-                    .collect();
-                for (ssrc, text) in stale {
-                    self.line(ssrc, &text);
-                }
-            }
-            receiver::Event::Bye { ssrc, reason } => {
-                if let Some(text) = self.lines.remove(&ssrc).and_then(|mut b| b.take()) {
-                    self.line(ssrc, &text);
-                }
-                if !self.raw {
-                    let who = self
-                        .labels
-                        .get(&ssrc)
-                        .cloned()
-                        .unwrap_or_else(|| format!("{ssrc:08x}"));
-                    match reason {
-                        Some(r) => eprintln!("[{who} left: {r}]"),
-                        None => eprintln!("[{who} left]"),
-                    }
-                }
-            }
-            receiver::Event::UnknownPayloadType { payload_type } => {
-                eprintln!("warning: ignoring payload type {payload_type}; check --pt / --red-pt")
-            }
-            receiver::Event::Warning { message } => eprintln!("warning: {message}"),
+        if let (true, receiver::Event::Text { text, .. }) = (self.raw, &e) {
+            // Erasing is the one control a terminal gets, as "back, blank, back".
+            let pieces: Vec<String> = text.split(BACKSPACE).map(mcast_plain::clean).collect();
+            print!("{}", pieces.join("\u{8} \u{8}"));
+            let _ = std::io::stdout().flush();
+            return;
         }
+        let entries = self.transcript.event(e, Instant::now());
+        self.show(entries);
     }
 
     fn finish(&mut self) {
-        let left: Vec<(u32, String)> = self
-            .lines
-            .iter_mut()
-            .filter_map(|(&ssrc, b)| b.take().map(|t| (ssrc, t)))
-            .collect();
-        for (ssrc, text) in left {
-            self.line(ssrc, &text);
+        let entries = self.transcript.finish();
+        self.show(entries);
+    }
+
+    fn show(&self, entries: Vec<Entry>) {
+        if self.json {
+            let mut out = std::io::stdout().lock();
+            for e in entries {
+                let _ = writeln!(out, "{}", entry_json(e));
+            }
+            let _ = out.flush();
+            return;
         }
+        for e in entries {
+            match e {
+                Entry::Line { from, text, .. } => println!("{from}: {text}"),
+                // In a terminal a page is its lines; --json says what they are.
+                Entry::Page { from, lines, .. } => {
+                    for text in lines {
+                        println!("{from}: {text}");
+                    }
+                }
+                Entry::Clear { .. } => {}
+                Entry::Joined { ssrc, from } if !self.raw && !self.chat => {
+                    eprintln!("[text from {from}, ssrc {ssrc:08x}]")
+                }
+                Entry::Named {
+                    name, new: true, ..
+                } if self.chat => eprintln!("[{name} is here]"),
+                Entry::Joined { .. } | Entry::Named { .. } => {}
+                Entry::Left { .. } if self.raw => {}
+                Entry::Left {
+                    who,
+                    reason: Some(r),
+                } => eprintln!("[{who} left: {r}]"),
+                Entry::Left { who, reason: None } => eprintln!("[{who} left]"),
+                Entry::UnknownPayloadType(pt) => {
+                    eprintln!("warning: ignoring payload type {pt}; check --pt / --red-pt")
+                }
+                Entry::Warning(message) => eprintln!("warning: {message}"),
+            }
+        }
+    }
+}
+
+/// An entry as `--json` prints it.
+fn entry_json(e: Entry) -> serde_json::Value {
+    use serde_json::json;
+    let ssrc_hex = |ssrc: u32| format!("{ssrc:08x}");
+    let at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    match e {
+        Entry::Line { ssrc, from, text } => {
+            json!({"type": "line", "from": from, "ssrc": ssrc_hex(ssrc), "text": text, "at_ms": at_ms})
+        }
+        Entry::Page {
+            ssrc,
+            from,
+            info,
+            lines,
+        } => json!({
+            "type": "page", "from": from, "ssrc": ssrc_hex(ssrc), "id": info.id, "name": info.name,
+            "priority": info.priority.name(), "hold_s": info.hold_s, "text": lines, "at_ms": at_ms
+        }),
+        Entry::Clear { ssrc, id, now } => {
+            json!({"type": "clear", "ssrc": ssrc_hex(ssrc), "id": id, "now": now, "at_ms": at_ms})
+        }
+        Entry::Joined { ssrc, from } => {
+            json!({"type": "joined", "ssrc": ssrc_hex(ssrc), "address": from.to_string(), "at_ms": at_ms})
+        }
+        Entry::Named { ssrc, name, .. } => {
+            json!({"type": "named", "ssrc": ssrc_hex(ssrc), "name": name, "at_ms": at_ms})
+        }
+        Entry::Left { who, reason } => {
+            json!({"type": "left", "from": who, "reason": reason, "at_ms": at_ms})
+        }
+        Entry::UnknownPayloadType(pt) => json!({
+            "type": "warning", "message": format!("ignoring payload type {pt}"), "at_ms": at_ms
+        }),
+        Entry::Warning(message) => json!({"type": "warning", "message": message, "at_ms": at_ms}),
     }
 }
 
@@ -390,6 +443,7 @@ fn recv(a: TextRecvArgs, stop: &AtomicBool) -> Result<()> {
     };
     eprintln!("joining {group}. Ctrl-C to stop.");
     let mut printer = Printer::new(a.raw, false);
+    printer.json = a.json;
     receiver::run(
         TextReceiverConfig {
             net: a.net.options(group)?,
@@ -412,7 +466,7 @@ fn recv(a: TextRecvArgs, stop: &AtomicBool) -> Result<()> {
 
 fn chat(a: TextChatArgs, stop: &AtomicBool) -> Result<()> {
     let group = a.group;
-    let name = a.name.clone().unwrap_or_else(hostname);
+    let name = own_name(&a.name).unwrap_or_else(hostname);
     let mut s = a.sender.sender(group, name.clone(), None)?;
     let cfg = TextReceiverConfig {
         net: a.sender.net.options(group)?,

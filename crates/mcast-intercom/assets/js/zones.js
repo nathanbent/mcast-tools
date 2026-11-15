@@ -109,8 +109,9 @@ function listenersPart(initial) {
 
 // Text displays: groups that get the text pages of what plays here, as
 // real-time text (`mcast text recv -g GROUP` shows them).
-function displaysPart(initial) {
+function displaysPart(initial, plain) {
   const groups = [...initial];
+  const plainBox = h("input", { type: "checkbox", checked: !!plain });
   const has = (g) => groups.some((x) => x.toLowerCase() === g.toLowerCase());
   const chips = h("div", { class: "tag-bar" });
   const input = h("input", { maxLength: 64, placeholder: "Phonebook name or 239.x.x.x:port", list: "phonebook-groups",
@@ -132,8 +133,10 @@ function displaysPart(initial) {
       "Groups that get the text pages of playlists played here, as real-time text: run mcast text recv -g GROUP on a screen. A browser can show them too: Settings → Panel → Display page."),
     chips,
     h("div", { class: "listener-add" }, input,
-      h("button", { type: "button", onclick: () => add(input.value) }, "Add")));
-  return { el, value: () => groups };
+      h("button", { type: "button", onclick: () => add(input.value) }, "Add")),
+    h("label", { class: "check small", title: "Displays that know pages get each one's name, priority and end with its words. Tick this for a display that shows those as text." },
+      plainBox, "Send only the words (for displays that show the page details as text)"));
+  return { el, value: () => groups, plain: () => plainBox.checked };
 }
 
 function form(z, save, cancel) {
@@ -168,7 +171,7 @@ function form(z, save, cancel) {
   const render = () => replace(rowsEl, rows.map((r) => r.el));
 
   const listeners = listenersPart(z?.listeners ?? []);
-  const displays = displaysPart(z?.displays ?? []);
+  const displays = displaysPart(z?.displays ?? [], z?.plain_displays);
   for (const t of z?.targets ?? []) addRow(t);
   if (!rows.length) addRow();
 
@@ -187,6 +190,7 @@ function form(z, save, cancel) {
       })),
       listeners: listeners.value(),
       displays: displays.value(),
+      plain_displays: displays.plain(),
     });
   };
 

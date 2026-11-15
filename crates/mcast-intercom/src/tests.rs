@@ -23,6 +23,7 @@ fn announcement(id: &str, zones: &[&str]) -> Announcement {
         id: id.into(),
         name: format!("{id} name"),
         audio: Audio::Media("lunch.wav".into()),
+        text: None,
         chime: None,
         end_chime: None,
         mode: None,
@@ -51,6 +52,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "up".into(),
                 name: "Upstairs".into(),
@@ -67,6 +69,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "down".into(),
                 name: "Downstairs".into(),
@@ -75,6 +78,7 @@ fn config() -> Config {
             Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: "two".into(),
                 name: "Just two".into(),
@@ -751,4 +755,91 @@ fn inputs_are_checked() {
     chip1["enabled"] = json!(true);
     chip1["chip"] = json!("gpiochip1");
     assert!(with(json!([ok, chip1])).is_ok());
+}
+
+// ---- text pages ----
+
+#[test]
+fn text_pages_show_their_emoji_and_speak_their_words() {
+    use crate::model::{Playlist, PlaylistItem};
+    let item = |v: serde_json::Value| serde_json::from_value::<PlaylistItem>(v).unwrap();
+    let playlist = |items: Vec<PlaylistItem>| Playlist {
+        id: "p".into(),
+        name: "P".into(),
+        items,
+        gap_ms: 0,
+    };
+
+    // Shortcodes and emoji are shown; the speech engine gets the words.
+    let page =
+        item(json!({"type": "text", "text": " :warning: Fire drill \u{1F525} at 3\u{1b}[5m! "}));
+    assert_eq!(
+        page.shown(),
+        ["\u{26A0}\u{FE0F} Fire drill \u{1F525} at 3!"]
+    );
+    assert_eq!(page.spoken().as_deref(), Some("Fire drill at 3!"));
+    assert!(page.audible());
+
+    // Nothing but emoji has nothing to say: it's a page that's only shown,
+    // and a pause in the stream like any other (so it may set its seconds).
+    let bells = item(json!({"type": "text", "text": ":bell: \u{1F514}", "seconds": 8}));
+    assert_eq!(bells.shown(), ["\u{1F514} \u{1F514}"]);
+    assert_eq!(bells.spoken(), None);
+    assert!(!bells.audible());
+
+    let p = playlist(vec![
+        page.clone(),
+        bells.clone(),
+        item(json!({"type": "sound", "media": "a.wav"})),
+    ]);
+    assert_eq!(
+        p.texts_by_item(),
+        [
+            vec!["\u{26A0}\u{FE0F} Fire drill \u{1F525} at 3!".to_string()],
+            vec!["\u{1F514} \u{1F514}".to_string()],
+            vec![]
+        ]
+    );
+    let mut cfg = config();
+    cfg.playlists = vec![p];
+    cfg.validate().unwrap();
+
+    // Emoji that would only be spoken, or text that's nothing once it's
+    // made safe to show, is refused.
+    for bad in [
+        json!({"type": "text", "text": "\u{1F514}", "show": false}),
+        json!({"type": "text", "text": "\u{1b}[2J\u{7}"}),
+        json!({"type": "text", "text": "Words", "seconds": 8}),
+    ] {
+        cfg.playlists = vec![playlist(vec![item(bad.clone())])];
+        assert!(cfg.validate().is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn icons_are_counted_as_seen() {
+    let mut cfg = config();
+    cfg.announcements = vec![announcement("a", &["up"])];
+    for (icon, ok) in [
+        ("\u{1F514}", true),
+        // One emoji of many code points: a family, a flag spelled with tags.
+        (
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}",
+            true,
+        ),
+        (
+            "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+            true,
+        ),
+        ("\u{26A0}\u{FE0F}\u{1F6AA}", true),
+        ("EXIT", true),
+        ("TOOLONG", false),
+        ("a b", false),
+        ("", false),
+        ("a\u{1b}", false),
+        ("a\u{202E}b", false),
+    ] {
+        cfg.announcements[0].icon = Some(icon.into());
+        assert_eq!(cfg.validate().is_ok(), ok, "{icon:?}");
+    }
 }

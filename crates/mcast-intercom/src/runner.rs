@@ -172,8 +172,10 @@ pub struct ShownText {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<usize>,
     pub round: u32,
-    /// The playlist item heard as it was shown (counting only items heard).
-    pub item: usize,
+    /// The playlist item heard as it was shown (counting only items heard);
+    /// `None` for the announcement's (or part's) own text, shown as it starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<usize>,
     pub text: Vec<String>,
     pub at_ms: u64,
 }
@@ -182,12 +184,16 @@ pub struct ShownText {
 #[derive(Debug, Clone, Default)]
 struct PartDisplays {
     part: Option<usize>,
+    /// The announcement's (or part's) own text: shown as it starts.
+    text: Vec<String>,
     /// By the playlist's items heard: what to show as each starts.
     texts: Vec<Vec<String>>,
     /// Its zones (ids), for the panel's display page.
     zones: Vec<String>,
     /// Its zones' display groups, as written.
     groups: Vec<String>,
+    /// Those of them that get only the words.
+    plain_groups: Vec<String>,
 }
 
 /// A text page to show now: on the panel's display page for `zones`, and
@@ -197,10 +203,15 @@ pub struct Shown {
     pub run: RunId,
     pub announcement: String,
     pub name: String,
+    /// The announcement's priority: an end unit may show an emergency differently.
+    pub priority: Priority,
     pub zones: Vec<String>,
     /// Display groups (phonebook names or addresses).
     #[serde(skip)]
     pub groups: Vec<String>,
+    /// Those of them that get only the words, without what the page is.
+    #[serde(skip)]
+    pub plain_groups: Vec<String>,
     pub text: Vec<String>,
     pub at_ms: u64,
 }
@@ -826,6 +837,8 @@ impl Inner {
             st.early_items.retain(|(j, _)| *j != job.id);
             (stop_now, ended, items)
         };
+        // Playing somewhere: its own text goes up, then any page already due.
+        self.show_text(job.id, None);
         for item in items {
             self.job_item(job.id, item);
         }
@@ -839,56 +852,74 @@ impl Inner {
 
     /// A sender started an item of its list: show its text pages.
     fn job_item(self: &Arc<Self>, job: u64, item: usize) {
-        let shown = {
+        {
             let mut st = self.lock();
-            let Some(&(id, i)) = st.jobs.get(&job) else {
+            if !st.jobs.contains_key(&job) {
                 // Not ours, or not yet: `started` looks here.
                 st.early_items.push_back((job, item));
                 while st.early_items.len() > KEEP_EARLY {
                     st.early_items.pop_front();
                 }
                 return;
-            };
-            let Some(run) = st.runs.get_mut(&id) else {
-                return;
-            };
-            let Some(part) = run.targets.get(i).map(|t| t.part) else {
-                return;
-            };
-            let Some(d) = run.displays.iter().find(|d| d.part == part) else {
-                return;
-            };
-            let Some(text) = d.texts.get(item).filter(|t| !t.is_empty()) else {
-                return;
-            };
-            // Every group of the part says so: show it once a round.
-            let round = run.round;
-            if run
-                .shown
-                .iter()
-                .any(|s| s.part == part && s.round == round && s.item == item)
-            {
-                return;
             }
-            let at_ms = now_ms();
-            let shown = Shown {
-                run: id,
-                announcement: run.announcement.clone(),
-                name: run.name.clone(),
-                zones: d.zones.clone(),
-                groups: d.groups.clone(),
-                text: text.clone(),
-                at_ms,
+        }
+        self.show_text(job, Some(item));
+    }
+
+    /// Show what's due as `job` starts (`None`: its announcement's or
+    /// part's own text) or starts an item of its playlist.
+    fn show_text(self: &Arc<Self>, job: u64, item: Option<usize>) {
+        let shown =
+            {
+                let mut st = self.lock();
+                let Some(&(id, i)) = st.jobs.get(&job) else {
+                    return;
+                };
+                let Some(run) = st.runs.get_mut(&id) else {
+                    return;
+                };
+                let Some(part) = run.targets.get(i).map(|t| t.part) else {
+                    return;
+                };
+                let Some(d) = run.displays.iter().find(|d| d.part == part) else {
+                    return;
+                };
+                let text = match item {
+                    Some(n) => d.texts.get(n),
+                    None => Some(&d.text),
+                };
+                let Some(text) = text.filter(|t| !t.is_empty()) else {
+                    return;
+                };
+                // Every group of the part says so: show a page once a round,
+                // and its own text once (it stays up through the repeats).
+                let round = run.round;
+                if run.shown.iter().any(|s| {
+                    s.part == part && s.item == item && (item.is_none() || s.round == round)
+                }) {
+                    return;
+                }
+                let at_ms = now_ms();
+                let shown = Shown {
+                    run: id,
+                    announcement: run.announcement.clone(),
+                    name: run.name.clone(),
+                    priority: run.priority,
+                    zones: d.zones.clone(),
+                    groups: d.groups.clone(),
+                    plain_groups: d.plain_groups.clone(),
+                    text: text.clone(),
+                    at_ms,
+                };
+                run.shown.push(ShownText {
+                    part,
+                    round,
+                    item,
+                    text: text.clone(),
+                    at_ms,
+                });
+                shown
             };
-            run.shown.push(ShownText {
-                part,
-                round,
-                item,
-                text: text.clone(),
-                at_ms,
-            });
-            shown
-        };
         self.emit(shown.run);
         (self.on_change)(Change::Shown(&shown));
     }
@@ -1189,26 +1220,36 @@ fn note_heard(run: &mut Run, listeners: &[Listener]) -> bool {
     news
 }
 
-/// Where each part of `a` shows its playlist's text pages, for parts
-/// whose playlist has any.
+/// Where each part of `a` shows its text (its own, and its playlist's
+/// pages), for parts that have any.
 fn part_displays(cfg: &Config, a: &Announcement, site: Option<&str>) -> Vec<PartDisplays> {
     let mut out = Vec::new();
+    let own = a.section_texts();
     for (i, (audio, zones)) in a.sections().into_iter().enumerate() {
-        let crate::model::Audio::Playlist(p) = audio else {
-            continue;
+        let texts = match audio {
+            crate::model::Audio::Playlist(p) => cfg
+                .playlist(p)
+                .filter(|p| p.shows_text())
+                .map(|p| p.texts_by_item())
+                .unwrap_or_default(),
+            _ => Vec::new(),
         };
-        let Some(p) = cfg.playlist(p).filter(|p| p.shows_text()) else {
+        if own[i].is_empty() && texts.is_empty() {
             continue;
-        };
+        }
         let mut d = PartDisplays {
             part: (i > 0).then_some(i),
-            texts: p.texts_by_item(),
+            text: own[i].clone(),
+            texts,
             ..Default::default()
         };
         for z in cfg.zones_in(zones, site) {
             d.zones.push(z.id.clone());
             for g in &z.displays {
                 add_name(&mut d.groups, g);
+                if z.plain_displays {
+                    add_name(&mut d.plain_groups, g);
+                }
             }
         }
         out.push(d);

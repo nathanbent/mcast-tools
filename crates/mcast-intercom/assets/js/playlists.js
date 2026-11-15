@@ -6,16 +6,21 @@
 import { h, replace, toast, seconds } from "./dom.js";
 import { api, mediaUrl } from "./api.js";
 import { state } from "./store.js";
-import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter } from "./editor.js";
+import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter, emojiPicker } from "./editor.js";
 
 const duration = (media) => state.library.files.find((f) => f.name === media)?.audio?.duration_s;
 
 const isText = (i) => i.type === "text";
-const spoken = (i) => isText(i) && i.speak !== false;
+// Emoji (typed, or as :shortcodes:) are shown and never spoken, so a page
+// of nothing else has no words: it's only shown, as the panel's server
+// treats it too.
+const EMOJI = /:[a-z0-9_+-]+:|[\p{Extended_Pictographic}\p{Regional_Indicator}\u{1F3FB}-\u{1F3FF}\u200D\uFE0E\uFE0F\u20E3\u{E0020}-\u{E007F}]/giu;
+const hasWords = (text) => (text ?? "").replace(EMOJI, "").trim() !== "";
+const spoken = (i) => isText(i) && i.speak !== false && hasWords(i.text);
 const heard = (i) => !isText(i) || spoken(i);
 // A page only shown is a pause of its own in the stream, for this long.
 const SHOW_SECS = 5;
-const showOnly = (i) => isText(i) && i.speak === false && i.show !== false;
+const showOnly = (i) => isText(i) && !spoken(i) && i.show !== false;
 const showFor = (i) => i.seconds ?? SHOW_SECS;
 // What goes in the stream: sounds, spoken pages and the pauses for pages only shown.
 const inStream = (i) => !isText(i) || spoken(i) || showOnly(i);
@@ -53,6 +58,20 @@ function listen(media) {
   player.play().catch((e) => toast(`Can't play ${media}: ${e.message}`, "error"));
 }
 
+// A sound's own controls: its name, and words to show while it plays (the
+// text of a recorded message, say). Nothing speaks them.
+function soundControls(item, i) {
+  const text = h("input", {
+    value: item.text ?? "", maxLength: 2000, placeholder: "Text to show on displays while it plays (optional)",
+    "aria-label": `Text shown with item ${i + 1}`,
+    oninput: () => { if (text.value.trim()) item.text = text.value; else delete item.text; },
+  });
+  const { toggle, row } = emojiPicker(text, `Emoji for item ${i + 1}`, "Or type any emoji, or a shortcode like :fire: or :bell:.");
+  return h("div", { class: "grow text-item" },
+    h("span", {}, item.media, !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing")),
+    h("div", { class: "row small" }, toggle, text), row);
+}
+
 // A text page's own controls: the text, whether it's spoken and shown,
 // the voice, and how long one that's only shown is up.
 function textControls(item, i, changed) {
@@ -62,16 +81,26 @@ function textControls(item, i, changed) {
     required: true,
     placeholder: "e.g. The library closes in ten minutes.",
     "aria-label": `Text of item ${i + 1}`,
-    oninput: () => { item.text = text.value; },
+    oninput: () => {
+      item.text = text.value;
+      // Words typed into a page of emoji make it spoken, and the reverse.
+      showing.hidden = !showOnly(item);
+      onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
+      changed();
+    },
   });
   text.value = item.text ?? "";
+  const { toggle: emoji, row: picker } = emojiPicker(text, `Emoji for item ${i + 1}`,
+    "Or type any emoji, or a shortcode like :fire: or :bell:. They're shown, not spoken.");
+  const onlyEmoji = h("span", { class: "muted" }, "Only emoji: nothing to speak, so it's only shown.");
+  onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
   const check = (key, label) => {
     const box = h("input", { type: "checkbox", checked: item[key] !== false });
     box.addEventListener("change", () => {
       if (box.checked) delete item[key]; else item[key] = false;
       voice.disabled = item.speak === false;
-      if (!showOnly(item)) delete item.seconds;
       showing.hidden = !showOnly(item);
+      onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
       changed();
     });
     return h("label", { class: "check" }, box, label);
@@ -96,9 +125,9 @@ function textControls(item, i, changed) {
   voice.disabled = item.speak === false;
   voice.addEventListener("change", () => { if (voice.value) item.voice = voice.value; else delete item.voice; });
   const noEngine = voices && !voices.engine;
-  return h("div", { class: "grow text-item" }, text,
-    h("div", { class: "row small" }, check("speak", "Speak"), check("show", "Show on displays"), showing,
-      names.length > 0 || item.voice ? voice : null,
+  return h("div", { class: "grow text-item" }, text, picker,
+    h("div", { class: "row small" }, emoji, check("speak", "Speak"), check("show", "Show on displays"), showing,
+      names.length > 0 || item.voice ? voice : null, onlyEmoji,
       noEngine && h("span", { class: "muted" }, "The mcast server has no text to speech yet: install Piper or eSpeak NG there.")));
 }
 
@@ -134,8 +163,7 @@ function itemsEditor(initial) {
           : h("button", { type: "button", class: "icon", "aria-label": `Listen to ${item.media}`, onclick: () => listen(item.media) }, "▶"),
         isText(item)
           ? textControls(item, i, count)
-          : h("span", { class: "grow" }, item.media,
-            !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing")),
+          : soundControls(item, i),
         h("span", { class: "muted small" }, len == null ? "" : len < 10 ? `${len.toFixed(1)} s` : seconds(len)),
         h("button", { type: "button", class: "icon", "aria-label": "Move up", disabled: i === 0, onclick: () => move(i - 1) }, "↑"),
         h("button", { type: "button", class: "icon", "aria-label": "Move down", disabled: i === items.length - 1, onclick: () => move(i + 1) }, "↓"),
@@ -178,7 +206,12 @@ function itemsEditor(initial) {
   return {
     el: h("div", {}, list, total,
       h("div", { class: "row add-item" }, field("Sound", pick), mediaFilter(pick), add, addText)),
-    value: () => items.map((i) => (isText(i) ? { ...i, text: (i.text ?? "").trim() } : i)),
+    // Only a page that's only shown has a time of its own.
+    value: () => items.map((i) => {
+      if (!isText(i)) return i.text?.trim() ? { ...i, text: i.text.trim() } : { type: i.type, media: i.media };
+      const { seconds, ...page } = { ...i, text: (i.text ?? "").trim() };
+      return showOnly(page) && seconds != null ? { ...page, seconds } : page;
+    }),
   };
 }
 
@@ -194,7 +227,7 @@ function form(p, save, cancel) {
   },
     h("div", { class: "row" }, field("Name", name), field("Seconds between items", gap)),
     h("fieldset", { class: "part" }, h("legend", {}, "Plays, in order"), items.el),
-    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown is up for its own time, while the playlist pauses in silence."),
+    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. A sound can have text of its own, shown on displays while it plays. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown is up for its own time, while the playlist pauses in silence."),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));

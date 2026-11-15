@@ -170,8 +170,13 @@ pub trait Backend: Send + Sync + 'static {
     fn voices(&self) -> BackendResult<Value>;
     /// Join a text channel from a text request (the API's JSON).
     fn start_text(&self, request: &Value) -> BackendResult<Job>;
-    /// Send a line on a text channel.
-    fn send_text(&self, job: u64, text: &str) -> BackendResult<()>;
+    /// Send text on a text channel; with `page` (`{"id", "name",
+    /// "priority", "hold_s"}`), as one page. Servers before 0.5.13 refuse
+    /// a page (422).
+    fn send_text(&self, job: u64, text: &str, page: Option<&Value>) -> BackendResult<()>;
+    /// Take a page down on the displays that put it up: after its hold, or
+    /// at once with `now`. (404 from servers before 0.5.13.)
+    fn clear_page(&self, job: u64, page: &str, now: bool) -> BackendResult<()>;
     /// Stop a job; returns once it has wound down (or the server gave up waiting).
     fn stop_job(&self, id: u64) -> BackendResult<()>;
     fn job(&self, id: u64) -> BackendResult<Job>;
@@ -442,9 +447,19 @@ impl Backend for HttpBackend {
             .into_json()?)
     }
 
-    fn send_text(&self, job: u64, text: &str) -> BackendResult<()> {
+    fn send_text(&self, job: u64, text: &str, page: Option<&Value>) -> BackendResult<()> {
+        let mut body = serde_json::json!({ "text": text });
+        if let Some(page) = page {
+            body["page"] = page.clone();
+        }
         self.request(&self.agent, "POST", &format!("/jobs/{job}/text"))
-            .send_json(serde_json::json!({ "text": text }))?;
+            .send_json(body)?;
+        Ok(())
+    }
+
+    fn clear_page(&self, job: u64, page: &str, now: bool) -> BackendResult<()> {
+        self.request(&self.agent, "POST", &format!("/jobs/{job}/text/clear"))
+            .send_json(serde_json::json!({ "page": page, "now": now }))?;
         Ok(())
     }
 

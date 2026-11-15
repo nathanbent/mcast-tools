@@ -11,6 +11,7 @@ anyhow.workspace = true
 cpal.workspace = true
 hound.workspace = true
 mcast-core.workspace = true
+mcast-plain.workspace = true
 opus.workspace = true
 rtrb.workspace = true
 rustfft.workspace = true

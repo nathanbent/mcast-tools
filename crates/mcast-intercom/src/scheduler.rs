@@ -425,6 +425,7 @@ mod tests {
             zones: vec![Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 id: "z".into(),
                 name: "Z".into(),
                 targets: vec![Target {
@@ -439,6 +440,7 @@ mod tests {
                     id: id.to_string(),
                     name: format!("{id} name"),
                     audio: Audio::ChimeOnly,
+                    text: None,
                     chime: None,
                     end_chime: None,
                     mode: None,
@@ -588,6 +590,7 @@ mod tests {
         cfg.zones.push(Zone {
             listeners: Vec::new(),
             displays: Vec::new(),
+            plain_displays: false,
             id: "ny".into(),
             name: "NY".into(),
             targets: vec![Target {
@@ -763,6 +766,7 @@ mod tests {
             cfg.zones.push(Zone {
                 listeners: Vec::new(),
                 displays: Vec::new(),
+                plain_displays: false,
                 site: None,
                 id: z.clone(),
                 name: z,

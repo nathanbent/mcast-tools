@@ -148,3 +148,37 @@ export function colorSelect(value, none) {
   show();
   return el;
 }
+
+// Emoji a notice is likely to want, to put in with a click. Any other can
+// be typed, pasted, or written as a shortcode (:fire:).
+const QUICK_EMOJI = [
+  ["⚠️", "Warning"], ["🚨", "Emergency light"], ["🔥", "Fire"], ["⛔", "No entry"], ["🛑", "Stop"],
+  ["🔒", "Locked"], ["🔔", "Bell"], ["📢", "Announcement"], ["ℹ️", "Information"], ["✅", "Done"],
+  ["❌", "Cancelled"], ["⏰", "Time"], ["📅", "Date"], ["🚪", "Door"], ["🚌", "Bus"], ["🍽️", "Meal"],
+  ["☕", "Break"], ["🌧️", "Rain"], ["❄️", "Snow"], ["⚡", "Lightning"], ["🌪️", "Tornado"],
+  ["🎉", "Celebration"], ["👋", "Hello"], ["➡️", "Right"], ["⬅️", "Left"],
+];
+
+// Put `emoji` into a text box at the cursor (over the selection), as if typed.
+function insertAt(input, emoji) {
+  const { selectionStart: from, selectionEnd: to, value } = input;
+  if (input.maxLength > 0 && value.length - (to - from) + emoji.length > input.maxLength) return;
+  input.setRangeText(emoji, from, to, "end");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
+}
+
+// An emoji picker for a text box: a button that opens a row of emoji to
+// click in. Returns { toggle, row } to place beside and under the box.
+export function emojiPicker(input, label, hint) {
+  const row = h("div", { class: "emoji-row", role: "group", "aria-label": label, hidden: true },
+    QUICK_EMOJI.map(([e, name]) => h("button", {
+      type: "button", class: "icon", title: name, "aria-label": `Insert ${name}`, onclick: () => insertAt(input, e),
+    }, e)),
+    hint && h("span", { class: "muted small" }, hint));
+  const toggle = h("button", {
+    type: "button", class: "icon emoji-toggle", title: "Emoji", "aria-label": label, "aria-expanded": "false",
+    onclick: () => { row.hidden = !row.hidden; toggle.setAttribute("aria-expanded", String(!row.hidden)); },
+  }, "🙂");
+  return { toggle, row };
+}

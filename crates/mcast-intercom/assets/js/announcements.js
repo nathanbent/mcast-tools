@@ -4,7 +4,7 @@
 
 import { h } from "./dom.js";
 import { state, zoneName } from "./store.js";
-import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter, colorSelect, SIZES } from "./editor.js";
+import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter, colorSelect, SIZES, emojiPicker } from "./editor.js";
 import { chimeField, chimeLabel, chooserLink, effectiveChime } from "./chimes.js";
 
 const PRIORITIES = [["normal", "Normal"], ["high", "High"], ["emergency", "Emergency"]];
@@ -58,9 +58,11 @@ function partsEditor(initial) {
     const boxes = state.config.zones.map((z) => ({
       id: z.id, box: h("input", { type: "checkbox", checked: !!p?.zones.includes(z.id) }), name: z.name,
     }));
-    const entry = { audio, boxes, el: null };
+    const text = h("input", { value: p?.text ?? "", maxLength: 2000, placeholder: "Optional" });
+    const entry = { audio, boxes, text, el: null };
     entry.el = h("div", { class: "part-row" },
       h("div", { class: "row" }, h("div", { class: "field" }, field("Plays", audio), mediaFilter(audio)),
+        field("Text on its displays", text),
         h("button", { type: "button", class: "danger", onclick: () => { parts.splice(parts.indexOf(entry), 1); entry.el.remove(); } }, "Remove part")),
       h("div", { class: "checks" }, boxes.map((b) => h("label", { class: "check" }, b.box, b.name))));
     parts.push(entry);
@@ -70,7 +72,11 @@ function partsEditor(initial) {
   return {
     el: h("div", {}, list,
       h("button", { type: "button", onclick: () => add(null) }, "Add a part")),
-    value: () => parts.map((p) => ({ audio: audioValue(p.audio.value), zones: p.boxes.filter((b) => b.box.checked).map((b) => b.id) })),
+    value: () => parts.map((p) => ({
+      audio: audioValue(p.audio.value),
+      zones: p.boxes.filter((b) => b.box.checked).map((b) => b.id),
+      ...(p.text.value.trim() ? { text: p.text.value.trim() } : {}),
+    })),
   };
 }
 
@@ -101,6 +107,9 @@ function form(a, save, cancel) {
   const icon = h("input", { value: a?.icon ?? "", maxLength: 8, placeholder: "e.g. 🔔", class: "icon-input" });
   const confirmBox = h("input", { type: "checkbox", checked: !!a?.confirm });
   const audio = audioSelect(a?.audio ?? "chime_only");
+  const text = h("textarea", { rows: 2, maxLength: 2000, placeholder: "e.g. 🚪 Doors open in five minutes" });
+  text.value = a?.text ?? "";
+  const textEmoji = emojiPicker(text, "Emoji for the text", "Or type any emoji, or a shortcode like :fire: or :bell:.");
   const parts = partsEditor(a?.parts ?? []);
   const partsSection = part("Parts",
     h("p", { class: "small muted" }, "Other audio to other zones, in the same play: a message in two languages to two buildings, say. Each zone can be in only one place: here, or one part."),
@@ -141,6 +150,7 @@ function form(a, save, cancel) {
     save({
       name: name.value.trim(),
       audio: audioValue(audio.value),
+      text: text.value.trim() || null,
       parts: audio.value === "live" ? [] : parts.value(),
       chime: chime.value(),
       end_chime: endChime.value(),
@@ -163,7 +173,10 @@ function form(a, save, cancel) {
 
   return h("form", { onsubmit: submit },
     part("General",
-      h("div", { class: "row" }, field("Name", name), h("div", { class: "field" }, field("Audio", audio, "Upload or record sounds on the Sounds tab"), mediaFilter(audio)))),
+      h("div", { class: "row" }, field("Name", name), h("div", { class: "field" }, field("Audio", audio, "Upload or record sounds on the Sounds tab"), mediaFilter(audio))),
+      h("div", { class: "text-item" },
+        field("Text on displays", text, "Shown on its zones' displays for as long as it plays, with whatever the audio is: a recording, a chime, someone talking. Nothing speaks it."),
+        h("div", { class: "row small" }, textEmoji.toggle), textEmoji.row)),
     part("On the Panel",
       h("div", { class: "row" },
         field("Category", category, cats.length ? "The heading it's under on the Panel" : "Add categories below the list"),

@@ -33,6 +33,11 @@ pub(crate) struct FakeState {
     text_jobs: HashMap<u64, String>,
     /// Lines sent on text channels: (group, text).
     pub(crate) texts: Vec<(String, String)>,
+    /// Pages sent as pages (group, what the page is) and cleared (group, id, now).
+    pub(crate) pages: Vec<(String, Value)>,
+    pub(crate) cleared: Vec<(String, String, bool)>,
+    /// As a server before 0.5.13: pages are refused.
+    pub(crate) no_pages: bool,
 }
 
 impl FakeState {
@@ -135,6 +140,19 @@ impl Fake {
     }
 
     /// Lines sent on text channels so far: (group, text).
+    pub(crate) fn pages(&self) -> Vec<(String, Value)> {
+        self.st.lock().unwrap().pages.clone()
+    }
+
+    pub(crate) fn cleared(&self) -> Vec<(String, String, bool)> {
+        self.st.lock().unwrap().cleared.clone()
+    }
+
+    /// Behave as a server from before pages.
+    pub(crate) fn set_no_pages(&self) {
+        self.st.lock().unwrap().no_pages = true;
+    }
+
     pub(crate) fn texts(&self) -> Vec<(String, String)> {
         self.st.lock().unwrap().texts.clone()
     }
@@ -386,13 +404,31 @@ impl Backend for Fake {
         Ok(job)
     }
 
-    fn send_text(&self, job: u64, text: &str) -> BackendResult<()> {
+    fn send_text(&self, job: u64, text: &str, page: Option<&Value>) -> BackendResult<()> {
         let mut st = self.st.lock().unwrap();
         let live = st.jobs.get(&job).is_some_and(|(_, j)| !j.is_over());
         let Some(group) = st.text_jobs.get(&job).cloned().filter(|_| live) else {
             return Err(err(409, format!("job {job} isn't an open text channel")));
         };
+        if let Some(page) = page {
+            if st.no_pages {
+                return Err(err(422, "unknown field `page`".to_string()));
+            }
+            st.pages.push((group.clone(), page.clone()));
+        }
         st.texts.push((group, text.to_string()));
+        Ok(())
+    }
+
+    fn clear_page(&self, job: u64, page: &str, now: bool) -> BackendResult<()> {
+        let mut st = self.st.lock().unwrap();
+        if st.no_pages {
+            return Err(err(404, "not found".to_string()));
+        }
+        let Some(group) = st.text_jobs.get(&job).cloned() else {
+            return Err(err(409, format!("job {job} isn't an open text channel")));
+        };
+        st.cleared.push((group, page.to_string(), now));
         Ok(())
     }
 

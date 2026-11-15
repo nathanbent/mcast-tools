@@ -24,7 +24,8 @@
   --btn-big: 10px 16px;
   --cell: 8px;
   accent-color: var(--accent);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* The emoji fonts last: text pages and chat lines can carry emoji. */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji";
   font-size: calc(15px * var(--fs));
   line-height: 1.45;
 }

@@ -254,8 +254,11 @@ fn is_tiles(m: &PanelMode) -> bool {
     *m == PanelMode::Tiles
 }
 
-/// Longest icon (an emoji or a few characters), in characters.
+/// Longest icon (an emoji or a few characters), in characters as they're
+/// seen: an emoji made of several (a flag, a family) is one.
 pub const MAX_ICON: usize = 4;
+/// And in code points, however they join up.
+const MAX_ICON_CHARS: usize = 32;
 
 fn check_look(what: &str, color: &Option<String>, icon: &Option<String>) -> Result<()> {
     if let Some(c) = color {
@@ -264,8 +267,13 @@ fn check_look(what: &str, color: &Option<String>, icon: &Option<String>) -> Resu
         }
     }
     if let Some(i) = icon {
-        let n = i.chars().count();
-        if n == 0 || n > MAX_ICON || i.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        let n = mcast_plain::emoji::count(i);
+        if n == 0
+            || n > MAX_ICON
+            || i.chars().count() > MAX_ICON_CHARS
+            || i.chars().any(char::is_whitespace)
+            || mcast_plain::clean(i) != *i
+        {
             bail!("{what}: an icon is an emoji or up to {MAX_ICON} characters, no spaces");
         }
     }
@@ -318,12 +326,19 @@ fn is_zero(n: &u32) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PlaylistItem {
-    /// `{"type": "sound", "media": "bells/lunch.wav"}`.
-    Sound { media: String },
+    /// `{"type": "sound", "media": "bells/lunch.wav"}`. With `text`, that's
+    /// shown on the displays of the zones it plays to while the sound
+    /// plays: the words of a recorded message, say.
+    Sound {
+        media: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
     /// `{"type": "text", "text": "The library closes in ten minutes"}`: a
     /// text page, spoken by the mcast server's text to speech (`speak`)
     /// and shown on the displays of the zones it plays to (`show`), as the
-    /// playlist reaches it.
+    /// playlist reaches it. Emoji (typed, or as shortcodes: `:bell:`) are
+    /// shown and not spoken.
     Text {
         text: String,
         #[serde(default = "yes", skip_serializing_if = "is_true")]
@@ -351,7 +366,7 @@ pub const MAX_TEXT: usize = 2000;
 impl PlaylistItem {
     pub fn media(&self) -> Option<&str> {
         match self {
-            PlaylistItem::Sound { media } => Some(media),
+            PlaylistItem::Sound { media, .. } => Some(media),
             PlaylistItem::Text { .. } => None,
         }
     }
@@ -360,7 +375,33 @@ impl PlaylistItem {
     pub fn audible(&self) -> bool {
         match self {
             PlaylistItem::Sound { .. } => true,
-            PlaylistItem::Text { speak, .. } => *speak,
+            PlaylistItem::Text { .. } => self.spoken().is_some(),
+        }
+    }
+
+    /// A text page's words for the speech engine, when it's spoken: no
+    /// emoji. A page of nothing but emoji has nothing to say, so it's only
+    /// shown.
+    pub fn spoken(&self) -> Option<String> {
+        match self {
+            PlaylistItem::Text {
+                text, speak: true, ..
+            } => Some(mcast_plain::spoken(text)).filter(|t| !t.is_empty()),
+            _ => None,
+        }
+    }
+
+    /// What displays get as it starts, a line at a time: a text page
+    /// that's shown, or a sound's own text. Empty when there's nothing.
+    pub fn shown(&self) -> Vec<String> {
+        match self {
+            PlaylistItem::Text {
+                text, show: true, ..
+            } => page_lines(text),
+            PlaylistItem::Sound {
+                text: Some(text), ..
+            } => page_lines(text),
+            _ => Vec::new(),
         }
     }
 
@@ -368,25 +409,18 @@ impl PlaylistItem {
     /// page that's only shown, a pause while it's up.
     fn source_item(&self) -> Option<Value> {
         match self {
-            PlaylistItem::Sound { media } => Some(media.as_str().into()),
-            PlaylistItem::Text {
-                text,
-                speak: true,
-                voice,
-                ..
-            } => {
-                let mut v = json!({ "say": text.trim() });
-                if let Some(voice) = voice {
-                    v["voice"] = voice.as_str().into();
+            PlaylistItem::Sound { media, .. } => Some(media.as_str().into()),
+            PlaylistItem::Text { voice, seconds, .. } => {
+                if let Some(say) = self.spoken() {
+                    let mut v = json!({ "say": say });
+                    if let Some(voice) = voice {
+                        v["voice"] = voice.as_str().into();
+                    }
+                    return Some(v);
                 }
-                Some(v)
+                (!self.shown().is_empty())
+                    .then(|| json!({ "silence_ms": seconds.unwrap_or(SHOW_SECS) * 1000 }))
             }
-            PlaylistItem::Text {
-                show: true,
-                seconds,
-                ..
-            } => Some(json!({ "silence_ms": seconds.unwrap_or(SHOW_SECS) * 1000 })),
-            PlaylistItem::Text { .. } => None,
         }
     }
 }
@@ -400,21 +434,35 @@ impl Playlist {
         self.items
             .iter()
             .filter(|i| i.source_item().is_some())
-            .map(|i| match i {
-                PlaylistItem::Text {
-                    text, show: true, ..
-                } => vec![text.trim().to_string()],
-                _ => Vec::new(),
-            })
+            .map(PlaylistItem::shown)
             .collect()
     }
 
     /// Whether anything in it is shown on displays.
     pub fn shows_text(&self) -> bool {
-        self.items
-            .iter()
-            .any(|i| matches!(i, PlaylistItem::Text { show: true, .. }))
+        self.items.iter().any(|i| !i.shown().is_empty())
     }
+}
+
+/// Text as displays get it, a line at a time: shortcodes as emoji, nothing
+/// that isn't safe to show, and no blank lines.
+pub fn page_lines(text: &str) -> Vec<String> {
+    mcast_plain::shown(text)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn check_page_text(what: &str, text: &str) -> Result<()> {
+    if page_lines(text).is_empty() {
+        bail!("{what}: the text is empty");
+    }
+    if text.chars().count() > MAX_TEXT {
+        bail!("{what}: text is at most {MAX_TEXT} characters");
+    }
+    Ok(())
 }
 
 /// Part of an announcement that sends other audio to other zones, in the
@@ -425,6 +473,9 @@ pub struct Part {
     /// Zone ids.
     pub zones: Vec<String>,
     pub audio: Audio,
+    /// Text on its zones' displays while it plays, as [`Announcement::text`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// Longest tag, in characters.
@@ -754,6 +805,11 @@ pub struct Zone {
     /// text pages of what plays here, as real-time text (`mcast text recv`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub displays: Vec<String>,
+    /// Send its displays only the words: no page name, priority or end
+    /// (see `docs/text-page-metadata.md`). For a display that shows what it
+    /// should leave out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plain_displays: bool,
 }
 
 /// Most expected listeners a zone can have.
@@ -851,6 +907,11 @@ pub struct Announcement {
     pub id: String,
     pub name: String,
     pub audio: Audio,
+    /// Text on its zones' displays for as long as it plays, whatever the
+    /// audio is: a recording, a chime, someone talking, a playlist (whose
+    /// own pages go up over it). Nothing speaks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     /// Chime before the audio, as in the mcast API: `"default"` (the mcast
     /// server's), a built-in name such as `"ding-dong"`, or
     /// `{"file": "NAME"}`; or [`NO_CHIME`] for none. Unset: the panel's
@@ -931,6 +992,16 @@ impl Announcement {
             lead_in_ms: self.lead_in_ms.or(d.lead_in_ms),
             ..self.clone()
         }
+    }
+
+    /// The text each section shows while it plays, in [`sections`] order.
+    ///
+    /// [`sections`]: Announcement::sections
+    pub fn section_texts(&self) -> Vec<Vec<String>> {
+        std::iter::once(&self.text)
+            .chain(self.parts.iter().map(|p| &p.text))
+            .map(|t| t.as_deref().map(page_lines).unwrap_or_default())
+            .collect()
     }
 
     /// Its own audio with its zones, then each part's: what plays where.
@@ -1083,7 +1154,7 @@ impl Config {
         }
         for p in &mut self.playlists {
             for item in &mut p.items {
-                if let PlaylistItem::Sound { media } = item {
+                if let PlaylistItem::Sound { media, .. } = item {
                     if let Some(new) = moved(media) {
                         *media = new;
                     }
@@ -1330,6 +1401,14 @@ impl Config {
                 } else {
                     format!("{what}, part {i}")
                 };
+                let text = if i == 0 {
+                    &a.text
+                } else {
+                    &a.parts[i - 1].text
+                };
+                if let Some(text) = text {
+                    check_page_text(&what, text)?;
+                }
                 match audio {
                     Audio::Media(m) if !valid_media_name(m) => {
                         bail!("{what}: \"{m}\" isn't a media file name")
@@ -1443,9 +1522,12 @@ impl Config {
             }
             for (n, item) in p.items.iter().enumerate() {
                 match item {
-                    PlaylistItem::Sound { media } if !valid_media_name(media) => {
+                    PlaylistItem::Sound { media, .. } if !valid_media_name(media) => {
                         bail!("{what}: \"{media}\" isn't a media file name");
                     }
+                    PlaylistItem::Sound {
+                        text: Some(text), ..
+                    } => check_page_text(&format!("{what}, item {}", n + 1), text)?,
                     PlaylistItem::Text {
                         text,
                         speak,
@@ -1454,17 +1536,15 @@ impl Config {
                         seconds,
                     } => {
                         let what = format!("{what}, item {}", n + 1);
-                        if text.trim().is_empty() {
-                            bail!("{what}: the text is empty");
-                        }
-                        if text.chars().count() > MAX_TEXT {
-                            bail!("{what}: text is at most {MAX_TEXT} characters");
-                        }
+                        check_page_text(&what, text)?;
                         if !speak && !show {
                             bail!("{what}: text must be spoken, shown or both");
                         }
+                        if !show && item.spoken().is_none() {
+                            bail!("{what}: there are no words to speak (emoji are only shown)");
+                        }
                         if let Some(n) = seconds {
-                            if *speak {
+                            if item.spoken().is_some() {
                                 bail!("{what}: only a page that's only shown has seconds");
                             }
                             if !(1..=MAX_SHOW_SECS).contains(n) {

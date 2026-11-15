@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Duration;
 
-pub const DEFAULT_TEXT_GROUP: &str = "239.69.1.1:5004";
+pub use mcast_text::DEFAULT_GROUP as DEFAULT_TEXT_GROUP;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -76,10 +76,12 @@ pub struct TextTarget {
 }
 
 impl TextRequest {
+    /// Our name, as the others see it: on one line and safe to show.
     pub fn name(&self) -> String {
         self.name
-            .clone()
-            .filter(|n| !n.trim().is_empty())
+            .as_deref()
+            .map(mcast_plain::label)
+            .filter(|n| !n.is_empty())
             .unwrap_or_else(hostname)
     }
 
@@ -185,6 +187,9 @@ mod tests {
         assert_eq!(s.red, Some((DEFAULT_RED_PT, 2)));
         assert!(s.announce.is_none(), "chat isn't announced by default");
         assert_eq!(s.rtcp.unwrap().name.as_deref(), Some("desk"));
+        let r: TextRequest =
+            serde_json::from_str(r#"{"name": " Front\n desk \u001b[5m\ud83d\udeaa "}"#).unwrap();
+        assert_eq!(r.name(), "Front desk \u{1F6AA}");
     }
 
     #[test]

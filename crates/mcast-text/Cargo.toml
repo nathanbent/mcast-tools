@@ -9,3 +9,4 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 mcast-core.workspace = true
+mcast-plain.workspace = true
