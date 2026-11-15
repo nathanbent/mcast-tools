@@ -44,6 +44,15 @@ pub fn list(path: &Path) -> Result<()> {
                 "playlist {}",
                 cfg.playlist(id).map_or(id.as_str(), |p| p.name.as_str())
             ),
+            Audio::Text(page) => format!(
+                "text ({}): {}",
+                match (page.spoken().is_some(), page.show) {
+                    (true, true) => "spoken and shown",
+                    (true, false) => "spoken",
+                    _ => "shown",
+                },
+                page.text.lines().next().unwrap_or_default()
+            ),
         };
         let audio = describe(&a.audio);
         let mut extras = Vec::new();

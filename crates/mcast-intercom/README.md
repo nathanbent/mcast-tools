@@ -1,8 +1,8 @@
 # mcast-intercom
 
 An intercom control panel for `mcast serve`. You set up **zones** (sets of speakers)
-and **announcements** (an audio file or a chime, which zones it goes to, how
-many times, at what priority), then play them from a button or on a
+and **announcements** (a sound, some text, a chime or someone talking, and
+which zones it goes to), then play them from a button or on a
 **schedule**.
 
 It is a client of the mcast HTTP API and nothing else: it doesn't use any
@@ -42,8 +42,8 @@ A page with a tab for each part:
 | **Monitor** | From the history, over the last 7, 30 or 90 days: totals (plays, how many played, failed and missed, schedules on time, the mcast server's uptime), plays a day by outcome (a chart, or a table), each announcement and zone with its outcomes (busy, failed, taken over), how schedules kept time (late is over 5 s), what started plays, which **speakers** heard plays and which missed them, and when the mcast server was unreachable. With sites, it can show **one site**: its plays, zones and speakers (the mcast server's uptime stays the panel's) |
 | **History** | Every play, and how each group fared, kept on disk (a file a day in `history/` beside `intercom.json`, for 90 days or as set in Settings → History): filter by date, announcement, outcome and who started it, page back, and **download a CSV** |
 | **Schedules** | When announcements play by themselves, under their **groups** (each with an on/off switch); what's coming up; *Pause all*; and **days off** (holidays, breaks) when no schedule plays. With **sites**, a bar picks all sites (a card for each: its time zone, what's next, pause) or one site (its schedules, pause switch and own days off) |
-| **Announcements** | Listed under their categories, with the **categories** themselves below. Each one in sections: General (name, audio: a sound, a playlist, chime only or live), On the Panel (category, tags), Chimes, Zones, **Parts** (other audio to other zones in the same play), Playback (repeats, priority) and Sound (processing, volume, lead-in) |
-| **Playlists** | Sounds and **text pages** that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them. Each text page is spoken, shown on displays, or both, with a voice from the mcast server's (see *Text pages* below) |
+| **Announcements** | Listed under their categories, with the **categories** themselves below. An announcement needs three things: a name, **what it plays** (a sound, text, just a chime, live, or a playlist; each shows only its own fields) and **where** (its zones). The rest is folded away, each section saying what it's set to: text on displays, chimes, repeats and priority, sound (processing, volume, lead-in), its button on the Panel (category, tags, color, icon) and **parts** (other audio to other zones in the same play) |
+| **Playlists** | Only for several things in a row (one sound or one text needs no playlist). Sounds and **text pages** that play one after another as one announcement: add them, drag (or use the arrows) to reorder, listen, and set the gap between them. Each text page is spoken, shown on displays, or both, with a voice from the mcast server's (see *Text pages* below) |
 | **Sounds** | The mcast server's sound files, in folders, with each one's length: upload (or drop files on it), **record** one from the browser's microphone, listen, **tag**, **search** names and tags in every folder (`#tag` for a tag), sort, rename or move (or **drag** onto a folder), hide from the lists, delete. **Select several** to move, tag, hide or delete them together. Uploads must be audio the mcast server can play. Renaming or moving a file updates the announcements that use it, and keeps its tags; one in use can't be deleted. The Announcements editor can filter its sound list the same way |
 | **Zones** | Each zone's multicast groups, with the codec, volume, TOS, TTL and interface its speakers need, the **listeners** expected to hear it (see *Who heard it* below), with the receivers the mcast server hears now offered to add, and its **text displays**. The list shows each listener's state: reporting to the mcast server now or not, and when it last heard a page. **Test** plays the chime to that zone alone, to check its speakers |
 | **Settings** | Announcement defaults (chimes, sound, and the codec for zone groups), the time zone, **sites**, which chimes the lists show, **access tokens**, **other systems** (trigger URLs and webhooks), **buttons and contacts** (GPIO inputs), **backup and restore**, and the connection to the mcast server. Admins can **arrange** its sections (*Arrange this page…*), and every screen shows that order |
@@ -97,7 +97,10 @@ link.
 
 ### Text pages
 
-A playlist item can be a text page, spoken, shown, or both (the default):
+An announcement can play text by itself: choose **Text** as what it plays
+and type it (`"audio": {"text": {"text": "Lunch is served"}}`). No sound
+and no playlist are needed. A playlist item can be a text page too, among
+its sounds. Either way it's spoken, shown, or both (the default):
 
 - **Spoken** by the mcast server's text to speech, as the playlist reaches
   it, in the announcement's stream (chimes, processing and volume apply).
@@ -405,14 +408,14 @@ name, priority and end.
 
 | Field | Default | |
 |---|---|---|
-| `audio` | | `{"media": "NAME"}`, a file uploaded to the server, `{"playlist": "ID"}`, `"chime_only"`, or `"live"` (push to talk from the panel's page) |
-| `text` | none | Text on its zones' displays for as long as it plays, with whatever the audio is; nothing speaks it (see *Text pages*) |
+| `audio` | | What it plays: `{"media": "NAME"}`, a file uploaded to the server; `{"text": {"text": "...", "speak": true, "show": true, "voice": "NAME", "seconds": 5}}`, text that's spoken, shown or both (only `text` is needed; the rest as a playlist's text page, see *Text pages*); `"chime_only"`; `"live"` (push to talk from the panel's page); or `{"playlist": "ID"}`, several in a row |
+| `text` | none | Text on its zones' displays for as long as it plays, with whatever the audio is; nothing speaks it (see *Text pages*). To have text spoken, or to play nothing but text, make the `audio` text instead |
 | `category` | none | The Panel heading it's under (a category's id); none puts it under "Other" |
 | `tags` | none | For filtering the Panel: up to 20, each up to 32 characters, no commas |
 | `color` | its category's | Its button's color: `red`, `orange`, `amber`, `green`, `teal`, `blue`, `purple` or `grey` (high and emergency keep their amber or red edge) |
 | `icon` | none | An emoji, or up to 4 characters, on its button (no spaces; an emoji made of several, such as a flag or a family, counts as one) |
 | `confirm` | `false` | Ask "are you sure?" before playing it from the Panel |
-| `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ..., "text": ...}]`, `audio` as above but not live, `text` (optional) as above for its zones. A zone can be in only one place: the announcement's own `zones` or one part |
+| `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ..., "text": ...}]`, `audio` as above (text too) but not live, `text` (optional) as above for its zones. A zone can be in only one place: the announcement's own `zones` or one part |
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
 | `mode` | the defaults' | `voice`, `music` or `none` |
 | `volume_db`, `lead_in_ms` | the defaults' | |
@@ -706,7 +709,7 @@ token), or missing without one. Run `state` is `playing`, `waiting` (between rep
 
 | File | |
 |---|---|
-| `model.rs` | Zones, announcements, defaults and days off, validation, and the send request for a target |
+| `model.rs` | Zones, announcements (and what they play: `Audio`, with `TextPage` shared by announcements and playlists), defaults and days off, validation, and the send request for a target |
 | `store.rs` | Loading and saving `intercom.json` |
 | `backend.rs` | The `Backend` trait (what the panel needs from a server) and `HttpBackend` |
 | `runner.rs` | Plays announcements: fan-out, priorities, repeats, stop |

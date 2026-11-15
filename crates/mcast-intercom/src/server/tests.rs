@@ -2019,6 +2019,102 @@ async fn playlists_and_parts_play_together_in_one_run() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_announcement_can_be_text_with_no_sound_or_playlist() {
+    let p = panel(None);
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/zones",
+            Some(json!({"name": "Hall", "targets": [{"group": "zone-1"}],
+                "displays": ["239.1.9.1:5004"]})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // Spoken and shown, with nothing else to set up.
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/announcements",
+            Some(json!({"name": "Lunch", "zones": ["hall"],
+                "audio": {"text": {"text": ":bell: Lunch is served", "voice": "en-gb"}}})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["audio"],
+        json!({"text": {"text": ":bell: Lunch is served", "voice": "en-gb"}})
+    );
+    let (s, run) = p
+        .call(Method::POST, "/announcements/lunch/play", None)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    assert_eq!(
+        p.fake.requests()[0]["source"],
+        json!({"type": "files", "gap_ms": 0, "paths": [
+            {"say": "Lunch is served", "voice": "en-gb"},
+        ]})
+    );
+    p.fake
+        .play_item(run["targets"][0]["job"].as_u64().unwrap(), 0);
+    let (_, v) = p.call(Method::GET, "/display?zones=hall", None).await;
+    assert_eq!(
+        v["pages"][0]["text"],
+        json!(["\u{1F514} Lunch is served"]),
+        "{v}"
+    );
+
+    let (s, _) = p.call(Method::DELETE, "/runs", None).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Only shown: silence while it's up, for its own time.
+    let (s, v) = p
+        .call(
+            Method::POST,
+            "/announcements",
+            Some(json!({"name": "Notice", "zones": ["hall"],
+                "audio": {"text": {"text": "Doors open at 9", "speak": false, "seconds": 8}}})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, run) = p
+        .call(Method::POST, "/announcements/notice/play", None)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{run}");
+    let last = p.fake.requests().pop().unwrap();
+    assert_eq!(
+        last["source"],
+        json!({"type": "files", "gap_ms": 0, "paths": [{"silence_ms": 8000}]})
+    );
+
+    // Checked as a playlist's pages are; a part can be text too.
+    for (audio, why) in [
+        (json!({"text": {"text": "  "}}), "empty"),
+        (
+            json!({"text": {"text": "Hi", "speak": false, "show": false}}),
+            "neither",
+        ),
+        (
+            json!({"text": {"text": "Hi", "seconds": 5}}),
+            "seconds on a spoken page",
+        ),
+        (
+            json!({"text": {"text": "Hi", "voice": "../x"}}),
+            "a bad voice",
+        ),
+    ] {
+        let (s, v) = p
+            .call(
+                Method::POST,
+                "/announcements",
+                Some(json!({"name": "Bad", "zones": ["hall"], "audio": audio})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{why}: {v}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn text_pages_are_spoken_and_shown_as_the_playlist_reaches_them() {
     let p = panel(None);
     p.fake.upload_media("chime.wav", b"RIFF").unwrap();

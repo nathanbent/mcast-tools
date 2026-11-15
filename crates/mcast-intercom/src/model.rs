@@ -335,24 +335,30 @@ pub enum PlaylistItem {
         text: Option<String>,
     },
     /// `{"type": "text", "text": "The library closes in ten minutes"}`: a
-    /// text page, spoken by the mcast server's text to speech (`speak`)
-    /// and shown on the displays of the zones it plays to (`show`), as the
-    /// playlist reaches it. Emoji (typed, or as shortcodes: `:bell:`) are
-    /// shown and not spoken.
-    Text {
-        text: String,
-        #[serde(default = "yes", skip_serializing_if = "is_true")]
-        speak: bool,
-        #[serde(default = "yes", skip_serializing_if = "is_true")]
-        show: bool,
-        /// The voice to speak it in; unset is the server's default.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        voice: Option<String>,
-        /// For a page that's only shown: how long the playlist pauses on
-        /// it, in seconds; unset is [`SHOW_SECS`].
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        seconds: Option<u32>,
-    },
+    /// text page, as the playlist reaches it.
+    Text(TextPage),
+}
+
+/// Text that's spoken by the mcast server's text to speech (`speak`),
+/// shown on the displays of the zones it plays to (`show`), or both. An
+/// announcement can play one by itself ([`Audio::Text`]), and a playlist
+/// can have them among its items. Emoji (typed, or as shortcodes:
+/// `:bell:`) are shown and not spoken.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextPage {
+    pub text: String,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub speak: bool,
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub show: bool,
+    /// The voice to speak it in; unset is the server's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+    /// For a page that's only shown: how long it's up, in silence, in
+    /// seconds; unset is [`SHOW_SECS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
 }
 
 /// How long a page that's only shown holds the playlist, by default.
@@ -363,11 +369,74 @@ pub const MAX_SHOW_SECS: u32 = 60;
 /// Longest text page, in characters (as the mcast server speaks).
 pub const MAX_TEXT: usize = 2000;
 
+impl TextPage {
+    /// Its words for the speech engine, when it's spoken: no emoji. A page
+    /// of nothing but emoji has nothing to say, so it's only shown.
+    pub fn spoken(&self) -> Option<String> {
+        self.speak
+            .then(|| mcast_plain::spoken(&self.text))
+            .filter(|t| !t.is_empty())
+    }
+
+    /// What displays get, a line at a time; empty when it isn't shown.
+    pub fn shown(&self) -> Vec<String> {
+        if self.show {
+            page_lines(&self.text)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Its item in a `files` source: text to say, or for a page that's
+    /// only shown, a pause while it's up.
+    fn source_item(&self) -> Option<Value> {
+        if let Some(say) = self.spoken() {
+            let mut v = json!({ "say": say });
+            if let Some(voice) = &self.voice {
+                v["voice"] = voice.as_str().into();
+            }
+            return Some(v);
+        }
+        (!self.shown().is_empty())
+            .then(|| json!({ "silence_ms": self.seconds.unwrap_or(SHOW_SECS) * 1000 }))
+    }
+
+    fn check(&self, what: &str) -> Result<()> {
+        check_page_text(what, &self.text)?;
+        if !self.speak && !self.show {
+            bail!("{what}: text must be spoken, shown or both");
+        }
+        if !self.show && self.spoken().is_none() {
+            bail!("{what}: there are no words to speak (emoji are only shown)");
+        }
+        if let Some(n) = self.seconds {
+            if self.spoken().is_some() {
+                bail!("{what}: only a page that's only shown has seconds");
+            }
+            if !(1..=MAX_SHOW_SECS).contains(&n) {
+                bail!("{what}: seconds is 1 to {MAX_SHOW_SECS}");
+            }
+        }
+        if let Some(v) = &self.voice {
+            if v.is_empty()
+                || v.len() > 100
+                || v.starts_with('.')
+                || !v
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.+".contains(c))
+            {
+                bail!("{what}: \"{v}\" isn't a voice name");
+            }
+        }
+        Ok(())
+    }
+}
+
 impl PlaylistItem {
     pub fn media(&self) -> Option<&str> {
         match self {
             PlaylistItem::Sound { media, .. } => Some(media),
-            PlaylistItem::Text { .. } => None,
+            PlaylistItem::Text(_) => None,
         }
     }
 
@@ -375,19 +444,15 @@ impl PlaylistItem {
     pub fn audible(&self) -> bool {
         match self {
             PlaylistItem::Sound { .. } => true,
-            PlaylistItem::Text { .. } => self.spoken().is_some(),
+            PlaylistItem::Text(page) => page.spoken().is_some(),
         }
     }
 
-    /// A text page's words for the speech engine, when it's spoken: no
-    /// emoji. A page of nothing but emoji has nothing to say, so it's only
-    /// shown.
+    /// A text page's words for the speech engine, when it's spoken.
     pub fn spoken(&self) -> Option<String> {
         match self {
-            PlaylistItem::Text {
-                text, speak: true, ..
-            } => Some(mcast_plain::spoken(text)).filter(|t| !t.is_empty()),
-            _ => None,
+            PlaylistItem::Text(page) => page.spoken(),
+            PlaylistItem::Sound { .. } => None,
         }
     }
 
@@ -395,13 +460,11 @@ impl PlaylistItem {
     /// that's shown, or a sound's own text. Empty when there's nothing.
     pub fn shown(&self) -> Vec<String> {
         match self {
-            PlaylistItem::Text {
-                text, show: true, ..
-            } => page_lines(text),
+            PlaylistItem::Text(page) => page.shown(),
             PlaylistItem::Sound {
                 text: Some(text), ..
             } => page_lines(text),
-            _ => Vec::new(),
+            PlaylistItem::Sound { .. } => Vec::new(),
         }
     }
 
@@ -410,17 +473,7 @@ impl PlaylistItem {
     fn source_item(&self) -> Option<Value> {
         match self {
             PlaylistItem::Sound { media, .. } => Some(media.as_str().into()),
-            PlaylistItem::Text { voice, seconds, .. } => {
-                if let Some(say) = self.spoken() {
-                    let mut v = json!({ "say": say });
-                    if let Some(voice) = voice {
-                        v["voice"] = voice.as_str().into();
-                    }
-                    return Some(v);
-                }
-                (!self.shown().is_empty())
-                    .then(|| json!({ "silence_ms": seconds.unwrap_or(SHOW_SECS) * 1000 }))
-            }
+            PlaylistItem::Text(page) => page.source_item(),
         }
     }
 }
@@ -441,6 +494,16 @@ impl Playlist {
     /// Whether anything in it is shown on displays.
     pub fn shows_text(&self) -> bool {
         self.items.iter().any(|i| !i.shown().is_empty())
+    }
+
+    /// Its `files` source, in the mcast API's JSON.
+    fn source(&self) -> Value {
+        let paths: Vec<Value> = self
+            .items
+            .iter()
+            .filter_map(PlaylistItem::source_item)
+            .collect();
+        json!({ "type": "files", "paths": paths, "gap_ms": self.gap_ms })
     }
 }
 
@@ -840,7 +903,8 @@ pub struct Target {
     pub interface: Option<String>,
 }
 
-/// What to play: an uploaded media file, or just the chime(s).
+/// What to play: an uploaded media file, text, just the chime(s), someone
+/// talking, or a playlist of several.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Audio {
@@ -854,6 +918,9 @@ pub enum Audio {
     Live,
     /// `{"playlist": "id"}`: a playlist's sounds, one after another.
     Playlist(String),
+    /// `{"text": {"text": "Lunch is served"}}`: text, spoken, shown on the
+    /// zones' displays, or both. No sound file or playlist needed.
+    Text(TextPage),
 }
 
 /// The sample rate the panel's page sends live audio at.
@@ -1024,18 +1091,9 @@ impl Announcement {
                 Audio::Media(path) => json!({ "type": "file", "path": path }),
                 Audio::ChimeOnly => json!({ "type": "chime" }),
                 Audio::Live => json!({ "type": "live", "rate": LIVE_RATE, "channels": 1 }),
-                Audio::Playlist(id) => {
-                    let p = cfg.playlist(id);
-                    let paths: Vec<Value> = p
-                        .map(|p| {
-                            p.items
-                                .iter()
-                                .filter_map(PlaylistItem::source_item)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    json!({ "type": "files", "paths": paths, "gap_ms": p.map_or(0, |p| p.gap_ms) })
-                }
+                Audio::Playlist(_) | Audio::Text(_) => cfg
+                    .sequence(audio)
+                    .map_or_else(|| json!({ "type": "files", "paths": [] }), |p| p.source()),
             },
         );
         let volume = match (self.volume_db, target.volume_db) {
@@ -1111,6 +1169,23 @@ impl Config {
 
     pub fn playlist(&self, id: &str) -> Option<&Playlist> {
         self.playlists.iter().find(|p| p.id == id)
+    }
+
+    /// What an audio plays one item after another, if it's that kind: its
+    /// playlist, or its text as a playlist of that one page. So text plays
+    /// (and shows) the same way wherever it is.
+    pub fn sequence<'a>(&'a self, audio: &Audio) -> Option<std::borrow::Cow<'a, Playlist>> {
+        use std::borrow::Cow;
+        match audio {
+            Audio::Playlist(id) => self.playlist(id).map(Cow::Borrowed),
+            Audio::Text(page) => Some(Cow::Owned(Playlist {
+                id: String::new(),
+                name: String::new(),
+                items: vec![PlaylistItem::Text(page.clone())],
+                gap_ms: 0,
+            })),
+            _ => None,
+        }
     }
 
     /// The announcements that play playlist `id`.
@@ -1420,6 +1495,7 @@ impl Config {
                         }
                         _ => {}
                     },
+                    Audio::Text(page) => page.check(&what)?,
                     Audio::Live if i > 0 => bail!("{what}: a part can't be live"),
                     _ => {}
                 }
@@ -1528,41 +1604,7 @@ impl Config {
                     PlaylistItem::Sound {
                         text: Some(text), ..
                     } => check_page_text(&format!("{what}, item {}", n + 1), text)?,
-                    PlaylistItem::Text {
-                        text,
-                        speak,
-                        show,
-                        voice,
-                        seconds,
-                    } => {
-                        let what = format!("{what}, item {}", n + 1);
-                        check_page_text(&what, text)?;
-                        if !speak && !show {
-                            bail!("{what}: text must be spoken, shown or both");
-                        }
-                        if !show && item.spoken().is_none() {
-                            bail!("{what}: there are no words to speak (emoji are only shown)");
-                        }
-                        if let Some(n) = seconds {
-                            if item.spoken().is_some() {
-                                bail!("{what}: only a page that's only shown has seconds");
-                            }
-                            if !(1..=MAX_SHOW_SECS).contains(n) {
-                                bail!("{what}: seconds is 1 to {MAX_SHOW_SECS}");
-                            }
-                        }
-                        if let Some(v) = voice {
-                            if v.is_empty()
-                                || v.len() > 100
-                                || v.starts_with('.')
-                                || !v
-                                    .chars()
-                                    .all(|c| c.is_ascii_alphanumeric() || "-_.+".contains(c))
-                            {
-                                bail!("{what}: \"{v}\" isn't a voice name");
-                            }
-                        }
-                    }
+                    PlaylistItem::Text(page) => page.check(&format!("{what}, item {}", n + 1))?,
                     _ => {}
                 }
             }
