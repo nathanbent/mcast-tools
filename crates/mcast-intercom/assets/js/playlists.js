@@ -59,17 +59,23 @@ function listen(media) {
 }
 
 // A sound's own controls: its name, and words to show while it plays (the
-// text of a recorded message, say). Nothing speaks them.
+// text of a recorded message, say). Nothing speaks them. The box for them
+// is there once asked for, or when it has some already.
 function soundControls(item, i) {
   const text = h("input", {
-    value: item.text ?? "", maxLength: 2000, placeholder: "Text to show on displays while it plays (optional)",
+    value: item.text ?? "", maxLength: 2000, placeholder: "Shown on displays while it plays; nothing speaks it",
     "aria-label": `Text shown with item ${i + 1}`,
     oninput: () => { if (text.value.trim()) item.text = text.value; else delete item.text; },
   });
   const { toggle, row } = emojiPicker(text, `Emoji for item ${i + 1}`, "Or type any emoji, or a shortcode like :fire: or :bell:.");
+  const box = h("div", { class: "row small", hidden: !item.text }, toggle, text);
+  const ask = h("button", {
+    type: "button", class: "link small", hidden: !!item.text,
+    onclick: () => { ask.hidden = true; box.hidden = false; text.focus(); },
+  }, "Add text for displays");
   return h("div", { class: "grow text-item" },
-    h("span", {}, item.media, !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing")),
-    h("div", { class: "row small" }, toggle, text), row);
+    h("span", {}, item.media, !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing"), " ", ask),
+    box, row);
 }
 
 // A text page's own controls: the text, whether it's spoken and shown,
@@ -87,6 +93,7 @@ export function textControls(item, what, changed) {
       item.text = text.value;
       // Words typed into a page of emoji make it spoken, and the reverse.
       showing.hidden = !showOnly(item);
+      voice.hidden = !spoken(item);
       onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
       changed();
     },
@@ -100,7 +107,7 @@ export function textControls(item, what, changed) {
     const box = h("input", { type: "checkbox", checked: item[key] !== false });
     box.addEventListener("change", () => {
       if (box.checked) delete item[key]; else item[key] = false;
-      voice.disabled = item.speak === false;
+      voice.hidden = !spoken(item);
       showing.hidden = !showOnly(item);
       onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
       changed();
@@ -124,7 +131,8 @@ export function textControls(item, what, changed) {
   const voice = select([["", voices?.default_voice ? `Default (${voices.default_voice})` : "Default voice"],
     ...[...new Set([...names, ...(item.voice && !names.includes(item.voice) ? [item.voice] : [])])].map((v) => [v, v])], item.voice ?? "");
   voice.setAttribute("aria-label", `Voice for ${what}`);
-  voice.disabled = item.speak === false;
+  voice.className = "voice";
+  voice.hidden = !spoken(item);
   voice.addEventListener("change", () => { if (voice.value) item.voice = voice.value; else delete item.voice; });
   const noEngine = voices && !voices.engine;
   return h("div", { class: "grow text-item" }, text, picker,
@@ -196,17 +204,17 @@ function itemsEditor(initial) {
     total.textContent = items.length
       ? `${items.length} item${items.length === 1 ? "" : "s"}${length ? `, ${length}` : ""}`
         + (items.length && !items.some(heard) ? ". Nothing in it is heard yet: it needs a sound or a spoken page to play." : "")
-      : "Nothing in it yet: add sounds or text pages below.";
+      : "Nothing in it yet: add sounds or text below.";
   };
-  const pick = select(mediaOptions("media:", null), "");
-  const add = h("button", {
-    type: "button",
-    onclick: () => {
-      if (!pick.value.startsWith("media:")) return;
-      items.push({ type: "sound", media: pick.value.slice(6) });
-      draw();
-    },
-  }, "Add");
+  // Choosing a sound adds it.
+  const pick = select([["", "Add a sound…"], ...mediaOptions("media:", null)], "");
+  pick.setAttribute("aria-label", "Add a sound");
+  pick.addEventListener("change", () => {
+    if (!pick.value.startsWith("media:")) return;
+    items.push({ type: "sound", media: pick.value.slice(6) });
+    pick.value = "";
+    draw();
+  });
   const addText = h("button", {
     type: "button",
     onclick: () => {
@@ -214,12 +222,12 @@ function itemsEditor(initial) {
       draw();
       list.querySelectorAll("textarea")[list.querySelectorAll("textarea").length - 1]?.focus();
     },
-  }, "Add a text page");
+  }, "Add text");
   draw();
   loadVoices(draw);
   return {
     el: h("div", {}, list, total,
-      h("div", { class: "row add-item" }, field("Sound", pick), mediaFilter(pick), add, addText)),
+      h("div", { class: "add-item" }, pick, mediaFilter(pick), h("span", { class: "muted" }, "or"), addText)),
     value: () => items.map((i) => (isText(i) ? pageValue(i)
       : i.text?.trim() ? { ...i, text: i.text.trim() } : { type: i.type, media: i.media })),
   };
@@ -227,17 +235,19 @@ function itemsEditor(initial) {
 
 function form(p, save, cancel) {
   const name = h("input", { value: p?.name ?? "", required: true, maxLength: 64, placeholder: "e.g. Closing message" });
-  const gap = numberInput(p ? (p.gap_ms ?? 0) / 1000 : 0.5, { min: 0, max: 60, step: 0.1 });
+  const gap = numberInput(p ? (p.gap_ms ?? 0) / 1000 : 0.5, { min: 0, max: 60, step: 0.1, class: "secs", "aria-label": "Seconds of silence between items" });
   const items = itemsEditor(p?.items ?? []);
   return h("form", {
+    class: "sectioned",
     onsubmit: (e) => {
       e.preventDefault();
       save({ name: name.value.trim(), gap_ms: Math.round((num(gap) ?? 0) * 1000), items: items.value() });
     },
   },
-    h("div", { class: "row" }, field("Name", name), field("Seconds between items", gap)),
-    h("fieldset", { class: "part" }, h("legend", {}, "Plays, in order"), items.el),
-    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. A sound can have text of its own, shown on displays while it plays. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown is up for its own time, while the playlist pauses in silence."),
+    field("Name", name),
+    h("fieldset", { class: "part" }, h("legend", {}, "Plays, in order"), items.el,
+      h("label", { class: "check gap" }, "Silence between them:", gap, "s")),
+    h("p", { class: "small muted" }, "It plays as one announcement, with that announcement's chimes before and after."),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));

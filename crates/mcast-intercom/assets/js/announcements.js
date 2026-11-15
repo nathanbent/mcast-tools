@@ -5,7 +5,7 @@
 
 import { h, replace } from "./dom.js";
 import { state, zoneName } from "./store.js";
-import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter, colorSelect, SIZES, emojiPicker } from "./editor.js";
+import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter, colorSelect, SIZES, emojiPicker, more, unfoldInvalid } from "./editor.js";
 import { chimeField, chimeLabel, chooserLink, effectiveChime } from "./chimes.js";
 import { textControls, pageValue, pageHow, loadVoices } from "./playlists.js";
 
@@ -160,15 +160,6 @@ function chimesLabel(a) {
 // A section of the form that's always open: what nobody can do without.
 const part = (legend, ...children) => h("fieldset", { class: "part" }, h("legend", {}, legend), ...children);
 
-// A section that starts folded away, with what it's set to beside its name,
-// so the form is short until something in it is wanted.
-function more(title, summary, ...children) {
-  const now = h("span", { class: "muted small" });
-  const el = h("details", { class: "part" }, h("summary", {}, h("span", { class: "part-title" }, title), now), ...children);
-  el.refresh = () => { now.textContent = summary(); };
-  return el;
-}
-
 function form(a, save, cancel) {
   const d = state.config.defaults ?? {};
   const name = h("input", { value: a?.name ?? "", required: true, maxLength: 64, placeholder: "e.g. Lunch bell" });
@@ -311,10 +302,7 @@ function form(a, save, cancel) {
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));
-  // A field that needs fixing in a folded section: unfold it, so the
-  // browser can show which.
-  el.addEventListener("invalid", (e) => { const s = e.target.closest?.("details"); if (s) s.open = true; }, true);
-  return el;
+  return unfoldInvalid(el);
 }
 
 export function mount(el) {

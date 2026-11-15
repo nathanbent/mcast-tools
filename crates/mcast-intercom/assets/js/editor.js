@@ -55,6 +55,23 @@ export function mediaFilter(sel) {
   return input;
 }
 
+// A section of a form that starts folded away, with what it's set to beside
+// its name, so the form is short until something in it is wanted. Call its
+// refresh() when what it holds changes.
+export function more(title, summary, ...children) {
+  const now = h("span", { class: "muted small" });
+  const el = h("details", { class: "part" }, h("summary", {}, h("span", { class: "part-title" }, title), now), ...children);
+  el.refresh = () => { now.textContent = summary(); };
+  return el;
+}
+
+// A field that needs fixing in a folded section: unfold it, so the browser
+// can show which.
+export function unfoldInvalid(form) {
+  form.addEventListener("invalid", (e) => { const s = e.target.closest?.("details"); if (s) s.open = true; }, true);
+  return form;
+}
+
 // A number input's value, or null when empty.
 export const num = (input) => (input.value.trim() === "" ? null : Number(input.value));
 

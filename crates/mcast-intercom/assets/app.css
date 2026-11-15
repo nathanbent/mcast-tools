@@ -428,14 +428,15 @@ button.danger.solid:hover:not(:disabled) { background: var(--bad-solid); border-
 .targets .err { grid-column: 1 / -1; color: var(--bad); font-size: calc(13px * var(--fs)); margin-top: -2px; }
 
 .editor-form { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
-.target-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr) auto; gap: 8px; align-items: end; }
-@media (max-width: 900px) {
-  .target-row { grid-template-columns: repeat(3, minmax(0, 1fr)); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-}
 
 /* Forms in sections, and tabs made of several cards */
 fieldset.part { display: flex; flex-direction: column; gap: 10px; }
 fieldset.part > p { margin: 0; }
+.target { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.target-main { display: flex; gap: 8px; align-items: flex-end; }
+.target-main .field { flex: 1; }
+.target-options > summary { margin: 0; font-size: calc(13px * var(--fs)); }
+.target-options[open] > summary { margin-bottom: 10px; }
 /* A section folded away until it's wanted, with what it's set to beside its name */
 details.part { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
 details.part > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0; color: var(--text); list-style-position: outside; }
@@ -465,7 +466,6 @@ dl.facts dd { margin: 0; overflow-wrap: anywhere; }
 .checks { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 
 @media (max-width: 600px) {
-  .target-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .inline-form .field { max-width: none; }
   table.items .wide { display: none; }
 }
@@ -602,11 +602,11 @@ ol.playlist-items { list-style: none; margin: 0 0 6px; padding: 0; display: flex
 ol.playlist-items li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); cursor: grab; }
 ol.playlist-items .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 ol.playlist-items .handle { color: var(--muted); }
-.add-item { align-items: flex-end; }
+
 .parts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
 .part-row { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .part-row .row { align-items: flex-end; }
-.add-item > button, .part-row .row > button { justify-self: start; align-self: end; width: auto; }
+.part-row .row > button { justify-self: start; align-self: end; width: auto; }
 
 /* Arranging a tab */
 .arrange-bar { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
@@ -769,6 +769,11 @@ ol.playlist-items li.text .handle { cursor: grab; }
 .text-item .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .text-item .row > input:not([type]), .text-item .row > input[type="text"] { flex: 1; min-width: 12em; }
 .text-item input.secs { width: 4.5em; }
+input.secs { width: 4.5em; }
+.text-item select.voice { width: auto; max-width: 16em; }
+.add-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.add-item > select, .add-item > input { width: auto; flex: 1 1 14em; max-width: 24em; }
+label.check.gap { align-self: flex-start; }
 .emoji-row { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
 .emoji-row[hidden] { display: none; }
 .emoji-row button { font-size: calc(18px * var(--fs)); line-height: 1; padding: 4px 6px; }
