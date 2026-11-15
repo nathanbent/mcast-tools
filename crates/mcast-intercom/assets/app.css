@@ -602,11 +602,11 @@ ol.playlist-items { list-style: none; margin: 0 0 6px; padding: 0; display: flex
 ol.playlist-items li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); cursor: grab; }
 ol.playlist-items .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 ol.playlist-items .handle { color: var(--muted); }
-.add-item { align-items: flex-end; }
+
 .parts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
 .part-row { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .part-row .row { align-items: flex-end; }
-.add-item > button, .part-row .row > button { justify-self: start; align-self: end; width: auto; }
+.part-row .row > button { justify-self: start; align-self: end; width: auto; }
 
 /* Arranging a tab */
 .arrange-bar { display: flex; justify-content: flex-end; margin: -4px 0 8px; }
@@ -769,6 +769,11 @@ ol.playlist-items li.text .handle { cursor: grab; }
 .text-item .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .text-item .row > input:not([type]), .text-item .row > input[type="text"] { flex: 1; min-width: 12em; }
 .text-item input.secs { width: 4.5em; }
+input.secs { width: 4.5em; }
+.text-item select.voice { width: auto; max-width: 16em; }
+.add-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.add-item > select, .add-item > input { width: auto; flex: 1 1 14em; max-width: 24em; }
+label.check.gap { align-self: flex-start; }
 .emoji-row { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
 .emoji-row[hidden] { display: none; }
 .emoji-row button { font-size: calc(18px * var(--fs)); line-height: 1; padding: 4px 6px; }
