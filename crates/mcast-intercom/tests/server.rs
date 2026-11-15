@@ -88,6 +88,7 @@ fn config() -> Config {
         id: id.into(),
         name: id.into(),
         audio: Audio::ChimeOnly,
+        text: None,
         chime: Some(json!("ding-dong")),
         end_chime: None,
         mode: None,
@@ -360,6 +361,7 @@ fn talks_live_to_two_groups() {
         id: "talk".into(),
         name: "Talk".into(),
         audio: Audio::Live,
+        text: None,
         chime: Some(json!("beep")),
         end_chime: Some(json!("beep")),
         mode: Some("voice".into()),
@@ -517,11 +519,11 @@ fn speaks_and_shows_text_pages_in_step() {
         "zones": [{"id": "hall", "name": "Hall", "displays": [display],
             "targets": [{"group": "239.255.77.92:5004", "encoding": "g711u"}]}],
         "playlists": [{"id": "pl", "name": "PL", "gap_ms": 100, "items": [
-            {"type": "sound", "media": "bell.wav"},
+            {"type": "sound", "media": "bell.wav", "text": ":bell: Closing bell"},
             {"type": "text", "text": "The library closes in ten minutes"},
             {"type": "text", "text": "Thank you", "speak": false, "seconds": 1}]}],
         "announcements": [{"id": "closing", "name": "Closing", "audio": {"playlist": "pl"},
-            "zones": ["hall"]}]
+            "text": "Closing time\nPlease make your way out", "zones": ["hall"]}]
     }))
     .unwrap();
     cfg.validate().unwrap();
@@ -541,17 +543,23 @@ fn speaks_and_shows_text_pages_in_step() {
         std::fs::read_to_string(srv.dir.join("said")).unwrap(),
         "The library closes in ten minutes\n"
     );
-    // Each shown as its item started: the spoken page, then the page only
-    // shown, during its pause of a second at the end.
+    // The announcement's own text as it started (nothing speaks it), then
+    // each item's as it started: the recorded sound's words, the spoken
+    // page, and the page only shown, during its pause of a second at the end.
     let shown: Vec<_> = run
         .shown
         .iter()
         .map(|s| (s.item, s.text.clone(), s.at_ms))
         .collect();
-    assert_eq!(shown.len(), 2, "{run:#?}");
-    assert_eq!(shown[0].0, 1);
+    assert_eq!(shown.len(), 4, "{run:#?}");
+    assert_eq!(shown[0].0, None);
+    assert_eq!(shown[0].1, ["Closing time", "Please make your way out"]);
+    assert_eq!(shown[1].0, Some(0));
+    assert_eq!(shown[1].1, ["\u{1F514} Closing bell"]);
+    let shown = &shown[2..];
+    assert_eq!(shown[0].0, Some(1));
     assert_eq!(shown[0].1, ["The library closes in ten minutes"]);
-    assert_eq!(shown[1].0, 2);
+    assert_eq!(shown[1].0, Some(2));
     assert_eq!(shown[1].1, ["Thank you"]);
     // The pause holds the stream for its second before the run ends.
     let ended = run.ended_ms.unwrap();
@@ -578,7 +586,15 @@ fn speaks_and_shows_text_pages_in_step() {
             .iter()
             .filter_map(|l| l["text"].as_str())
             .collect();
-        if texts == ["The library closes in ten minutes", "Thank you"] {
+        if texts
+            == [
+                "Closing time",
+                "Please make your way out",
+                "\u{1F514} Closing bell",
+                "The library closes in ten minutes",
+                "Thank you",
+            ]
+        {
             assert_eq!(lines[0]["from"], "Intercom", "{lines}");
             break;
         }

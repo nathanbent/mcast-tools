@@ -749,9 +749,9 @@ ol.playlist-items li.text { cursor: default; align-items: flex-start; }
 ol.playlist-items li.text .handle { cursor: grab; }
 .text-item { display: flex; flex-direction: column; gap: 6px; }
 .text-item textarea { width: 100%; resize: vertical; font: inherit; }
-.text-item .row { flex-wrap: wrap; gap: 12px; align-items: center; }
+.text-item .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.text-item .row > input:not([type]), .text-item .row > input[type="text"] { flex: 1; min-width: 12em; }
 .text-item input.secs { width: 4.5em; }
-.text-item .row > button.icon { flex: none; }
 .emoji-row { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
 .emoji-row[hidden] { display: none; }
 .emoji-row button { font-size: calc(18px * var(--fs)); line-height: 1; padding: 4px 6px; }

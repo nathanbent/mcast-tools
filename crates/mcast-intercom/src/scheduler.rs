@@ -439,6 +439,7 @@ mod tests {
                     id: id.to_string(),
                     name: format!("{id} name"),
                     audio: Audio::ChimeOnly,
+                    text: None,
                     chime: None,
                     end_chime: None,
                     mode: None,

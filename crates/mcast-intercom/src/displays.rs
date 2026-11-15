@@ -6,6 +6,7 @@
 //! this keeps the page up while the run plays and for [`HOLD`] after.
 
 use crate::backend::Backend;
+use crate::model::Priority;
 use crate::now_ms;
 use crate::runner::{Change, RunId, Shown};
 use serde::Serialize;
@@ -32,8 +33,11 @@ pub struct Page {
     /// Announcement id and name.
     pub announcement: String,
     pub name: String,
+    /// The announcement's priority (`normal`, `high`, `emergency`).
+    pub priority: Priority,
     /// The zones (ids) it's shown in.
     pub zones: Vec<String>,
+    /// Its lines.
     pub text: Vec<String>,
     pub at_ms: u64,
     /// When it comes down: unset while its run plays.
@@ -99,6 +103,7 @@ impl Displays {
             run: s.run,
             announcement: s.announcement.clone(),
             name: s.name.clone(),
+            priority: s.priority,
             zones: s.zones.clone(),
             text: s.text.clone(),
             at_ms: s.at_ms,
@@ -249,6 +254,7 @@ mod tests {
             run,
             announcement: "closing".into(),
             name: "Closing".into(),
+            priority: Priority::Normal,
             zones: zones.iter().map(|z| z.to_string()).collect(),
             groups: groups.iter().map(|g| g.to_string()).collect(),
             text: vec![text.to_string()],
@@ -320,7 +326,7 @@ mod tests {
         run.shown.push(crate::runner::ShownText {
             part: None,
             round: 1,
-            item: 0,
+            item: Some(0),
             text: vec!["x".into()],
             at_ms: 0,
         });

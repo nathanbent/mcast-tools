@@ -116,6 +116,10 @@ pub struct TextRecvArgs {
     /// Print text the moment it arrives, without names or line buffering
     #[arg(long)]
     raw: bool,
+    /// Print one JSON object per line instead, for another program to read:
+    /// {"type": "line", "from", "ssrc", "text", "at_ms"}, and "joined", "named", "left", "warning"
+    #[arg(long, conflicts_with = "raw")]
+    json: bool,
     /// Stop after this many seconds
     #[arg(short, long)]
     duration: Option<f64>,
@@ -264,6 +268,8 @@ fn find_text_stream(
 /// raw characters as they arrive. Either way it's made safe for a terminal.
 struct Printer {
     raw: bool,
+    /// A JSON object per line, for another program.
+    json: bool,
     /// Chat: say who's here by name instead of listing sources.
     chat: bool,
     transcript: Transcript,
@@ -273,6 +279,7 @@ impl Printer {
     fn new(raw: bool, chat: bool) -> Self {
         Self {
             raw,
+            json: false,
             chat,
             transcript: Transcript::new(),
         }
@@ -296,6 +303,14 @@ impl Printer {
     }
 
     fn show(&self, entries: Vec<Entry>) {
+        if self.json {
+            let mut out = std::io::stdout().lock();
+            for e in entries {
+                let _ = writeln!(out, "{}", entry_json(e));
+            }
+            let _ = out.flush();
+            return;
+        }
         for e in entries {
             match e {
                 Entry::Line { from, text, .. } => println!("{from}: {text}"),
@@ -318,6 +333,33 @@ impl Printer {
                 Entry::Warning(message) => eprintln!("warning: {message}"),
             }
         }
+    }
+}
+
+/// An entry as `--json` prints it.
+fn entry_json(e: Entry) -> serde_json::Value {
+    use serde_json::json;
+    let ssrc_hex = |ssrc: u32| format!("{ssrc:08x}");
+    let at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    match e {
+        Entry::Line { ssrc, from, text } => {
+            json!({"type": "line", "from": from, "ssrc": ssrc_hex(ssrc), "text": text, "at_ms": at_ms})
+        }
+        Entry::Joined { ssrc, from } => {
+            json!({"type": "joined", "ssrc": ssrc_hex(ssrc), "address": from.to_string(), "at_ms": at_ms})
+        }
+        Entry::Named { ssrc, name, .. } => {
+            json!({"type": "named", "ssrc": ssrc_hex(ssrc), "name": name, "at_ms": at_ms})
+        }
+        Entry::Left { who, reason } => {
+            json!({"type": "left", "from": who, "reason": reason, "at_ms": at_ms})
+        }
+        Entry::UnknownPayloadType(pt) => json!({
+            "type": "warning", "message": format!("ignoring payload type {pt}"), "at_ms": at_ms
+        }),
+        Entry::Warning(message) => json!({"type": "warning", "message": message, "at_ms": at_ms}),
     }
 }
 
@@ -346,6 +388,7 @@ fn recv(a: TextRecvArgs, stop: &AtomicBool) -> Result<()> {
     };
     eprintln!("joining {group}. Ctrl-C to stop.");
     let mut printer = Printer::new(a.raw, false);
+    printer.json = a.json;
     receiver::run(
         TextReceiverConfig {
             net: a.net.options(group)?,

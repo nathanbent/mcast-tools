@@ -616,7 +616,10 @@ mcast text chat -n Alice                      # send what you type, print everyo
 
 `recv` prints whole lines with the sender's name (`Ops: fire drill at 3pm`).
 A half-typed line is shown once its sender has been quiet for 3 s.
-`--raw` prints the characters as they arrive, with no names.
+`--raw` prints the characters as they arrive, with no names. `--json`
+prints one JSON object per line for another program to read (a display, a
+logger): `{"type": "line", "from": "Ops", "ssrc": "…", "text": "…",
+"at_ms": …}`, and `joined`, `named`, `left` and `warning` for the rest.
 
 Emoji work, typed as themselves or as shortcodes, by the names GitHub and
 Slack use; a name that isn't known (and `10:30:00`) stays as typed:
@@ -865,7 +868,9 @@ schedules, time zone and days off. A Sounds tab manages the mcast server's
 sound files in folders. Playlists play sounds and text pages in order; a text
 page is spoken by `mcast serve`, shown on the zones' text displays (`mcast
 text recv`) and on a full-screen display page (`?display=1`), or both, as the
-playlist reaches it. A page can carry emoji (typed, picked in the editor, or
+playlist reaches it. Text doesn't need speech: an announcement can put its
+own text on displays for as long as it plays, with a recording, a chime or
+someone talking, and a playlist's sounds can each carry theirs. A page can carry emoji (typed, picked in the editor, or
 as shortcodes like `:warning:`): they're shown, and left out of the speech. Live announcements are push to talk from the
 browser's microphone, which browsers only allow over HTTPS:
 `--tls-self-signed` (or `--tls-cert`/`--tls-key`) serves the panel that way.

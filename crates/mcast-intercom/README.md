@@ -116,6 +116,13 @@ A playlist item can be a text page, spoken, shown, or both (the default):
 
   A page stays up while the run plays, and for 10 s after it ends; a
   stopped run's come down at once.
+- **Text with any audio, nothing spoken.** Text doesn't need the speech
+  engine. An announcement's own **Text on displays** (`text`) goes up as
+  it starts and stays for as long as it plays, whatever its audio is: a
+  recording, a chime, someone talking live, a playlist (whose own pages go
+  up over it). Each part can have its own, for its zones. In a playlist, a
+  **sound** can carry text too, shown while that sound plays: the words
+  of a recorded message, say.
 - **Emoji** are shown and never spoken. Type or paste them, pick one from
   the row under the 🙂 button in the editor, or write a shortcode by the
   name GitHub and Slack use (`:warning:`, `:fire:`, `:bell:`,
@@ -392,12 +399,13 @@ the text pages of what plays here (see *Text pages*); up to 20.
 | Field | Default | |
 |---|---|---|
 | `audio` | | `{"media": "NAME"}`, a file uploaded to the server, `{"playlist": "ID"}`, `"chime_only"`, or `"live"` (push to talk from the panel's page) |
+| `text` | none | Text on its zones' displays for as long as it plays, with whatever the audio is; nothing speaks it (see *Text pages*) |
 | `category` | none | The Panel heading it's under (a category's id); none puts it under "Other" |
 | `tags` | none | For filtering the Panel: up to 20, each up to 32 characters, no commas |
 | `color` | its category's | Its button's color: `red`, `orange`, `amber`, `green`, `teal`, `blue`, `purple` or `grey` (high and emergency keep their amber or red edge) |
 | `icon` | none | An emoji, or up to 4 characters, on its button (no spaces; an emoji made of several, such as a flag or a family, counts as one) |
 | `confirm` | `false` | Ask "are you sure?" before playing it from the Panel |
-| `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ...}]`, `audio` as above but not live. A zone can be in only one place: the announcement's own `zones` or one part |
+| `parts` | none | Other audio to other zones in the same play: `[{"zones": [...], "audio": ..., "text": ...}]`, `audio` as above but not live, `text` (optional) as above for its zones. A zone can be in only one place: the announcement's own `zones` or one part |
 | `chime`, `end_chime` | the defaults' | As in the API: `"default"` (the mcast server's: `rising` before, `falling` after), a built-in (`"ding-dong"`, `"westminster"`, `"church-bell"`, `"siren-wail"`, ...; `mcast audio chimes` lists them), or `{"file": "NAME"}`; or `"none"` for no chime even when the defaults have one. A `"chime_only"` announcement left with no chime at all plays the mcast server's default chime |
 | `mode` | the defaults' | `voice`, `music` or `none` |
 | `volume_db`, `lead_in_ms` | the defaults' | |
@@ -427,7 +435,7 @@ Settings → Panel, or with `PUT /settings` (`"panel"`, replaced whole).
 **Playlists.** `[{"id", "name", "items", "gap_ms"}]`: sounds and text pages
 that play one after another, as one stream, with the announcement's chimes
 before and after. `items` (up to 100) are `{"type": "sound", "media":
-"NAME"}` or `{"type": "text", "text": "...", "speak": true, "show": true,
+"NAME"}` (with `"text": "..."`, shown on displays while it plays) or `{"type": "text", "text": "...", "speak": true, "show": true,
 "voice": "NAME"}` (a text page, up to 2000 characters, spoken, shown or
 both: see *Text pages*; `voice` unset is the server's default). `gap_ms` is
 the silence between the items heard (default 0, up to 60000). Files at
@@ -438,7 +446,7 @@ files (0.5.5 or later).
 
 ```json
 "playlists": [{"id": "closing", "name": "Closing", "gap_ms": 500, "items": [
-  {"type": "sound", "media": "en/closing.wav"},
+  {"type": "sound", "media": "en/closing.wav", "text": "Closing time"},
   {"type": "text", "text": "The library closes in ten minutes."},
   {"type": "text", "text": "Please return books to the front desk.", "speak": false}]}],
 "announcements": [{"id": "closing", "name": "Closing time", "audio": {"playlist": "closing"},
@@ -642,7 +650,7 @@ only their runs.
 | `GET /backup` | The config as `intercom.json` (admin); `?sounds=1`: a `.tar.gz` with every sound on the mcast server too (`mcast-intercom-backup.json`, `intercom.json`, `media/PATH`). Never tokens, webhooks or history |
 | `POST /restore` | Put a backup back (admin): the raw body is a `.tar.gz` or an `intercom.json`. `?dry_run=1` only says what would change. Returns `{"plan": {"lists": {LIST: {"added", "changed", "removed"}}, "settings", "sounds_in_backup", "upload", "missing", "same"}, "applied", "uploaded", "kept", "server_error"}`; the config before is kept as `intercom.json.bak` |
 | `GET /speakers` | Whether each speaker zones expect is reporting between plays: `{"known", "error", "speakers": [{"name", "zones", "online", "since_ms", "last_seen_ms"}]}`. `online` is `null` until known (a minute for one never seen). The `speakers` event sends the same, with `changes: [{"speaker", "online"}]` |
-| `GET /display?zones=a,b` | The text pages up on displays now, newest first (with `zones`, those shown in any of them): `{"pages": [{"run", "announcement", "name", "zones", "text", "at_ms", "until_ms"}]}`; `until_ms` is `null` while the run plays. The `display` event sends each page as it goes up and as it's given its end. A token limited to categories sees only theirs |
+| `GET /display?zones=a,b` | The text pages up on displays now, newest first (with `zones`, those shown in any of them): `{"pages": [{"run", "announcement", "name", "priority", "zones", "text", "at_ms", "until_ms"}]}`; `text` is the page's lines, `priority` its announcement's (`normal`, `high`, `emergency`), and `until_ms` is `null` while the run plays. The `display` event sends each page as it goes up and as it's given its end. A token limited to categories sees only theirs |
 | `GET /voices` | The mcast server's text to speech: `{"engine", "voices", "default_voice"}` (`engine` is `piper`, `espeak-ng`, `command` or `null`) |
 | `GET /listeners` | The receivers `mcast serve`'s monitor hears now (`[{"group", "name", "cname", "about", "loss_percent", "last_heard_ms", "left"}]`), for choosing a zone's listeners; 404 if its monitor is off |
 | `GET /media`, `GET /phonebook` | From the mcast server, for choosing audio and groups: media names are paths (`bells/lunch.wav`) |
@@ -678,7 +686,8 @@ A run:
 A target's `part` says which of the announcement's parts it plays (from 1;
 missing for its own audio). A run that showed text pages has `shown`:
 `[{"part", "round", "item", "text", "at_ms"}]`, each with the item heard
-(counting only items heard) it came up with. A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
+(counting only items heard) it came up with; `item` is missing for the
+announcement's (or part's) own text, shown as it started. A run's `trigger` says what started it: `{"type": "manual", "by"}` for a
 button, push to talk or the command line, `{"type": "api", "by"}` for the
 trigger API (or a trigger token on the play route), and `{"type": "schedule", "id", "at_ms"}` for a schedule, with the time
 it was due. `by` is the token's name (`"startup token"` for the startup

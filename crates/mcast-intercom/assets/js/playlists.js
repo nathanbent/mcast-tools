@@ -6,7 +6,7 @@
 import { h, replace, toast, seconds } from "./dom.js";
 import { api, mediaUrl } from "./api.js";
 import { state } from "./store.js";
-import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter } from "./editor.js";
+import { mountEditor, field, select, numberInput, num, mediaOptions, mediaFilter, emojiPicker } from "./editor.js";
 
 const duration = (media) => state.library.files.find((f) => f.name === media)?.audio?.duration_s;
 
@@ -58,23 +58,18 @@ function listen(media) {
   player.play().catch((e) => toast(`Can't play ${media}: ${e.message}`, "error"));
 }
 
-// Emoji a notice is likely to want, to put in with a click. Any other can
-// be typed, pasted, or written as a shortcode (:fire:).
-const QUICK_EMOJI = [
-  ["⚠️", "Warning"], ["🚨", "Emergency light"], ["🔥", "Fire"], ["⛔", "No entry"], ["🛑", "Stop"],
-  ["🔒", "Locked"], ["🔔", "Bell"], ["📢", "Announcement"], ["ℹ️", "Information"], ["✅", "Done"],
-  ["❌", "Cancelled"], ["⏰", "Time"], ["📅", "Date"], ["🚪", "Door"], ["🚌", "Bus"], ["🍽️", "Meal"],
-  ["☕", "Break"], ["🌧️", "Rain"], ["❄️", "Snow"], ["⚡", "Lightning"], ["🌪️", "Tornado"],
-  ["🎉", "Celebration"], ["👋", "Hello"], ["➡️", "Right"], ["⬅️", "Left"],
-];
-
-// Put `emoji` in at the cursor (over the selection), as if it were typed.
-function insertAt(textarea, emoji) {
-  const { selectionStart: from, selectionEnd: to, value } = textarea;
-  if (value.length - (to - from) + emoji.length > textarea.maxLength) return;
-  textarea.setRangeText(emoji, from, to, "end");
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
-  textarea.focus();
+// A sound's own controls: its name, and words to show while it plays (the
+// text of a recorded message, say). Nothing speaks them.
+function soundControls(item, i) {
+  const text = h("input", {
+    value: item.text ?? "", maxLength: 2000, placeholder: "Text to show on displays while it plays (optional)",
+    "aria-label": `Text shown with item ${i + 1}`,
+    oninput: () => { if (text.value.trim()) item.text = text.value; else delete item.text; },
+  });
+  const { toggle, row } = emojiPicker(text, `Emoji for item ${i + 1}`, "Or type any emoji, or a shortcode like :fire: or :bell:.");
+  return h("div", { class: "grow text-item" },
+    h("span", {}, item.media, !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing")),
+    h("div", { class: "row small" }, toggle, text), row);
 }
 
 // A text page's own controls: the text, whether it's spoken and shown,
@@ -95,15 +90,8 @@ function textControls(item, i, changed) {
     },
   });
   text.value = item.text ?? "";
-  const picker = h("div", { class: "emoji-row", role: "group", "aria-label": `Emoji for item ${i + 1}`, hidden: true },
-    QUICK_EMOJI.map(([e, name]) => h("button", {
-      type: "button", class: "icon", title: name, "aria-label": `Insert ${name}`, onclick: () => insertAt(text, e),
-    }, e)),
-    h("span", { class: "muted small" }, "Or type any emoji, or a shortcode like :fire: or :bell:. They're shown, not spoken."));
-  const emoji = h("button", {
-    type: "button", class: "icon", title: "Emoji", "aria-label": `Emoji for item ${i + 1}`, "aria-expanded": "false",
-    onclick: () => { picker.hidden = !picker.hidden; emoji.setAttribute("aria-expanded", String(!picker.hidden)); },
-  }, "🙂");
+  const { toggle: emoji, row: picker } = emojiPicker(text, `Emoji for item ${i + 1}`,
+    "Or type any emoji, or a shortcode like :fire: or :bell:. They're shown, not spoken.");
   const onlyEmoji = h("span", { class: "muted" }, "Only emoji: nothing to speak, so it's only shown.");
   onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
   const check = (key, label) => {
@@ -175,8 +163,7 @@ function itemsEditor(initial) {
           : h("button", { type: "button", class: "icon", "aria-label": `Listen to ${item.media}`, onclick: () => listen(item.media) }, "▶"),
         isText(item)
           ? textControls(item, i, count)
-          : h("span", { class: "grow" }, item.media,
-            !state.media.includes(item.media) && h("span", { class: "badge failed" }, "missing")),
+          : soundControls(item, i),
         h("span", { class: "muted small" }, len == null ? "" : len < 10 ? `${len.toFixed(1)} s` : seconds(len)),
         h("button", { type: "button", class: "icon", "aria-label": "Move up", disabled: i === 0, onclick: () => move(i - 1) }, "↑"),
         h("button", { type: "button", class: "icon", "aria-label": "Move down", disabled: i === items.length - 1, onclick: () => move(i + 1) }, "↓"),
@@ -221,7 +208,7 @@ function itemsEditor(initial) {
       h("div", { class: "row add-item" }, field("Sound", pick), mediaFilter(pick), add, addText)),
     // Only a page that's only shown has a time of its own.
     value: () => items.map((i) => {
-      if (!isText(i)) return i;
+      if (!isText(i)) return i.text?.trim() ? { ...i, text: i.text.trim() } : { type: i.type, media: i.media };
       const { seconds, ...page } = { ...i, text: (i.text ?? "").trim() };
       return showOnly(page) && seconds != null ? { ...page, seconds } : page;
     }),
@@ -240,7 +227,7 @@ function form(p, save, cancel) {
   },
     h("div", { class: "row" }, field("Name", name), field("Seconds between items", gap)),
     h("fieldset", { class: "part" }, h("legend", {}, "Plays, in order"), items.el),
-    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown is up for its own time, while the playlist pauses in silence."),
+    h("p", { class: "small muted" }, "It plays as one stream, with the announcement's chimes before and after. A sound can have text of its own, shown on displays while it plays. Files at other sample rates are converted to the first one's. A text page is spoken by the mcast server, shown on the displays of the zones it plays to, or both; one that's only shown is up for its own time, while the playlist pauses in silence."),
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
       h("button", { type: "button", onclick: cancel }, "Cancel")));

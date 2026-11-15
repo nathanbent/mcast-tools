@@ -1372,6 +1372,7 @@ dependencies = [
  "mcast-text",
  "mcast-tui",
  "mcast-web",
+ "serde_json",
  "tokio",
 ]
 

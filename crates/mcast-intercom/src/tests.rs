@@ -23,6 +23,7 @@ fn announcement(id: &str, zones: &[&str]) -> Announcement {
         id: id.into(),
         name: format!("{id} name"),
         audio: Audio::Media("lunch.wav".into()),
+        text: None,
         chime: None,
         end_chime: None,
         mode: None,
@@ -770,8 +771,8 @@ fn text_pages_show_their_emoji_and_speak_their_words() {
     let page =
         item(json!({"type": "text", "text": " :warning: Fire drill \u{1F525} at 3\u{1b}[5m! "}));
     assert_eq!(
-        page.shown().as_deref(),
-        Some("\u{26A0}\u{FE0F} Fire drill \u{1F525} at 3!")
+        page.shown(),
+        ["\u{26A0}\u{FE0F} Fire drill \u{1F525} at 3!"]
     );
     assert_eq!(page.spoken().as_deref(), Some("Fire drill at 3!"));
     assert!(page.audible());
@@ -779,7 +780,7 @@ fn text_pages_show_their_emoji_and_speak_their_words() {
     // Nothing but emoji has nothing to say: it's a page that's only shown,
     // and a pause in the stream like any other (so it may set its seconds).
     let bells = item(json!({"type": "text", "text": ":bell: \u{1F514}", "seconds": 8}));
-    assert_eq!(bells.shown().as_deref(), Some("\u{1F514} \u{1F514}"));
+    assert_eq!(bells.shown(), ["\u{1F514} \u{1F514}"]);
     assert_eq!(bells.spoken(), None);
     assert!(!bells.audible());
 
