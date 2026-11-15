@@ -4,7 +4,7 @@
 import { h, replace, ago, toast } from "./dom.js";
 import { state, siteName, onRunSettled, subscribe } from "./store.js";
 import { api } from "./api.js";
-import { mountEditor, field, select, numberInput, num } from "./editor.js";
+import { mountEditor, field, select, numberInput, num, more, unfoldInvalid } from "./editor.js";
 
 export const ENCODINGS = [
   ["pcmu", "G.711 µ-law"], ["pcma", "G.711 A-law"],
@@ -51,6 +51,7 @@ async function testZone(z, button) {
 // them (`mcast receive --name Lobby`). Offers the ones the mcast server
 // hears now.
 function listenersPart(initial) {
+  let el = null;
   const names = [...initial];
   const has = (n) => names.some((x) => x.toLowerCase() === n.toLowerCase());
   const chips = h("div", { class: "tag-bar" });
@@ -68,6 +69,7 @@ function listenersPart(initial) {
     render();
   };
   const render = () => {
+    el?.refresh();
     replace(chips, names.length
       ? names.map((n) => h("button", { type: "button", class: "tag", title: `Remove ${n}`,
           onclick: () => { names.splice(names.indexOf(n), 1); render(); } }, n, " ×"))
@@ -97,19 +99,22 @@ function listenersPart(initial) {
   });
   render();
 
-  const el = h("fieldset", { class: "part" }, h("legend", {}, "Listeners"),
+  el = more("Check who heard it",
+    () => (names.length ? `${names.length} speaker${names.length === 1 ? "" : "s"}: ${names.join(", ")}` : "Not checked"),
     h("p", { class: "small muted" },
       "Speakers that should hear this zone's pages, by the name they give (mcast receive --name). After each play the panel says which of them heard it."),
     chips,
     h("div", { class: "listener-add" }, input, datalist,
       h("button", { type: "button", onclick: () => add(input.value) }, "Add")),
     heardBox);
+  el.refresh();
   return { el, value: () => names };
 }
 
 // Text displays: groups that get the text pages of what plays here, as
 // real-time text (`mcast text recv -g GROUP` shows them).
 function displaysPart(initial, plain) {
+  let el = null;
   const groups = [...initial];
   const plainBox = h("input", { type: "checkbox", checked: !!plain });
   const has = (g) => groups.some((x) => x.toLowerCase() === g.toLowerCase());
@@ -123,24 +128,26 @@ function displaysPart(initial, plain) {
     input.value = "";
     render();
   };
-  const render = () => replace(chips, groups.length
+  const render = () => { el?.refresh(); replace(chips, groups.length
     ? groups.map((g) => h("button", { type: "button", class: "tag", title: `Remove ${g}`,
         onclick: () => { groups.splice(groups.indexOf(g), 1); render(); } }, g, " ×"))
-    : [h("span", { class: "muted small" }, "None. The panel's display page can still show this zone's text pages.")]);
+    : [h("span", { class: "muted small" }, "None. The panel's display page can still show this zone's text.")]); };
   render();
-  const el = h("fieldset", { class: "part" }, h("legend", {}, "Text displays"),
+  el = more("Text displays",
+    () => (groups.length ? groups.join(", ") : "None"),
     h("p", { class: "small muted" },
-      "Groups that get the text pages of playlists played here, as real-time text: run mcast text recv -g GROUP on a screen. A browser can show them too: Settings → Panel → Display page."),
+      "Groups that get the text of what plays here, as real-time text: run mcast text recv -g GROUP on a screen. A browser can show it too: Settings → Panel → Display page."),
     chips,
     h("div", { class: "listener-add" }, input,
       h("button", { type: "button", onclick: () => add(input.value) }, "Add")),
     h("label", { class: "check small", title: "Displays that know pages get each one's name, priority and end with its words. Tick this for a display that shows those as text." },
       plainBox, "Send only the words (for displays that show the page details as text)"));
+  el.refresh();
   return { el, value: () => groups, plain: () => plainBox.checked };
 }
 
 function form(z, save, cancel) {
-  const name = h("input", { value: z?.name ?? "", required: true, maxLength: 64 });
+  const name = h("input", { value: z?.name ?? "", required: true, maxLength: 64, placeholder: "e.g. Hall" });
   const sites = state.config.sites ?? [];
   const site = select([["", "No site"], ...sites.map((s) => [s.id, s.name])], z?.site ?? "");
   const rows = [];
@@ -156,14 +163,27 @@ function form(z, save, cancel) {
       ttl: numberInput(t.ttl, { min: 1, max: 255, step: 1, placeholder: "Default" }),
       iface: h("input", { value: t.interface ?? "", placeholder: "Default" }),
     };
-    row.el = h("div", { class: "target-row" },
-      field("Group", row.group), field("Codec", row.encoding),
-      field("Volume (dB)", row.volume), field("TOS", row.tos),
-      field("TTL", row.ttl), field("Interface", row.iface),
-      h("button", { type: "button", class: "danger", title: "Remove this group", onclick: () => {
-        rows.splice(rows.indexOf(row), 1);
-        render();
-      } }, "Remove"));
+    // The group is all a row needs; what its speakers need besides is
+    // folded under it, saying what's set.
+    const set = () => [row.encoding.value ? encodingLabel(row.encoding.value) : null,
+      row.volume.value.trim() && `${row.volume.value} dB`,
+      row.tos.value.trim() && `TOS ${row.tos.value}`,
+      row.ttl.value.trim() && `TTL ${row.ttl.value}`,
+      row.iface.value.trim() && `interface ${row.iface.value.trim()}`].filter(Boolean).join(", ");
+    const now = h("span", {});
+    const show = () => { now.textContent = `Options: ${set() || `the defaults (${defaultEncoding().split(",")[0]})`}`; };
+    show();
+    row.el = h("div", { class: "target", oninput: show, onchange: show },
+      h("div", { class: "target-main" },
+        field("Group", row.group),
+        h("button", { type: "button", class: "danger", title: "Remove this group", onclick: () => {
+          rows.splice(rows.indexOf(row), 1);
+          if (!rows.length) addRow(); else render();
+        } }, "Remove")),
+      h("details", { class: "target-options" }, h("summary", {}, now),
+        h("div", { class: "row" },
+          field("Codec", row.encoding), field("Volume (dB)", row.volume, "Added to the announcement's"),
+          field("TOS", row.tos), field("TTL", row.ttl), field("Interface", row.iface))));
     rows.push(row);
     render();
   };
@@ -194,21 +214,21 @@ function form(z, save, cancel) {
     });
   };
 
-  return h("form", { onsubmit: submit },
-    h("fieldset", { class: "part" }, h("legend", {}, "General"),
-      h("div", { class: "row" }, field("Name", name),
-        sites.length > 0 && field("Site", site, "A site's schedules play only to its zones"))),
-    h("fieldset", { class: "part" }, h("legend", {}, "Groups"),
+  return unfoldInvalid(h("form", { class: "sectioned", onsubmit: submit },
+    h("div", { class: "row" }, field("Name", name),
+      sites.length > 0 && field("Site", site, "A site's schedules play only to its zones")),
+    h("fieldset", { class: "part" }, h("legend", {}, "Its speakers"),
       h("p", { class: "small muted" },
-        "Each group with the options its speakers need. Volume is added to the announcement's. A codec left on Default uses the one in Settings; other options left empty use the server's."),
+        "The multicast groups its speakers listen on: a phonebook name or an address."),
       rowsEl,
-      h("div", { class: "buttons", style: { marginTop: "10px" } },
-        h("button", { type: "button", onclick: () => addRow() }, "Add group"))),
+      h("div", { class: "buttons" },
+        h("button", { type: "button", onclick: () => addRow() }, "Add another group"))),
+    h("p", { class: "small muted more-head" }, "That's all it needs. These are optional:"),
     listeners.el,
     displays.el,
     h("div", { class: "buttons" },
       h("button", { type: "submit", class: "primary" }, "Save"),
-      h("button", { type: "button", onclick: cancel }, "Cancel")));
+      h("button", { type: "button", onclick: cancel }, "Cancel"))));
 }
 
 // For the list: who is reporting to the mcast server's monitor now, and when
