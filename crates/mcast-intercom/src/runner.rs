@@ -1226,14 +1226,11 @@ fn part_displays(cfg: &Config, a: &Announcement, site: Option<&str>) -> Vec<Part
     let mut out = Vec::new();
     let own = a.section_texts();
     for (i, (audio, zones)) in a.sections().into_iter().enumerate() {
-        let texts = match audio {
-            crate::model::Audio::Playlist(p) => cfg
-                .playlist(p)
-                .filter(|p| p.shows_text())
-                .map(|p| p.texts_by_item())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
+        let texts = cfg
+            .sequence(audio)
+            .filter(|p| p.shows_text())
+            .map(|p| p.texts_by_item())
+            .unwrap_or_default();
         if own[i].is_empty() && texts.is_empty() {
             continue;
         }

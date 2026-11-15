@@ -436,6 +436,23 @@ button.danger.solid:hover:not(:disabled) { background: var(--bad-solid); border-
 /* Forms in sections, and tabs made of several cards */
 fieldset.part { display: flex; flex-direction: column; gap: 10px; }
 fieldset.part > p { margin: 0; }
+/* A section folded away until it's wanted, with what it's set to beside its name */
+details.part { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; }
+details.part > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0; color: var(--text); list-style-position: outside; }
+details.part > summary::before { content: "▸"; color: var(--muted); }
+details.part[open] > summary::before { content: "▾"; }
+details.part > summary::-webkit-details-marker { display: none; }
+details.part > summary { list-style: none; }
+details.part[open] > summary { margin-bottom: 12px; }
+details.part[open] { display: flex; flex-direction: column; gap: 10px; padding-bottom: 12px; }
+details.part > p { margin: 0; }
+details.part .part-title { font-weight: 600; }
+details.part[hidden] { display: none; }
+form.sectioned { display: flex; flex-direction: column; gap: 12px; }
+.more-head { margin: 4px 0 -4px; }
+.plays { display: flex; flex-direction: column; gap: 10px; }
+.plays-fields { display: flex; flex-direction: column; gap: 8px; }
+.plays-fields > p { margin: 0; }
 .stack > section + section { margin-top: var(--gap); }
 .inline-form { flex-direction: row; align-items: flex-end; flex-wrap: wrap; }
 .inline-form .field { flex: 1; min-width: 220px; max-width: 360px; }

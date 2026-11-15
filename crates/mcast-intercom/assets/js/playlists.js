@@ -40,7 +40,7 @@ export function playlistLength(p) {
 
 // The mcast server's voices, asked for once.
 let voices = null;
-function loadVoices(then) {
+export function loadVoices(then) {
   if (voices) return then();
   api("GET", "/voices")
     .then((v) => { voices = v; then(); })
@@ -73,14 +73,16 @@ function soundControls(item, i) {
 }
 
 // A text page's own controls: the text, whether it's spoken and shown,
-// the voice, and how long one that's only shown is up.
-function textControls(item, i, changed) {
+// the voice, and how long one that's only shown is up. `what` names it for
+// screen readers ("item 2", "the announcement"). An announcement's own text
+// uses these too.
+export function textControls(item, what, changed) {
   const text = h("textarea", {
     rows: 2,
     maxLength: 2000,
     required: true,
     placeholder: "e.g. The library closes in ten minutes.",
-    "aria-label": `Text of item ${i + 1}`,
+    "aria-label": `Text of ${what}`,
     oninput: () => {
       item.text = text.value;
       // Words typed into a page of emoji make it spoken, and the reverse.
@@ -90,7 +92,7 @@ function textControls(item, i, changed) {
     },
   });
   text.value = item.text ?? "";
-  const { toggle: emoji, row: picker } = emojiPicker(text, `Emoji for item ${i + 1}`,
+  const { toggle: emoji, row: picker } = emojiPicker(text, `Emoji for ${what}`,
     "Or type any emoji, or a shortcode like :fire: or :bell:. They're shown, not spoken.");
   const onlyEmoji = h("span", { class: "muted" }, "Only emoji: nothing to speak, so it's only shown.");
   onlyEmoji.hidden = !(item.speak !== false && !hasWords(item.text) && (item.text ?? "").trim());
@@ -108,20 +110,20 @@ function textControls(item, i, changed) {
   // Only a page that's only shown has a time: it holds the stream that long.
   const secs = numberInput(item.seconds ?? SHOW_SECS, {
     min: 1, max: 60, step: 1, required: true, class: "secs",
-    "aria-label": `Seconds to show item ${i + 1}`,
+    "aria-label": `Seconds to show ${what}`,
     oninput: () => {
       const n = num(secs);
       if (n == null || n === SHOW_SECS) delete item.seconds; else item.seconds = n;
       changed();
     },
   });
-  const showing = h("label", { class: "check", title: "The playlist pauses, in silence, while it's up" },
+  const showing = h("label", { class: "check", title: "It's up for this long, in silence" },
     "Show for", secs, "s");
   showing.hidden = !showOnly(item);
   const names = voices?.voices ?? [];
   const voice = select([["", voices?.default_voice ? `Default (${voices.default_voice})` : "Default voice"],
     ...[...new Set([...names, ...(item.voice && !names.includes(item.voice) ? [item.voice] : [])])].map((v) => [v, v])], item.voice ?? "");
-  voice.setAttribute("aria-label", `Voice for item ${i + 1}`);
+  voice.setAttribute("aria-label", `Voice for ${what}`);
   voice.disabled = item.speak === false;
   voice.addEventListener("change", () => { if (voice.value) item.voice = voice.value; else delete item.voice; });
   const noEngine = voices && !voices.engine;
@@ -129,6 +131,18 @@ function textControls(item, i, changed) {
     h("div", { class: "row small" }, emoji, check("speak", "Speak"), check("show", "Show on displays"), showing,
       names.length > 0 || item.voice ? voice : null, onlyEmoji,
       noEngine && h("span", { class: "muted" }, "The mcast server has no text to speech yet: install Piper or eSpeak NG there.")));
+}
+
+// A text page as it's saved. Only one that's only shown has a time of its own.
+export function pageValue(i) {
+  const { seconds, ...page } = { ...i, text: (i.text ?? "").trim() };
+  return showOnly(page) && seconds != null ? { ...page, seconds } : page;
+}
+
+// "spoken and shown", "spoken", "shown".
+export function pageHow(page) {
+  const i = { ...page, type: "text" };
+  return spoken(i) ? (i.show === false ? "spoken" : "spoken and shown") : "shown";
 }
 
 // The items, as an ordered list: reorder by dragging or with the arrows.
@@ -162,7 +176,7 @@ function itemsEditor(initial) {
           ? h("span", { class: "badge", title: "Text page" }, "T")
           : h("button", { type: "button", class: "icon", "aria-label": `Listen to ${item.media}`, onclick: () => listen(item.media) }, "▶"),
         isText(item)
-          ? textControls(item, i, count)
+          ? textControls(item, `item ${i + 1}`, count)
           : soundControls(item, i),
         h("span", { class: "muted small" }, len == null ? "" : len < 10 ? `${len.toFixed(1)} s` : seconds(len)),
         h("button", { type: "button", class: "icon", "aria-label": "Move up", disabled: i === 0, onclick: () => move(i - 1) }, "↑"),
@@ -206,12 +220,8 @@ function itemsEditor(initial) {
   return {
     el: h("div", {}, list, total,
       h("div", { class: "row add-item" }, field("Sound", pick), mediaFilter(pick), add, addText)),
-    // Only a page that's only shown has a time of its own.
-    value: () => items.map((i) => {
-      if (!isText(i)) return i.text?.trim() ? { ...i, text: i.text.trim() } : { type: i.type, media: i.media };
-      const { seconds, ...page } = { ...i, text: (i.text ?? "").trim() };
-      return showOnly(page) && seconds != null ? { ...page, seconds } : page;
-    }),
+    value: () => items.map((i) => (isText(i) ? pageValue(i)
+      : i.text?.trim() ? { ...i, text: i.text.trim() } : { type: i.type, media: i.media })),
   };
 }
 
@@ -239,7 +249,7 @@ export function mount(el) {
     path: "/playlists",
     items: () => state.config.playlists ?? [],
     parts: ["library"],
-    before: () => h("p", { class: "muted" }, "A playlist plays sounds and text pages one after another, as one announcement. Choose one as an announcement's audio, or for one of its parts."),
+    before: () => h("p", { class: "muted" }, "A playlist plays several sounds and text pages one after another, as one announcement. For one sound, or one text, you don't need one: choose it in the announcement itself."),
     columns: [
       ["Name", (p) => p.name],
       ["Items", (p) => String(p.items.length)],
